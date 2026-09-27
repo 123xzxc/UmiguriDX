@@ -17,14 +17,33 @@ const umg = require('../tools/umg.cjs');
 const srcDir = path.resolve(process.argv[2] || path.join(root, 'assets'));
 const outDir = path.resolve(process.argv[3] || path.join(root, 'dist', 'game_data'));
 
+// 安卓不打进打包: PING(用户自备曲库)体积大且因人而异; 安卓从「文档/UMIGURI」读取。
+// 触发: 环境变量 UMG_DROP_PING=1, 或 Tauri 的构建平台为 android(TAURI_ENV_PLATFORM)。
+const dropPing = process.env.UMG_DROP_PING === '1' || process.env.TAURI_ENV_PLATFORM === 'android';
+
+// 安卓: 先清掉工程里上一次拷进去的资源。Tauri/AGP 拷 resources 是「合并」而非「覆盖」,
+// 不清理的话, 已从 dist/game_data 移除的文件(如曾打进包的 PING)会一直残留在 APK 里。
+if (dropPing) {
+  const stale = path.join(root, 'src-tauri/gen/android/app/src/main/assets/game_data');
+  if (fs.existsSync(stale)) {
+    fs.rmSync(stale, { recursive: true, force: true });
+    console.log('  清理安卓旧资源(重新拷贝): ' + path.relative(root, stale));
+  }
+}
+
 // 纯 JS 递归拷贝: 不用 fs.cpSync —— 某些环境(如 Node 25 + libc++ 的原生实现)在
 // 目标已存在同名条目时会抛未捕获的 std::filesystem::create_directory 异常而 abort。
-function copyTree(src, dst) {
+function copyTree(src, dst, rel) {
   fs.mkdirSync(dst, { recursive: true });
   for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+    const r = rel ? rel + '/' + e.name : e.name;
+    if (dropPing && r === 'data/music/PING') {
+      console.log('  跳过 PING(安卓不打包用户曲库): ' + r);
+      continue;
+    }
     const s = path.join(src, e.name);
     const d = path.join(dst, e.name);
-    if (e.isDirectory()) copyTree(s, d);
+    if (e.isDirectory()) copyTree(s, d, r);
     else if (e.isSymbolicLink()) {
       try { fs.symlinkSync(fs.readlinkSync(s), d); } catch (err) { /* ignore */ }
     } else {
@@ -35,7 +54,7 @@ function copyTree(src, dst) {
 
 fs.rmSync(outDir, { recursive: true, force: true, maxRetries: 3 });
 fs.mkdirSync(outDir, { recursive: true });
-copyTree(srcDir, outDir);
+copyTree(srcDir, outDir, '');
 
 // 用户数据(存档)不属于资源: core/config/*.krtbl 由游戏写入「可写层」,
 // 若误放进 assets 会被打进安装包, 于是新装的机器也会读到旧存档(可写层为空时

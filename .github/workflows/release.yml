@@ -237,6 +237,8 @@ jobs:
         run: npm run android:sign
       - name: 构建 APK + AAB
         working-directory: open-umiguri/src-tauri
+        env:
+          UMG_DROP_PING: '1' # 安卓不打包用户曲库(data/music/PING)
         run: npx tauri android build --apk --aab --split-per-abi -t aarch64 armv7
       - uses: actions/upload-artifact@v5
         with:

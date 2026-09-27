@@ -8,7 +8,7 @@
 //   - 只做标识符重命名 + 字符串数组抽取, 足以让逆向阅读成本大幅上升。
 import JavaScriptObfuscator from 'javascript-obfuscator';
 
-export const OBFUSCATE = process.argv.includes('--obfuscate');
+export const OBFUSCATE = process.argv.includes('--obfuscate') && process.env.UMG_NO_OBFUSCATE !== '1';
 
 const OPTIONS = {
   compact: true,
