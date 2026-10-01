@@ -5009,7 +5009,7 @@ scope.v_Po_28121.prototype = {
   pg: function () {
     return this.kg;
   }
-}, scope.v_Mo_28124.A3 = async function (v_t_34451) {
+}, scope.v_Mo_28124.A3 = async function (v_ab_34451) {
   // 读不到资源时调用方会把 null 传进来, v_Po_28121 会造出 1 字节缓冲, 紧接着 v3() 抛
   // "Out of bounds access" -> 整个 d5 读取链断在半路 -> 启动场景永不显示(黑屏)。
   // 这里直接返回 null: 调用方(d5 的 Id 循环 / h5)本来就按「拿不到就跳过」处理。
@@ -5019,12 +5019,12 @@ scope.v_Po_28121.prototype = {
     scope.__umgA3Mark = 1;
     console.log("[umg][build] A3 修复版 build=1ec8e8b+ (L3 偏移定位已启用)");
   }
-  if (!v_t_34451 || !v_t_34451.byteLength) {
-    if (!v_t_34451) console.log("[umg][rsb] A3(null): 资源读不到, 跳过");
+  if (!v_ab_34451 || !v_ab_34451.byteLength) {
+    if (!v_ab_34451) console.log("[umg][rsb] A3(null): 资源读不到, 跳过");
     else console.log("[umg][rsb] A3(空): 资源长度为 0, 跳过");
     return null;
   }
-  var v_e_34452 = new scope.v_Po_28121(v_t_34451);
+  var v_e_34452 = new scope.v_Po_28121(v_ab_34451);
   // 整个解析体兜一层: 越界会抛 "二进制读取越界", 但调用方只看到「表解析失败」。
   // 带上在哪个阶段炸的, 避免再去猜是头部还是字形表。
   try {
@@ -5032,12 +5032,12 @@ scope.v_Po_28121.prototype = {
   // 无法判断是数据坏还是资源取错。带上长度与前 8 字节, 便于和归档里的原始条目比对。
   var v_mg_34452b = v_e_34452.v3();
   if (809912146 !== v_mg_34452b) {
-    console.log("[umg][rsb] A3(坏数据): 魔数=" + v_mg_34452b + " len=" + v_t_34451.byteLength);
+    console.log("[umg][rsb] A3(坏数据): 魔数=" + v_mg_34452b + " len=" + v_ab_34451.byteLength);
     return null;
   }
   var v_vr_34452b = v_e_34452.u3();
   if (1 !== v_vr_34452b) {
-    console.log("[umg][rsb] A3(坏数据): 版本=" + v_vr_34452b + " len=" + v_t_34451.byteLength);
+    console.log("[umg][rsb] A3(坏数据): 版本=" + v_vr_34452b + " len=" + v_ab_34451.byteLength);
     return null;
   }
   var v_n_34453,
@@ -5049,8 +5049,8 @@ scope.v_Po_28121.prototype = {
   var v_o_34458,
     v_l_34459,
     v_c_34460,
-    v_t_34451 = v_e_34452.u3(2);
-  32 & v_t_34451 && (v_r_34455.v_ = !0), 64 & v_t_34451 && (v_a_34457 = !0), v_r_34455.g_ = v_e_34452.u3(), v_r_34455.w_ = v_e_34452.l3(), v_r_34455.p_ = v_e_34452.l3(), v_r_34455.k_ = v_e_34452.l3(), v_r_34455.b_ = v_e_34452.l3(), v_n_34453 = v_e_34452.u3(), v_i_34454 = v_e_34452.u3(), v_r_34455.m_[0] = v_e_34452.l3(), v_r_34455.m_[1] = v_e_34452.l3(), v_r_34455.m_[2] = v_e_34452.l3(), v_r_34455.m_[3] = v_e_34452.l3(), v_r_34455.S_[0] = v_e_34452.l3() / 100, v_r_34455.S_[1] = v_e_34452.l3() / 100;
+    v_flags_34451 = v_e_34452.u3(2);
+  32 & v_flags_34451 && (v_r_34455.v_ = !0), 64 & v_flags_34451 && (v_a_34457 = !0), v_r_34455.g_ = v_e_34452.u3(), v_r_34455.w_ = v_e_34452.l3(), v_r_34455.p_ = v_e_34452.l3(), v_r_34455.k_ = v_e_34452.l3(), v_r_34455.b_ = v_e_34452.l3(), v_n_34453 = v_e_34452.u3(), v_i_34454 = v_e_34452.u3(), v_r_34455.m_[0] = v_e_34452.l3(), v_r_34455.m_[1] = v_e_34452.l3(), v_r_34455.m_[2] = v_e_34452.l3(), v_r_34455.m_[3] = v_e_34452.l3(), v_r_34455.S_[0] = v_e_34452.l3() / 100, v_r_34455.S_[1] = v_e_34452.l3() / 100;
   for (let v_t_34463 = 0; v_t_34463 < v_n_34453; ++v_t_34463) v_o_34458 = {
     T3: 6406,
     L3: 0,
@@ -5083,7 +5083,7 @@ scope.v_Po_28121.prototype = {
   }
   return v_r_34455;
   } catch (v_err_34451b) {
-    console.log("[umg][rsb] A3(解析异常): off=" + v_e_34452.U2 + "/" + v_t_34451.byteLength + " " + ((v_err_34451b && v_err_34451b.message) || v_err_34451b));
+    console.log("[umg][rsb] A3(解析异常): off=" + v_e_34452.U2 + "/" + v_ab_34451.byteLength + " " + ((v_err_34451b && v_err_34451b.message) || v_err_34451b));
     return null;
   }
 }, scope.v_Eo_28125.prototype = {
