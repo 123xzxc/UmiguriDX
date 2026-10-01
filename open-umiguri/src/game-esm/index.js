@@ -6316,6 +6316,9 @@ scope.Framebuffer.prototype = {
           console.log("[umg][rsb] Id 表资源读不到, 跳过: " + JSON.stringify(v_i_35036));
           continue;
         }
+        // 埋点: A3(null) 与「Id 表解析失败」在用户日志里成对出现且时间分布完全一致,
+        // 但本函数对 ck==null 有 continue 保护, 本不该发生。打印实参形态以定位。
+        console.log("[umg][rsb] A3 入参: name=" + JSON.stringify(v_i_35036) + " ctor=" + (v_e_35037 && v_e_35037.constructor && v_e_35037.constructor.name) + " len=" + (v_e_35037 && v_e_35037.byteLength) + " isAB=" + (v_e_35037 instanceof ArrayBuffer));
         var v_tb_35037b = await scope.v_Mo_28124.A3(v_e_35037);
         // 拿到数据但 A3 返回 null = 表数据本身有问题(魔数/版本/长度)。带上资源名, 否则
         // 只能看到一条没有上下文的 A3(坏数据) 日志, 无法判断是哪个表。
