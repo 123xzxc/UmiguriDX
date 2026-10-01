@@ -683,4 +683,224 @@ mod tests {
         std::env::remove_var("UMIGURI_ASSETS_DIR");
         let _ = std::fs::remove_dir_all(&base);
     }
-}
+    // 游戏启动链实际发出的资源请求(打包态)必须全部能解析。
+    // 任何一条 404: 启动画面(renderer.ut("startup", ...) -> d5)就缺贴图/字体 -> 黑屏;
+    // 字体拿不到 null 时 index.js:6267 还会 v3() 越界崩掉整条加载链。
+    //   分支判定: /reverie/_VERSION 可读 -> 游戏走「松散文件」分支(读 /reverie* 虚拟路径);
+    //             不可读 -> 走归档分支(size_of/read_range 读 /una/*.una)。
+    // 两条分支都必须成立, 因此这里两边都测。
+    #[test]
+    #[ignore = "需要 dist/game_data 打包产物, 手动运行"]
+    fn startup_resources_resolve() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let packed = root.join("dist/game_data/core/una");
+        if !packed.join("hiiragi.una").is_file() {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("umg_start_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("core/una")).unwrap();
+        for name in ["hiiragi.una", "zh-CN.una", "natsukawa.una", "sakuragi.una"] {
+            std::fs::copy(packed.join(name), tmp.join("core/una").join(name)).unwrap();
+        }
+        std::env::set_var("UMIGURI_ASSETS_DIR", &tmp);
+        std::env::set_var("UMIGURI_DATA_DIR", tmp.join("user"));
+
+        // 虚拟路径分支: 带反斜杠的名字来自 ui/startup.rsb 的字符串池(Mf/Id 的 ed 字段),
+        // 游戏在归档分支里只把**第一个**反斜杠换成斜杠, 松散分支里一个都不换。
+        let paths = [
+            "/reverie/_VERSION",
+            "/reverie_zh-CN/_VERSION",
+            "/reverie_zh-CN/fonts/Debug.rgf",
+            "/reverie_zh-CN/tables/stringTable.rvs",
+            "/reverie_zh-CN/ui/startup.rsb",
+            "/reverie_zh-CN/textures\\txCommonDialog.dds",
+            "/reverie_zh-CN/textures\\txLoadingCircle_1.dds",
+            "/reverie_zh-CN/textures\\txLogoMono.dds",
+            "/reverie_zh-CN/fonts\\NtkwGothicDB16.rgf",
+            "/reverie_zh-CN/fonts\\NtkwGothicDB24.rgf",
+            "/reverie_zh-CN/fonts\\NtkwGothicLatinDB16.rgf",
+            "/reverie_zh-CN/fonts\\NtkwGothicLatinDB24.rgf",
+            "/reverie/ui/startup.rsb",
+            "/reverie/fonts\\NtkwGothicDB16.rgf",
+            "/reverie/textures\\txCommonDialog.dds",
+            "/reverie_exField/textures\\txCommonDialog.dds",
+            "/reverie_en-US/textures\\txCommonDialog.dds",
+        ];
+        let mut bad: Vec<String> = Vec::new();
+        for p in paths {
+            let all = read_all(p);
+            let sz = size_of(p);
+            match (&all, sz) {
+                (Some(d), Some(n)) if d.len() as u64 == n => {}
+                _ => {
+                    bad.push(format!(
+                        "{p}: read_all={:?} size_of={:?}",
+                        all.as_ref().map(|d| d.len()),
+                        sz
+                    ));
+                    continue;
+                }
+            }
+            let want = 4.min(all.as_ref().map(|d| d.len()).unwrap_or(0));
+            if read_range(p, 0, 4).map(|d| d.len()) != Some(want) {
+                bad.push(format!("{p}: read_range(0,4) 应返回 {want} 字节"));
+            }
+        }
+        assert!(bad.is_empty(), "启动资源解析失败:\n{}", bad.join("\n"));
+
+        // 归档分支: 游戏用 _2(fs_size) + xl(umg:// Range) 打开 /una/*.una
+        for name in ["zh-CN.una", "hiiragi.una", "natsukawa.una"] {
+            let vp = format!("/una/{name}");
+            let total = size_of(&vp).unwrap_or_else(|| panic!("size_of({vp}) 失败"));
+            assert!(total > 0, "{vp} 大小为 0");
+            assert_eq!(read_range(&vp, 0, 5).map(|d| d.len()), Some(5), "{vp} 头部读取失败");
+            assert_eq!(
+                read_range(&vp, total - 8, 8).map(|d| d.len()),
+                Some(8),
+                "{vp} 尾部(归档表)读取失败"
+            );
+            assert_eq!(
+                read_range(&vp, total, 8).map(|d| d.len()),
+                Some(0),
+                "{vp} 越界读取应返回空而不是 None"
+            );
+        }
+
+        std::env::remove_var("UMIGURI_ASSETS_DIR");
+        std::env::remove_var("UMIGURI_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // 打包态归档的**每一个条目**都必须能按虚拟路径逐字节还原出来。
+    // 只比长度不够: 解密(P2 XOR 表)/gzip(M2)/条目偏移任何一步错位都会得到"长度对但内容错"的数据。
+    // 数据源用 assets/(解密解包态), 期望值就是磁盘上的原文。
+    #[test]
+    #[ignore = "需要 dist/game_data 打包产物, 手动运行"]
+    fn packed_reverie_entries_roundtrip() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let packed = root.join("dist/game_data/core/una");
+        if !packed.join("hiiragi.una").is_file() {
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("umg_round_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("core/una")).unwrap();
+        for name in ["hiiragi.una", "zh-CN.una", "natsukawa.una", "sakuragi.una"] {
+            std::fs::copy(packed.join(name), tmp.join("core/una").join(name)).unwrap();
+        }
+        std::env::set_var("UMIGURI_ASSETS_DIR", &tmp);
+        std::env::set_var("UMIGURI_DATA_DIR", tmp.join("user"));
+
+        // (归档, 虚拟前缀, 回退链)
+        let packs: [(&str, &str, &[&str]); 4] = [
+            ("hiiragi.una", "/reverie/", &["/reverie/"]),
+            (
+                "zh-CN.una",
+                "/reverie_zh-CN/",
+                &["/reverie_zh-CN/", "/reverie/", "/reverie_exField/"],
+            ),
+            (
+                "natsukawa.una",
+                "/reverie_exField/",
+                &["/reverie_exField/", "/reverie/", "/reverie_zh-CN/"],
+            ),
+            (
+                "sakuragi.una",
+                "/reverie_en-US/",
+                &["/reverie_en-US/", "/reverie/"],
+            ),
+        ];
+
+        // 收集各包条目: name -> 原文字节(与 build/pack-assets.mjs 同样的双扩展名还原规则)
+        let mut files: Vec<(String, String, Vec<u8>)> = Vec::new(); // (pack, name, bytes)
+        for (pack, _, _) in packs {
+            let dir = root.join("assets/core/una").join(pack);
+            for rel in walk_files(&dir) {
+                let norm = rel.split(std::path::MAIN_SEPARATOR).collect::<Vec<_>>().join("/");
+                let name = match norm.rfind('.') {
+                    Some(i) if i > 0 => norm[..i].to_string(),
+                    _ => norm.clone(),
+                };
+                files.push((pack.to_string(), name, std::fs::read(dir.join(&rel)).unwrap()));
+            }
+        }
+        assert_eq!(files.len(), 308, "assets 条目数不对");
+
+        let find = |name: &str, chain: &[&str]| -> Option<Vec<u8>> {
+            for p in chain {
+                if let Some((_, _, b)) = files.iter().find(|(pk, n, _)| n == name && packs.iter().any(|(pk2, pref, _)| pk2 == pk && pref == p)) {
+                    return Some(b.clone());
+                }
+            }
+            None
+        };
+
+        let mut bad: Vec<String> = Vec::new();
+        let mut checked = 0;
+        for (_, prefix, chain) in packs {
+            for (_, name, _) in files.iter().filter(|(pk, _, _)| {
+                packs.iter().any(|(pk2, pref, _)| pk2 == pk && *pref == prefix)
+            }) {
+                let want = match find(name, chain) {
+                    Some(w) => w,
+                    None => continue,
+                };
+                let got = read_all(&format!("{prefix}{name}"));
+                checked += 1;
+                match got {
+                    Some(g) if g == want => {}
+                    Some(g) => bad.push(format!(
+                        "{prefix}{name}: 内容不一致 (得到 {} 字节, 期望 {} 字节)",
+                        g.len(),
+                        want.len()
+                    )),
+                    None => bad.push(format!("{prefix}{name}: 读不到(404)")),
+                }
+            }
+        }
+        // 反斜杠形式(RSB 里的名字)也要能读到同一份内容
+        for p in [
+            "/reverie/textures\\txCommonDialog.dds",
+            "/reverie/fonts\\NtkwGothicDB16.rgf",
+            "/reverie_zh-CN/textures\\txCommonDialog.dds",
+            "/reverie_zh-CN/fonts\\NtkwGothicLatinDB24.rgf",
+        ] {
+            if read_all(p).is_none() {
+                bad.push(format!("{p}: 反斜杠路径读不到"));
+            }
+        }
+
+        std::env::remove_var("UMIGURI_ASSETS_DIR");
+        std::env::remove_var("UMIGURI_DATA_DIR");
+        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(checked > 300, "只检查了 {checked} 个条目, 测试自身有问题");
+        assert!(bad.is_empty(), "归档条目往返失败:\n{}", bad.join("\n"));
+    }
+
+    fn walk_files(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![PathBuf::from(dir)];
+        while let Some(d) = stack.pop() {
+            let rd = match std::fs::read_dir(&d) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if let Ok(rel) = p.strip_prefix(dir) {
+                    out.push(rel.to_string_lossy().to_string());
+                }
+            }
+        }
+        out.sort();
+        out
+    }}
