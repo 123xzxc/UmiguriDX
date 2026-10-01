@@ -28,7 +28,13 @@ export function createLanguagePackages(scope) {
     } catch (v_i_35093) {}
   }
   function umgMiss(v_t_35092) {
-    if (v_g_35080b++ < 24) umgLog("读不到: " + JSON.stringify(v_t_35092) + " archive=" + (v_l_35081 ? 1 : 0));
+    // 限量打印: 启动期会大量探测确实缺失的可选资源(如三个包都没有的 txDummyChara_*.dds),
+    // 不限量会刷屏。24 条在「同时缺字体/字符串表」时会早早用光, 反而看不到真正关键的
+    // 那几条 —— 提到 200 并单独放行字体/字符串表/启动 UI 这几类。
+    var v_imp_35092 = /^(fonts|tables)\/|^ui\//.test(String(v_t_35092));
+    if (v_imp_35092 || v_g_35080b++ < 200) {
+      umgLog("读不到: " + JSON.stringify(v_t_35092) + " archive=" + (v_l_35081 ? 1 : 0) + (v_imp_35092 ? " [关键]" : ""));
+    }
   }
   // RSB / 归档表里的资源名分隔符是反斜杠(textures\txLogoMono.dds): 两条读取分支都必须
   // 归一化成 '/' —— 否则宿主预取缓存(bundle/目录预取都用 '/')全部判为未命中, 而在
@@ -40,7 +46,16 @@ export function createLanguagePackages(scope) {
     if (v_o_35080) if (v_l_35081) {
       var v_e_35095,
         v_n_35096 = umgSlash(v_i_35093);
-      for (const v_s_35098 of v_c_35084) if (v_s_35098.E4(v_n_35096)) return (v_e_35095 = await v_s_35098.pi(v_n_35096)) ? void v_t_35094(v_e_35095.buffer) : void v_t_35094(null);
+      for (const v_s_35098 of v_c_35084) if (v_s_35098.E4(v_n_35096)) {
+        v_e_35095 = await v_s_35098.pi(v_n_35096);
+        // 归档里有这个条目, 但取出来是空的: 说明问题在归档条目本身(解密/gzip/长度),
+        // 而不是「资源不存在」。这种情况不会走 umgMiss, 以前完全看不出来。
+        if (!v_e_35095 || !v_e_35095.byteLength) {
+          if (v_g_35080b++ < 24) umgLog("归档条目为空: " + JSON.stringify(v_i_35093));
+          return void v_t_35094(null);
+        }
+        return void v_t_35094(v_e_35095.buffer);
+      }
     } else {
       var v_n_35096 = umgSlash(v_i_35093);
       for (const v_a_35099 of v_u_35085) {

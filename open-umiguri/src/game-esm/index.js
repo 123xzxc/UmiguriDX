@@ -5015,11 +5015,22 @@ scope.v_Po_28121.prototype = {
   // 这里直接返回 null: 调用方(d5 的 Id 循环 / h5)本来就按「拿不到就跳过」处理。
   if (!v_t_34451 || !v_t_34451.byteLength) {
     if (!v_t_34451) console.log("[umg][rsb] A3(null): 资源读不到, 跳过");
+    else console.log("[umg][rsb] A3(空): 资源长度为 0, 跳过");
     return null;
   }
   var v_e_34452 = new scope.v_Po_28121(v_t_34451);
-  if (809912146 !== v_e_34452.v3()) return null;
-  if (1 !== v_e_34452.u3()) return null;
+  // 魔数/版本不符也会返回 null: 旧代码在这两条静默, 排查时只看到「读到了但没生成表」,
+  // 无法判断是数据坏还是资源取错。带上长度与前 8 字节, 便于和归档里的原始条目比对。
+  var v_mg_34452b = v_e_34452.v3();
+  if (809912146 !== v_mg_34452b) {
+    console.log("[umg][rsb] A3(坏数据): 魔数=" + v_mg_34452b + " len=" + v_t_34451.byteLength);
+    return null;
+  }
+  var v_vr_34452b = v_e_34452.u3();
+  if (1 !== v_vr_34452b) {
+    console.log("[umg][rsb] A3(坏数据): 版本=" + v_vr_34452b + " len=" + v_t_34451.byteLength);
+    return null;
+  }
   var v_n_34453,
     v_i_34454,
     v_r_34455 = new scope.v_Mo_28124(),
@@ -6282,7 +6293,11 @@ scope.Framebuffer.prototype = {
           console.log("[umg][rsb] Id 表资源读不到, 跳过: " + JSON.stringify(v_i_35036));
           continue;
         }
-        this.Id[v_i_35036] = await scope.v_Mo_28124.A3(v_e_35037);
+        var v_tb_35037b = await scope.v_Mo_28124.A3(v_e_35037);
+        // 拿到数据但 A3 返回 null = 表数据本身有问题(魔数/版本/长度)。带上资源名, 否则
+        // 只能看到一条没有上下文的 A3(坏数据) 日志, 无法判断是哪个表。
+        if (!v_tb_35037b) console.log("[umg][rsb] Id 表解析失败: " + JSON.stringify(v_i_35036) + " len=" + v_e_35037.byteLength);
+        this.Id[v_i_35036] = v_tb_35037b;
       }
       scope.v_Me_28078(v_t_35035);
     }, v_t_35038 => {
@@ -6313,6 +6328,9 @@ scope.Framebuffer.prototype = {
   h5: async function (v_t_35047) {
     var v_i_35048,
       v_e_35049 = await scope.languagePackages.ck("fonts/Debug.rgf");
+    // 字体是文字能否显示的前提: 读不到或表解析失败都会让整个界面没有字。这里必打日志
+    // (不像 lp 的读不到会限流), 便于一眼区分「资源没读到」与「读到了但解析失败」。
+    console.log("[umg][font] Debug.rgf " + (v_e_35049 ? "len=" + v_e_35049.byteLength : "读不到"));
     v_e_35049 ? (this.Ph.i5 = await scope.v_Mo_28124.A3(v_e_35049), (v_e_35049 = new scope.v_Fo_28127()).W3(this.Dh), v_e_35049.O3(this.Vh.D_), v_e_35049.J3(this.Vh.$h), (v_i_35048 = new scope.v_Do_28126()).R_ = 0, v_i_35048.P_ = 127, v_i_35048.D_ = this.Ph.i5, v_i_35048.G_ = 1, v_i_35048.j_ = 1, v_e_35049.K3(v_i_35048), this.Ph.n5 = v_e_35049, v_t_35047(!0)) : v_t_35047(!1);
   }
 }, scope.Renderer.prototype = {
