@@ -113,9 +113,9 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 
 - [x] 服务端项目(账号/资料/记录/排行榜/房间/实时分数)
 - [x] 服务端冒烟测试(32 项断言)
-- [ ] 宿主 `fetch_json` 命令
-- [ ] 客户端 account 模块(登录/注册)
-- [ ] 用户名与称号接入
+- [x] 宿主 `fetch_json` 命令(ureq + `online` 桥)
+- [x] 客户端 account 模块(登录/注册/资料/房间/实时分数, 已注册进 `index.js`)
+- [x] 用户名与称号接入(`applyProfileToHandshake` 写 `handshake.rm.om`)
 - [ ] 对局上报接入
 - [ ] `openCoop` 房间入口
 - [ ] `coopLobby` 房间态与实时对手分数
