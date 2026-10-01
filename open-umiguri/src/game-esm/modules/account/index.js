@@ -85,25 +85,28 @@ export function createAccount(scope) {
     return account.token;
   }
 
-  async function register(username, password) {
-    const r = await request('POST', '/auth/register', { username, password }, false);
-    if (!r.ok) return r;
-    setToken(r.data.token);
-    account.profile = r.data.user;
-    account.online = true;
-    applyProfileToHandshake();
-    log('注册成功: ' + r.data.user.username);
-    return r;
+  // 卡号: 20 位、E004 开头。容忍空格与连字符, 统一大写(与服务端规范化一致)。
+  function normalizeCard(value) {
+    return String(value || '').replace(/[\s-]/g, '').toUpperCase();
   }
 
-  async function login(username, password) {
-    const r = await request('POST', '/auth/login', { username, password }, false);
+  function isValidCard(value) {
+    return /^E004[0-9]{16}$/.test(normalizeCard(value));
+  }
+
+  // 登录。游戏端只认卡号, 没有密码 —— 卡号由网页面板注册, 一张卡绑一个账号。
+  async function loginWithCard(cardId) {
+    const card = normalizeCard(cardId);
+    if (!isValidCard(card)) {
+      return { ok: false, status: 0, data: null, error: '卡号格式不对: 应为 20 位、E004 开头' };
+    }
+    const r = await request('POST', '/auth/card', { cardId: card }, false);
     if (!r.ok) return r;
     setToken(r.data.token);
     account.profile = r.data.user;
     account.online = true;
     applyProfileToHandshake();
-    log('登录成功: ' + r.data.user.username);
+    log('卡号登录成功: ' + r.data.user.username);
     return r;
   }
 
@@ -120,7 +123,7 @@ export function createAccount(scope) {
   async function restoreSession() {
     restoreToken();
     if (!account.token) return false;
-    const r = await request('GET', '/profile');
+    const r = await request('GET', '/auth/whoami');
     if (!r.ok) {
       log('本地登录态已失效: ' + r.error);
       setToken(null);
@@ -331,8 +334,9 @@ export function createAccount(scope) {
     getBase,
     setBase,
     request,
-    register,
-    login,
+    loginWithCard,
+    normalizeCard,
+    isValidCard,
     logout,
     restoreSession,
     updateProfile,

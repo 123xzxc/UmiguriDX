@@ -29,6 +29,7 @@ import { tryInvoke } from './core/invoke.js';
 import { rebuildLaneMap } from './input/lanes.js';
 import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
+import { installLauncher } from './keypanel/launcher.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
 // 见 tauri#14707 / #15216。因此凡会触发 invoke 的初始化(含游戏启动)一律推迟到
@@ -215,6 +216,18 @@ whenPageReady(async () => {
   try {
     await prefetchTree('/textures', caps);
   } catch (e) {}
+
+  // 联机登录: 必须在 loadMain() 之前完成 —— 游戏启动时就会读握手里的玩家名,
+  // 而登录结果要在此之前把服务端 displayName 写进 __umgForceProfile。
+  // 用户在界面上点「跳过」或本地 token 校验通过时立即返回, 不阻塞单机启动。
+  try {
+    const onlineCfg = await installLauncher();
+    if (onlineCfg && onlineCfg.user) {
+      diagLog('[umg][online] 已登录: ' + onlineCfg.user.displayName);
+    }
+  } catch (e) {
+    diagLog('[umg][online] 登录器异常: ' + ((e && e.message) || e));
+  }
 
   loadMain(); // 解密并执行游戏前端(main.js.enc)
   setTimeout(() => diagLog('[umg][app] document.title=' + document.title), 5000);

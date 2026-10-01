@@ -31,11 +31,6 @@ export function assertUsername(value) {
   return s;
 }
 
-export function assertPassword(value) {
-  const s = assertString(value, "password", { min: 8, max: 128 });
-  return s;
-}
-
 // 游戏内显示名: 与 nameEntry 一致, 最长 8 字符(全角也按 1 字符计)
 export function assertDisplayName(value) {
   if (typeof value !== "string") throw badRequest("displayName 必须是字符串", "invalid_display_name");

@@ -1,10 +1,24 @@
-// 冒烟测试: 覆盖账号/资料/记录/排行榜/房间全链路。
-import { startServer } from "../src/server.js";
+// 冒烟测试: 覆盖 卡号登录 / TOTP 面板 / 资料 / 记录 / 排行榜 / 房间 全链路。
+//
+// 注意: src/config.js 在模块加载时读取 process.env, 因此环境变量必须在
+// import 之前设好 —— 这要求 ESM 的动态 import, 不能写静态 import。
+
+// 每次跑都用干净的库: 否则上次失败的残留数据会让「建号」直接撞 username_taken,
+// 表现为与代码无关的假失败。
+import { rmSync } from "node:fs";
+rmSync("./data/smoke.db", { force: true });
+rmSync("./data/smoke.db-shm", { force: true });
+rmSync("./data/smoke.db-wal", { force: true });
+
+process.env.UMIGURI_DB = "./data/smoke.db";
+process.env.UMIGURI_JWT_SECRET = "smoke-secret";
+process.env.UMIGURI_ADMIN_TOKEN = "smoke-admin";
+
+const { startServer } = await import("../src/server.js");
+const { totp } = await import("../src/lib/totp.js");
 
 const PORT = 8791;
 const BASE = `http://127.0.0.1:${PORT}`;
-process.env.UMIGURI_DB = "./data/smoke.db";
-process.env.UMIGURI_JWT_SECRET = "smoke-secret";
 
 const server = startServer({ port: PORT, host: "127.0.0.1" });
 await new Promise((r) => server.once("listening", r));
@@ -15,40 +29,98 @@ function check(name, cond, extra = "") {
   else { fail++; console.log("  FAIL " + name + (extra ? "  -> " + extra : "")); }
 }
 
-async function call(method, path, body, token) {
+async function call(method, path, body, token, cookie) {
   const res = await fetch(BASE + path, {
     method,
     headers: {
       "content-type": "application/json",
-      ...(token ? { authorization: "Bearer " + token } : {})
+      ...(token ? { authorization: "Bearer " + token } : {}),
+      ...(cookie ? { cookie } : {})
     },
     body: body === undefined ? undefined : JSON.stringify(body)
   });
-  return { status: res.status, body: await res.json() };
+  const setCookie = res.headers.get("set-cookie");
+  return { status: res.status, body: await res.json(), setCookie };
+}
+
+// 管理员建号 -> 拿 TOTP 密钥
+async function adminCreateUser(username) {
+  const r = await call("POST", "/admin/users", { username }, "smoke-admin");
+  return r;
 }
 
 console.log("== 健康检查 ==");
 const health = await call("GET", "/health");
 check("health 200", health.status === 200);
 
-console.log("== 账号 ==");
-const reg = await call("POST", "/auth/register", { username: "player1", password: "password123" });
-check("注册成功", reg.status === 200 && reg.body.ok, JSON.stringify(reg.body));
-const token = reg.body.token;
-check("返回 token", typeof token === "string" && token.split(".").length === 3);
-check("返回用户", reg.body.user?.username === "player1");
+console.log("== 管理员建号 ==");
+const created = await adminCreateUser("player1");
+check("建号成功", created.status === 200 && created.body.ok, JSON.stringify(created.body));
+check("返回 TOTP 密钥", typeof created.body.totpSecret === "string" && created.body.totpSecret.length >= 16);
+check("返回 otpauth 链接", String(created.body.otpauthUrl).startsWith("otpauth://totp/"));
+const secret1 = created.body.totpSecret;
+const userId1 = created.body.user.id;
 
-const dup = await call("POST", "/auth/register", { username: "player1", password: "password123" });
+const dup = await adminCreateUser("player1");
 check("重复用户名 409", dup.status === 409, String(dup.status));
 
-const login = await call("POST", "/auth/login", { username: "player1", password: "password123" });
-check("登录成功", login.status === 200 && login.body.ok);
+const noAdmin = await call("POST", "/admin/users", { username: "hacker" });
+check("无管理员令牌 400", noAdmin.status === 400, String(noAdmin.status));
 
-const badLogin = await call("POST", "/auth/login", { username: "player1", password: "wrongpassword" });
-check("错误口令 401", badLogin.status === 401, String(badLogin.status));
+const badAdmin = await call("POST", "/admin/users", { username: "hacker" }, "wrong-token");
+check("错误管理员令牌 400", badAdmin.status === 400, String(badAdmin.status));
 
-const noAuth = await call("GET", "/profile");
-check("无 token 访问 /profile 401", noAuth.status === 401, String(noAuth.status));
+console.log("== 面板: TOTP 登录(无密码) ==");
+const badCode = await call("POST", "/panel/login", { username: "player1", code: "000000" });
+check("错误验证码 401", badCode.status === 401, String(badCode.status));
+
+const login = await call("POST", "/panel/login", { username: "player1", code: totp(secret1) });
+check("TOTP 登录成功", login.status === 200 && login.body.ok, JSON.stringify(login.body));
+check("下发面板 cookie", typeof login.setCookie === "string" && login.setCookie.includes("umg_panel="));
+const cookie1 = login.setCookie.split(";")[0];
+
+const me = await call("GET", "/panel/me", undefined, undefined, cookie1);
+check("面板会话有效", me.status === 200 && me.body.user?.username === "player1");
+
+const meNoCookie = await call("GET", "/panel/me");
+check("无 cookie 未登录", meNoCookie.status === 200 && meNoCookie.body.user === null);
+
+const totpCode = await call("POST", "/panel/login", { username: "player1", code: "abcdef" });
+check("非数字验证码 401", totpCode.status === 401, String(totpCode.status));
+
+console.log("== 发卡与卡号登录 ==");
+const issued = await call("POST", "/admin/cards", { userId: userId1, label: "主力卡" }, "smoke-admin");
+check("管理员发卡", issued.status === 200 && /^E004[0-9]{16}$/.test(issued.body.card.cardId), JSON.stringify(issued.body));
+const card1 = issued.body.card.cardId;
+
+const cardLogin = await call("POST", "/auth/card", { cardId: card1 });
+check("卡号登录成功", cardLogin.status === 200 && cardLogin.body.ok, JSON.stringify(cardLogin.body));
+const token = cardLogin.body.token;
+check("返回游戏端 token", typeof token === "string" && token.split(".").length === 3);
+check("卡号登录即无密码", cardLogin.body.user.username === "player1");
+
+const cardSpaced = await call("POST", "/auth/card", { cardId: card1.toLowerCase() });
+check("小写卡号也能登录(规范化)", cardSpaced.status === 200, String(cardSpaced.status));
+
+const badCard = await call("POST", "/auth/card", { cardId: "E0040000000000000000" });
+check("未注册卡号 404", badCard.status === 404, String(badCard.status));
+
+const malformed = await call("POST", "/auth/card", { cardId: "12345" });
+check("非法卡号 400", malformed.status === 400, String(malformed.status));
+
+console.log("== 卡号自助管理 ==");
+const myCards = await call("GET", "/cards", undefined, token);
+check("列出自己的卡", myCards.status === 200 && myCards.body.cards.length === 1);
+
+const selfIssued = await call("POST", "/cards", { label: "备用卡" }, token);
+check("自助发卡", selfIssued.status === 200 && selfIssued.body.card.cardId !== card1);
+const card2 = selfIssued.body.card.cardId;
+
+const revoked = await call("DELETE", `/cards/${card2}`, undefined, token);
+check("吊销卡号", revoked.status === 200 && revoked.body.card.revokedAt > 0);
+
+const revokedLogin = await call("POST", "/auth/card", { cardId: card2 });
+check("已吊销卡号不能登录", revokedLogin.status === 404, String(revokedLogin.status));
 
 console.log("== 资料: 用户名与称号 ==");
 const prof = await call("GET", "/profile", undefined, token);
@@ -58,38 +130,52 @@ const upd = await call("PATCH", "/profile", { displayName: "ＵＭＩＧＵＲ�
 check("改显示名/称号牌", upd.status === 200 && upd.body.user.displayName === "ＵＭＩＧＵＲＩ"
   && upd.body.user.nameplate === 3 && upd.body.user.title === 7, JSON.stringify(upd.body));
 
-const tooLong = await call("PATCH", "/profile", { displayName: "123456789" }, token);
-check("超过 8 字符被拒 400", tooLong.status === 400, String(tooLong.status));
+const panelUpd = await call("PATCH", "/panel/profile", { displayName: "PANELNM" }, undefined, cookie1);
+check("面板改资料", panelUpd.status === 200 && panelUpd.body.user.displayName === "PANELNM", JSON.stringify(panelUpd.body));
 
-console.log("== 游玩记录 ==");
-const play1 = await call("POST", "/plays", {
-  musicId: "music_0001", difficulty: 3, score: 998500, rank: "SSS",
-  clear: 1, combo: 1200, judgeCrit: 1100, judgeMiss: 2
-}, token);
-check("上报成绩", play1.status === 200 && play1.body.isBest === true, JSON.stringify(play1.body));
+// 8 字符上限(与游戏 nameEntry 一致): 超长必须被拒, 否则游戏里名字会被截断
+const tooLong = await call("PATCH", "/panel/profile", { displayName: "123456789" }, undefined, cookie1);
+check("显示名超 8 字符 400", tooLong.status === 400, String(tooLong.status));
 
-const play2 = await call("POST", "/plays", {
-  musicId: "music_0001", difficulty: 3, score: 981000, rank: "SS"
+const noCookiePatch = await call("PATCH", "/panel/profile", { displayName: "X" });
+check("无 cookie 改资料 401", noCookiePatch.status === 401, String(noCookiePatch.status));
+
+console.log("== 面板页面 ==");
+const page = await fetch(BASE + "/panel");
+const html = await page.text();
+check("面板页面 200", page.status === 200);
+check("面板含登录表单", html.includes("panel/login") && html.includes("UMIGURI"));
+
+console.log("== 游玩记录与排行榜 ==");
+const play = await call("POST", "/plays", {
+  musicId: "music001", difficulty: 3, score: 1008000, rank: "sss", clear: 1, combo: 1200
 }, token);
-check("低分不覆盖最佳", play2.status === 200 && play2.body.isBest === false);
+check("上报游玩", play.status === 200, JSON.stringify(play.body));
+
+const badPlay = await call("POST", "/plays", { musicId: "music001", difficulty: 3, score: 99999999 }, token);
+check("分数越界 400", badPlay.status === 400, String(badPlay.status));
 
 const plays = await call("GET", "/plays", undefined, token);
-check("列出记录", plays.status === 200 && plays.body.plays.length === 2, JSON.stringify(plays.body.plays?.length));
+check("列出游玩", plays.status === 200 && plays.body.plays.length === 1);
 
 const bests = await call("GET", "/plays/best", undefined, token);
-check("个人最佳只留最高分", bests.body.bests.length === 1 && bests.body.bests[0].score === 998500);
+check("个人最佳", bests.status === 200 && bests.body.bests.length === 1);
 
-console.log("== 排行榜 ==");
-const reg2 = await call("POST", "/auth/register", { username: "player2", password: "password123" });
-const token2 = reg2.body.token;
-await call("POST", "/plays", { musicId: "music_0001", difficulty: 3, score: 1005000, rank: "SSS+" }, token2);
-
-const lb = await call("GET", "/leaderboard?musicId=music_0001&difficulty=3");
-check("单曲榜按分数降序", lb.status === 200 && lb.body.entries.length === 2
-  && lb.body.entries[0].displayName === "player2", JSON.stringify(lb.body.entries));
+const board = await call("GET", "/leaderboard?musicId=music001&difficulty=3");
+check("曲目排行榜", board.status === 200 && board.body.entries.length === 1 && board.body.entries[0].score === 1008000);
 
 const total = await call("GET", "/leaderboard");
-check("总榜可用", total.status === 200 && Array.isArray(total.body.total));
+check("总排行榜", total.status === 200 && Array.isArray(total.body.total));
+
+// player2: 房间测试用
+const created2 = await adminCreateUser("player2");
+const secret2 = created2.body.totpSecret;
+const cardLogin2 = await (async () => {
+  const c = await call("POST", "/admin/cards", { userId: created2.body.user.id }, "smoke-admin");
+  return call("POST", "/auth/card", { cardId: c.body.card.cardId });
+})();
+const token2 = cardLogin2.body.token;
+check("player2 卡号登录", cardLogin2.status === 200);
 
 console.log("== 房间 ==");
 const room = await call("POST", "/rooms", {}, token);
@@ -101,8 +187,8 @@ check("房主在房间内", room.body.room?.players?.length === 1 && room.body.r
 const join = await call("POST", `/rooms/${code}/join`, {}, token2);
 check("玩家2 加入", join.status === 200 && join.body.room.players.length === 2, JSON.stringify(join.body));
 
-const badCode = await call("POST", "/rooms/abc/join", {}, token2);
-check("非法房间号 400", badCode.status === 400, String(badCode.status));
+const badRoomCode = await call("POST", "/rooms/abc/join", {}, token2);
+check("非法房间号 400", badRoomCode.status === 400, String(badRoomCode.status));
 
 const missing = await call("POST", "/rooms/999999/join", {}, token2);
 check("不存在的房间 404", missing.status === 404, String(missing.status));
@@ -141,8 +227,10 @@ const outsider = await call("GET", `/rooms/${code}/state`, undefined, undefined)
 check("未认证读房间 401", outsider.status === 401, String(outsider.status));
 
 console.log("== 离开与房主移交 ==");
-const reg3 = await call("POST", "/auth/register", { username: "player3", password: "password123" });
-await call("POST", `/rooms/${code}/join`, {}, reg3.body.token);
+const created3 = await adminCreateUser("player3");
+const card3 = await call("POST", "/admin/cards", { userId: created3.body.user.id }, "smoke-admin");
+const token3 = (await call("POST", "/auth/card", { cardId: card3.body.card.cardId })).body.token;
+await call("POST", `/rooms/${code}/join`, {}, token3);
 const leave = await call("POST", `/rooms/${code}/leave`, {}, token);
 check("房主离开并移交", leave.status === 200 && leave.body.result.dissolved === false
   && typeof leave.body.result.newHostId === "number", JSON.stringify(leave.body));

@@ -111,11 +111,28 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 
 ## 五、当前进度
 
-- [x] 服务端项目(账号/资料/记录/排行榜/房间/实时分数)
-- [x] 服务端冒烟测试(32 项断言)
+- [x] 服务端项目(资料/记录/排行榜/房间/实时分数)
 - [x] 宿主 `fetch_json` 命令(ureq + `online` 桥)
-- [x] 客户端 account 模块(登录/注册/资料/房间/实时分数, 已注册进 `index.js`)
+- [x] 客户端 account 模块(卡号登录/资料/房间/实时分数, 已注册进 `index.js`)
 - [x] 用户名与称号接入(`applyProfileToHandshake` 写 `handshake.rm.om`)
+- [x] **认证改型: 全程无密码** —— 游戏端卡号登录, 面板 TOTP
+- [x] 服务端卡号体系(`cards` 表 + 发卡/吊销 + 反查)
+- [x] 网页面板 `/panel`(单文件 HTML, TOTP 登录, 发卡/改资料/看记录)
+- [x] 管理接口(`/admin/*`, Bearer 管理员令牌, 建号 + TOTP 重置)
+- [x] 宿主启动器(`keypanel/launcher.js`, 游戏加载前输卡号登录)
+- [x] 服务端冒烟测试(53 项断言, 覆盖卡号/TOTP/面板/房间全链路)
 - [ ] 对局上报接入
 - [ ] `openCoop` 房间入口
 - [ ] `coopLobby` 房间态与实时对手分数
+- [ ] 游戏内卡号输入界面(现在只有启动器, 游戏中无法换号)
+
+### 认证模型速查
+
+| 入口 | 凭据 | 落地位置 |
+| --- | --- | --- |
+| 游戏端 | AIME 卡号(20 位, `E004` 开头) | `POST /auth/card` -> JWT |
+| 网页面板 | 用户名 + TOTP | `POST /panel/login` -> HttpOnly cookie |
+| 管理 | Bearer 管理员令牌 | `/admin/*` |
+
+不开放自助注册: 账号由管理员建, TOTP 密钥随建号返回(`otpauthUrl`)。
+游戏端启动器写在 `localStorage.umg_online_token`, 游戏内 account 模块读它恢复会话。

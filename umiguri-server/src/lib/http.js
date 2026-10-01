@@ -123,7 +123,10 @@ export function createRouter() {
             const body = req.method === "GET" || req.method === "DELETE"
               ? Object.fromEntries(url.searchParams)
               : await readJson(req);
-            const result = await route.handler({ params, body, query: url.searchParams, auth, req });
+            // res 也交给处理器: 面板要写 set-cookie、/panel 要直接吐 HTML,
+// 这两类响应没法走统一的 sendOk 包装。
+            const result = await route.handler({ params, body, query: url.searchParams, auth, req, res });
+            if (res.headersSent) return;
             if (result === undefined) sendOk(res);
             else sendOk(res, result);
           } catch (err) {

@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { openDb, closeDb } from "./lib/db.js";
 import { buildRouter, authResolver } from "./routes/index.js";
 import { reapIdleRooms } from "./rooms.js";
+import { randomBytes } from "node:crypto";
 
 export function createApp() {
   openDb();
@@ -23,6 +24,17 @@ export function startServer({ port = config.port, host = config.host } = {}) {
       console.log(`[umg-server] 数据库 ${config.dbPath}`);
       if (config.jwtSecret === "umiguri-dev-secret-change-me") {
         console.warn("[umg-server] 警告: 正在使用默认 JWT 密钥, 生产部署请设置 UMIGURI_JWT_SECRET");
+      }
+      // 管理员令牌: 未配置时随机生成并打印。它是建号/发卡的唯一凭据,
+      // 每次重启都换一把(除非设了 UMIGURI_ADMIN_TOKEN), 避免默认值被猜到。
+      if (!config.adminToken) {
+        config.adminToken = randomBytes(24).toString("base64url");
+        console.log("[umg-server] 管理员令牌(本次运行有效): " + config.adminToken);
+        console.log("[umg-server] 建号示例:");
+        console.log("  curl -X POST http://127.0.0.1:" + shown + "/admin/users" +
+          " -H \"content-type: application/json\"" +
+          " -H \"authorization: Bearer " + config.adminToken + "\"" +
+          " -d '{\"username\":\"yourname\"}'");
       }
     }
   });

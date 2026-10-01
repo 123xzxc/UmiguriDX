@@ -39,5 +39,16 @@ export const config = {
   // 用户名规则: 与游戏 nameEntry 一致, 最长 8 字符
   nameMaxLength: 8,
 
+  // ---- 网页面板 ----
+  // 面板会话: 与游戏端 JWT 分开的两套凭据(见 panel.js)。
+  panelSessionTtlSeconds: int("UMIGURI_PANEL_TTL", 60 * 60 * 24 * 7),
+  panelCookieName: env.UMIGURI_PANEL_COOKIE || "umg_panel",
+  // 本地 http 调试时不能带 Secure, 否则浏览器不收 cookie。生产 https 请置 1。
+  panelCookieSecure: env.UMIGURI_PANEL_SECURE === "1",
+
+  // 管理员令牌: 用于创建账号 / 重置验证器 / 发卡。
+  // 留空时启动阶段随机生成并打印到控制台(见 server.js), 不落盘。
+  adminToken: env.UMIGURI_ADMIN_TOKEN || "",
+
   logLevel: env.UMIGURI_LOG_LEVEL || "info"
 };

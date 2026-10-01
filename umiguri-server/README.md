@@ -1,6 +1,23 @@
 # umiguri-server
 
-UMIGURI 联机服务端: 账号登录、游玩记录、用户名与称号、房间联机(含实时对手分数)。
+UMIGURI 联机服务端: 卡号登录、游玩记录、用户名与称号、房间联机(含实时对手分数),
+外加一个网页面板用于注册卡号与改资料。
+
+## 认证模型(重要)
+
+全程无密码, 两套凭据各管一边:
+
+| 入口 | 凭据 | 说明 |
+| --- | --- | --- |
+| 游戏端 | **AIME 卡号** | 20 位、`E004` 开头。输卡号即登录, 无密码 |
+| 网页面板 `/panel` | **用户名 + TOTP** | Google 验证器等 TOTP App 的 6 位验证码 |
+| `/admin/*` | **管理员令牌** | Bearer `UMIGURI_ADMIN_TOKEN`, 用于建号/发卡 |
+
+账号由管理员创建, **不开放自助注册** —— TOTP 密钥若能自助申请, 谁都能绑上任意用户名。
+创建后管理员拿到 `otpauth://` 链接, 用户扫码即完成绑定。
+
+卡号是「凭据之一」: 一张卡绑一个账号, 一个账号可持多张卡。卡号泄露等于账号被盗,
+因此支持吊销(`DELETE /cards/:cardId`), 换卡时旧卡立即失效。
 
 零外部依赖 —— 只用 Node 内置模块(`node:http` / `node:sqlite` / `node:crypto`),
 `npm start` 即可运行。
@@ -30,6 +47,10 @@ npm start
 | `UMIGURI_JWT_SECRET` | `umiguri-dev-secret-change-me` | **生产必须覆盖** |
 | `UMIGURI_JWT_TTL` | `2592000`(30 天) | token 有效期(秒) |
 | `UMIGURI_ROOM_TTL` | `600` | 空房间保留秒数 |
+| `UMIGURI_ADMIN_TOKEN` | 空(启动时随机生成并打印) | 管理员令牌 |
+| `UMIGURI_PANEL_TTL` | `604800`(7 天) | 面板会话有效期(秒) |
+| `UMIGURI_PANEL_COOKIE` | `umg_panel` | 面板会话 cookie 名 |
+| `UMIGURI_PANEL_SECURE` | `0` | 置 1 给 cookie 加 `Secure`(生产 https 用) |
 | `UMIGURI_LOG_LEVEL` | `info` | `info` / `silent` |
 
 ## 测试
@@ -38,23 +59,73 @@ npm start
 node test/smoke.mjs
 ```
 
-覆盖账号、资料、记录、排行榜、房间与实时分数同步的 32 项断言。
+覆盖 卡号登录 / TOTP 面板 / 发卡与吊销 / 资料 / 记录 / 排行榜 / 房间与实时分数同步 的 53 项断言。
+测试每次使用干净的 `data/smoke.db`, 可重复运行。
 
 ## API
 
 除 `/health`、`/auth/*`、`GET /leaderboard` 外, 全部需要
 `Authorization: Bearer <token>`。
 
-### 账号
+### 游戏端登录(卡号)
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/auth/register` | `{username, password}` -> `{token, user}` |
-| POST | `/auth/login` | `{username, password}` -> `{token, user}` |
+| POST | `/auth/card` | `{cardId}` -> `{token, user, card}` |
+| GET | `/auth/whoami` | 校验当前 token 并返回用户 |
 
-用户名 3~24 位(字母数字下划线连字符), 口令至少 8 位。
-口令用 scrypt 哈希存储, token 为 HS256 JWT。
+卡号 20 位、`E004` 开头。服务端先规范化(去空格/连字符、转大写),
+所以输入 `e004 xxxx ...` 也能登录。token 为 HS256 JWT。
 
+### 卡号管理(需游戏端登录态)
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/cards` | 列出自己的卡号 |
+| POST | `/cards` | `{cardId?, label?}` 发卡(省略 cardId 则随机生成) |
+| DELETE | `/cards/:cardId` | 吊销卡号 |
+
+### 网页面板 `/panel`
+
+浏览器打开 `/panel` 即是界面(单文件, 无前端构建)。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/panel` | 面板 HTML |
+| POST | `/panel/login` | `{username, code}` —— TOTP 登录, 下发 HttpOnly cookie |
+| POST | `/panel/logout` | 退出 |
+| GET | `/panel/me` | 面板会话 + 自己的卡号(未登录返回 `{user: null}`) |
+| PATCH | `/panel/profile` | 改显示名/称号 |
+| POST | `/panel/cards` | 面板内发卡 |
+| DELETE | `/panel/cards/:cardId` | 面板内吊销 |
+| GET | `/panel/plays` / `/panel/bests` | 游玩记录 / 个人最佳 |
+
+面板会话用 `HttpOnly` + `SameSite=Strict` cookie, 与游戏端 JWT 完全分开 ——
+网页会话泄露不会连带游戏端身份。
+
+### 管理接口(Bearer 管理员令牌)
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/admin/users` | `{username}` -> `{user, totpSecret, otpauthUrl}` |
+| POST | `/admin/users/:id/totp-reset` | 换一把新 TOTP 密钥 |
+| POST | `/admin/cards` | `{userId, cardId?, label?}` 给指定账号发卡 |
+
+`otpauthUrl` 交给用户用 Google 验证器扫码即可。密钥在用户首次用有效验证码
+登录前处于「未确认」状态, 该状态下登录会被拒绝 —— 避免建号后被人抢绑。
+
+### 建号流程示例
+
+```bash
+# 1. 拿管理员令牌: 未设 UMIGURI_ADMIN_TOKEN 时, 启动日志里会打印
+# 2. 建号, 记下返回的 otpauthUrl
+curl -X POST http://127.0.0.1:8787/admin/users \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer $ADMIN_TOKEN" \
+  -d '{"username":"yourname"}'
+# 3. 把 otpauthUrl 变成二维码让用户扫(或直接手输密钥)
+# 4. 用户用验证器里的 6 位码登录 /panel, 自行生成卡号
+```
 ### 个人资料(用户名与称号)
 
 | 方法 | 路径 | 说明 |
