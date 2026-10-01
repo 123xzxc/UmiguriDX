@@ -1,0 +1,17 @@
+{
+  "name": "umiguri-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UMIGURI 联机服务端: 账号 / 游玩记录 / 用户名与称号 / 房间联机",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}
