@@ -5019,6 +5019,8 @@ scope.v_Po_28121.prototype = {
     return null;
   }
   var v_e_34452 = new scope.v_Po_28121(v_t_34451);
+  // 构建标记: 便于一眼判断「运行的包是否包含本轮修复」。只在 A3 首次调用时打一次。
+  if (!scope.__umgA3Mark) { scope.__umgA3Mark = 1; console.log("[umg][build] A3 修复版 build=1ec8e8b+ (L3 偏移定位已启用)"); }
   // 整个解析体兜一层: 越界会抛 "二进制读取越界", 但调用方只看到「表解析失败」。
   // 带上在哪个阶段炸的, 避免再去猜是头部还是字形表。
   try {
