@@ -144,6 +144,23 @@ pub fn build_led_frame(payload: &[u8], order: LedOrder) -> Option<[u8; 96]> {
     Some(led)
 }
 
+/// UMIGURI SetLED 载荷尾部的「侧灯/AIR 灯」: 3 组 RGB(共 9 字节, 偏移 94)。
+///
+/// Affine 手台的 AIR 灯整条只有一个颜色, 取第 1 组作为它的颜色。
+pub fn air_led_of(payload: &[u8], order: LedOrder) -> Option<[u8; 3]> {
+    // 亮度(1) + 16 档(48) + 15 间隔(45) + 3 组侧灯(9) = 103 字节
+    if payload.len() < 103 {
+        return None;
+    }
+    let brightness = payload[0] as u16;
+    let scale = |v: u8| ((v as u16 * brightness) / 255) as u8;
+    Some(order.apply([
+        scale(payload[94]),
+        scale(payload[95]),
+        scale(payload[96]),
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,5 +197,20 @@ mod tests {
         assert_eq!(&f[30 * 3..30 * 3 + 3], &[0, 255, 0]);
         // 间隔灯 0 = 格子 29; 绿 (0,255,0) -> [0,0,255]
         assert_eq!(&f[29 * 3..29 * 3 + 3], &[0, 0, 255]);
+    }
+
+    #[test]
+    fn air_led_uses_first_side_color() {
+        let mut p = vec![0u8; 103];
+        p[0] = 255;
+        p[94] = 255; // 侧灯 0 = 纯红
+        assert_eq!(air_led_of(&p, LedOrder::Rgb), Some([255, 0, 0]));
+        // 默认字节序是 brg: 红 -> [0,255,0]
+        assert_eq!(air_led_of(&p, LedOrder::default()), Some([0, 255, 0]));
+        // 亮度 128 时减半
+        p[0] = 128;
+        assert_eq!(air_led_of(&p, LedOrder::Rgb), Some([128, 0, 0]));
+        // 载荷不足(只有 94 字节的旧格式)则不发 AIR 灯
+        assert_eq!(air_led_of(&p[..94], LedOrder::Rgb), None);
     }
 }

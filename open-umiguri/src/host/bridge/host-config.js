@@ -81,7 +81,8 @@ export async function loadHostConfig() {
     updateUrl: pick(game, 'system.update_url', null),
     // 实验: 'auto'(=屏幕尺寸) | '宽x高' | 不填(默认 1920x1080 设计空间)
     designResolution: pick(game, 'system.design_resolution', null),
-    // 手台/灯光(hardware): { autoConnect?: bool, ledOrder?: 'rgb'|'bgr'|..., port?: string }
+    // 手台/灯光(hardware): { autoConnect?: bool, ledOrder?: 'rgb'|'bgr'|..., port?: string,
+    //                        protocol?: 'auto'|'chu2board'|'affine' }
     hardware: pick(game, 'hardware', null),
   };
   return hostConfig;

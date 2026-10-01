@@ -99,6 +99,40 @@ open-umiguri/
 | `protocol.rs` | URI 解析、MIME 推断 |
 | `handshake.rs` | `handshake` / `diag` |
 | `android.rs` | Android 数据根、APK Asset 只读、权限、重启 |
+| `hardware/*` | 手台与灯光: `serial.rs`(串口 + 协议识别)、`protocol.rs`(chu2board 0xB0/0xAF/0xB1/0xB2)、`affine.rs`(Affine_IO / 官方滑块板帧协议)、`mapping.rs`(档位↔灯光映射)、`led_server.rs`(UMIGURI LED WebSocket 服务端) |
+
+## 手台(串口控制器)与灯光
+
+两种固件都支持,连接时逐个端口自动识别(先 chu2board 握手,再 Affine 探测):
+
+| 协议 | 手台 | 识别方式 |
+|---|---|---|
+| `chu2board` | chu2board 固件: 单字节命令(0xB0 握手 / 0xAF 问 API / 0xB1 读输入 / 0xB2 灯光),主机轮询 | API 版本(0x11)与握手都有响应 |
+| `affine` | Affine_IO 手台([QHPaeek/Affine_IO](https://github.com/QHPaeek/Affine_IO)): 官方滑块板帧协议 `FF cmd nbytes payload chk`(0xFD 转义、整帧字节和为 0),主机发一次 `AUTO_SCAN_START` 后设备主动推「32 压力 + 1 天键位图」 | 开扫描后 400ms 内收到 `AUTO_SCAN` 帧 |
+
+`/config/game.json` 里的可选配置(全在顶层 `hardware` 段,不写则自动):
+
+```json
+"hardware": {
+  "autoConnect": true,
+  "port": "/dev/cu.usbmodem103",
+  "protocol": "auto",
+  "ledOrder": "brg"
+}
+```
+
+- `autoConnect`: 启动时自动探测并连接(桌面默认开,移动端默认关)。
+- `port`: 固定串口名(Windows `COM3`、macOS `/dev/cu.usbmodem*`);留空则遍历所有串口自动探测。
+- `protocol`: `auto`(默认)/ `chu2board` / `affine`,探测不到时可强制指定。
+- `ledOrder`: 灯光字节序 `rgb|bgr|grb|brg|gbr|rbg`(默认 `brg`,即 3 字节按 设备 B,R,G 解释)。
+
+行为:
+
+- 输入不走键位映射:Rust 端把 38 个档位(32 触摸 + 6 air)直接写进 `window.__umgLanes`,有变化才通知。
+- 灯光:游戏自带 `ledOutput` 连 `ws://localhost:<led_controller.port>`(默认 8090),
+  宿主把 SetLED 载荷转成手台灯光帧;Affine 手台还额外驱动整条 AIR(侧)灯(自定义命令 0x07)。
+- 帧格式与官方参考实现一致(segatools `board/slider-frame.c`),帧内的 `0xFF`/`0xFD` 按规范转义。
+- 排查:日志里 `[umg][hw] 手台已连接: <端口> (<协议>)`;`window.umgHardware.status()` 可查当前协议。
 
 ## 构建与运行
 

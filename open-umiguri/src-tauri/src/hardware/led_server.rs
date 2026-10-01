@@ -1,7 +1,8 @@
 //! UMIGURI LED 服务端。移植自 chu2board/src/umiguri.rs。
 //!
 //! UMIGURI 作为 **WebSocket 客户端** 连 `ws://localhost:<led_controller.port>`(默认 8090),
-//! 本模块接收其 LED 数据后转成手台串口的 0xB2 帧(96 字节 = 32 格 RGB)驱动灯光。
+//! 本模块接收其 LED 数据后转成手台的灯光帧(96 字节 = 32 格 RGB)写串口:
+//! chu2board 用 0xB2 帧, Affine_IO 用官方滑块板的 SET_LED 帧(另可驱动 AIR 灯)。
 //!
 //! 协议: packet = [Version(0x01)][Command][PayloadLength][Payload]
 //!   0x10 SetLED / 0x11 Initialize / 0x19 Ready / 0x12 Ping / 0x1A Pong
@@ -10,8 +11,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::hardware::mapping::LedOrder;
+use crate::hardware::mapping::{air_led_of, LedOrder};
 use crate::hardware::serial::SharedConn;
+use crate::hardware::Kind;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use imp::start;
@@ -22,6 +24,7 @@ pub fn start(
     _running: Arc<AtomicBool>,
     _conn: SharedConn,
     _order: Arc<Mutex<LedOrder>>,
+    _kind: Arc<Mutex<Kind>>,
     _client_connected: Arc<AtomicBool>,
 ) -> anyhow::Result<Option<JoinHandle<()>>> {
     Ok(None)
@@ -53,6 +56,7 @@ mod imp {
         running: Arc<AtomicBool>,
         conn: SharedConn,
         order: Arc<Mutex<LedOrder>>,
+        kind: Arc<Mutex<Kind>>,
         client_connected: Arc<AtomicBool>,
     ) -> Result<Option<JoinHandle<()>>> {
         let listener = TcpListener::bind(addr).with_context(|| format!("灯光服务端绑定失败: {addr}"))?;
@@ -69,8 +73,11 @@ mod imp {
                             let order = Arc::clone(&order);
                             let running = Arc::clone(&running);
                             let cc = Arc::clone(&client_connected);
+                            let kind = Arc::clone(&kind);
                             thread::spawn(move || {
-                                if let Err(e) = handle_client(stream, &conn, &order, &running, &cc) {
+                                if let Err(e) =
+                                    handle_client(stream, &conn, &order, &kind, &running, &cc)
+                                {
                                     eprintln!("[umg][hw] LED 客户端断开: {e:#}");
                                 }
                                 cc.store(false, Ordering::Relaxed);
@@ -94,6 +101,7 @@ mod imp {
         stream: TcpStream,
         conn: &SharedConn,
         order: &Arc<Mutex<LedOrder>>,
+        kind: &Arc<Mutex<Kind>>,
         running: &Arc<AtomicBool>,
         client_connected: &Arc<AtomicBool>,
     ) -> Result<()> {
@@ -102,6 +110,7 @@ mod imp {
         client_connected.store(true, Ordering::Relaxed);
         eprintln!("[umg][hw] UMIGURI LED 客户端已连接");
         let mut first_led = true;
+        let mut last_air: Option<[u8; 3]> = None;
         while running.load(Ordering::Relaxed) {
             let msg = ws.read().context("读取 WebSocket 失败")?;
             match msg {
@@ -132,12 +141,13 @@ mod imp {
                                 first_led = false;
                                 let has = conn.lock().unwrap().is_some();
                                 eprintln!(
-                                    "[umg][hw] 收到 SetLED(len={}), 手台串口: {}",
+                                    "[umg][hw] 收到 SetLED(len={}), 手台串口: {} ({})",
                                     payload.len(),
-                                    if has { "已连接" } else { "未连接(无法驱动灯光)" }
+                                    if has { "已连接" } else { "未连接(无法驱动灯光)" },
+                                    kind.lock().unwrap().as_str()
                                 );
                             }
-                            apply_led(payload, conn, order);
+                            apply_led(payload, conn, order, *kind.lock().unwrap(), &mut last_air);
                         }
                         CMD_REQUEST_SERVER_INFO => {
                             ws.send(Message::Binary(build_server_info())).ok();
@@ -167,14 +177,41 @@ mod imp {
         out
     }
 
-    /// 把 SetLED 载荷转成 32 格 RGB 并写串口
-    fn apply_led(payload: &[u8], conn: &SharedConn, order: &Arc<Mutex<LedOrder>>) {
+    /// 把 SetLED 载荷转成 32 格 RGB 并按协议写串口。
+    ///
+    /// Affine 手台额外支持一条 AIR(侧)灯: 整条灯只有一个颜色, 取游戏载荷里
+    /// 第 1 组侧灯的颜色, 只在颜色变化时才发。
+    fn apply_led(
+        payload: &[u8],
+        conn: &SharedConn,
+        order: &Arc<Mutex<LedOrder>>,
+        kind: Kind,
+        last_air: &mut Option<[u8; 3]>,
+    ) {
         let o = *order.lock().unwrap();
+        let air = if kind == Kind::Affine {
+            air_led_of(payload, o)
+        } else {
+            None
+        };
         let Some(frame) = build_led_frame(payload, o) else {
             return;
         };
         if let Some(c) = conn.lock().unwrap().as_ref() {
-            let _ = c.write_led(&frame);
+            match kind {
+                Kind::Chu2Board => {
+                    let _ = c.write_led(&frame);
+                }
+                Kind::Affine => {
+                    let _ = c.write_led_affine(&frame);
+                    if air.is_some() && air != *last_air {
+                        *last_air = air;
+                        if let Some(rgb) = air {
+                            let _ = c.write_air_led_affine(rgb);
+                        }
+                    }
+                }
+            }
         }
     }
 }
