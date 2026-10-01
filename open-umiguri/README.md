@@ -82,6 +82,7 @@ open-umiguri/
 | `bridge/native-input.js` | `kbd*` / `di8Kbd*` / 串口桩 |
 | `platform/gestures.js` | 禁缩放/滑动 |
 | `platform/textures-dxt.js` | DXT 软解(iOS 缺 S3TC 时) |
+| `platform/compression-stream.js` | Compression/DecompressionStream 兜底(WebKit < 16.4 缺该 API, 否则归档解压失败 -> 启动黑屏) |
 | `platform/storage-access.js` | 「所有文件访问」权限 UI |
 | `platform/window-drag.js` | 拖动暂停 RAF |
 | `loader/decrypt-loader.js` | 解密并执行 `main.js.enc` |
@@ -91,8 +92,10 @@ open-umiguri/
 | 文件 | 职责 |
 |---|---|
 | `lib.rs` | 应用入口、窗口、`umg://` 协议注册、命令表 |
-| `paths.rs` | 数据根、`PATH_MAP`、虚拟路径归一化、磁盘→APK 解析 |
+| `paths.rs` | 数据根、`PATH_MAP`、虚拟路径归一化、磁盘→APK→归档解析 |
 | `fs.rs` | `fs_list/fs_file/fs_size/fs_read/fs_write/debug_probe` |
+| `bundle.rs` | 子树批量读取(`fs_bundle_tree`)与子树签名(曲库缓存失效判断) |
+| `archive.rs` | 归档: 解包目录按需合成字节(dev) + 打包态 `.una/.arc` **文件**内条目读取(release/Android) |
 | `protocol.rs` | URI 解析、MIME 推断 |
 | `handshake.rs` | `handshake` / `diag` |
 | `android.rs` | Android 数据根、APK Asset 只读、权限、重启 |

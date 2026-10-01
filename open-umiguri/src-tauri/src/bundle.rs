@@ -7,9 +7,7 @@
 // 返回格式(小端, 原始二进制, 不走 base64):
 //   u32 count
 //   repeat: u16 pathLen, path(utf8, 以 '/' 开头), u32 dataLen, data
-use std::collections::HashSet;
-
-use crate::paths::{apk_list, apk_size, disk_roots, read_all, resolve_src, size_of, vpath_to_rel, Src};
+use crate::paths::{dir_entries, read_all, resolve_src, size_of, vpath_to_rel, Src};
 
 // 默认跳过: 归档/加密包(走 rangeFile 流式读, 且体积大)与音频(播放时按需读)
 const SKIP_EXT: &[&str] = &[
@@ -26,38 +24,18 @@ fn skipped(name: &str) -> bool {
     name.starts_with('.') || SKIP_EXT.contains(&ext_of(name).as_str())
 }
 
-// 列出 vpath 目录下的条目: (name, is_file)。合并磁盘可写层与 APK 资产。
+// 列出 vpath 目录下的条目: (name, is_file)。
+// 合并磁盘可写层、APK 资产与打包态归档内部(见 paths::dir_entries; 打包版 /reverie*
+// 落在 core/una/*.una 里, 没有这一层语言包子树会是被列成空的)。
 // 注意: PATH_MAP 的前缀带尾斜杠("music/" -> "data/music/"), 目录路径必须补 "/" 才能命中。
 fn list_dir(vpath: &str) -> Vec<(String, bool)> {
     let with_slash = format!("{}/", vpath.trim_end_matches('/'));
     let dir_rel = vpath_to_rel(&with_slash);
-    let mut out: Vec<(String, bool)> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    for root in disk_roots() {
-        if let Ok(entries) = std::fs::read_dir(root.join(&dir_rel)) {
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
-                out.push((name, is_file));
-            }
-        }
-    }
-    for name in apk_list(&dir_rel) {
-        if seen.contains(&name) {
-            continue;
-        }
-        let child = if dir_rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{dir_rel}/{name}")
-        };
-        let is_file = apk_size(&child).is_some();
-        out.push((name, is_file));
-    }
-    out
+    dir_entries(&dir_rel)
+        .0
+        .into_iter()
+        .map(|(name, is_file, _)| (name, is_file))
+        .collect()
 }
 
 struct Collector {

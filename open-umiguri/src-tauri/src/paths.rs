@@ -34,6 +34,9 @@ pub enum Src {
     // 归档合成: 磁盘上是「解包目录」(.una/.arc 目录), 读取时按需合成归档字节。
     // dev 用: assets/ 保持解密解包态, 只有 release/Android 才预打包。
     Synth { dir: PathBuf, p2: u8 },
+    // 打包态归档内部条目: 磁盘(或 APK)上是 .una/.arc **文件**, 读取时从归档里取出该
+    // 条目并解密。release / Android 用(dist/game_data 里 core/una/*.una 就是这种)。
+    ArchiveEntry { archive: String, name: String, p2: u8 },
 }
 
 // 可写层根目录(存档/配置写入处)。优先级:
@@ -224,6 +227,22 @@ pub fn rel_candidates(vpath: &str) -> Vec<String> {
     out
 }
 
+// rel 落在某个 .una/.arc 文件内部时, 拆成 (归档 rel, 归档内相对路径):
+//   core/una/hiiragi.una/_VERSION -> ("core/una/hiiragi.una", "_VERSION")
+//   core/una/hiiragi.una/ui/      -> ("core/una/hiiragi.una", "ui/")
+// 归档文件本身(以 .una/.arc 结尾且后面没有路径段)返回 None。
+fn split_archive(rel: &str) -> Option<(&str, &str)> {
+    let mut at = 0usize;
+    while let Some(i) = rel[at..].find('/') {
+        let seg_end = at + i;
+        if crate::archive::archive_p2(&rel[at..seg_end]).is_some() {
+            return Some((&rel[..seg_end], &rel[seg_end + 1..]));
+        }
+        at = seg_end + 1;
+    }
+    None
+}
+
 // 解析顺序: 可写层 -> 只读资源 -> APK assets。
 // 注意: 覆盖层在重装后可能残留旧 uid 拥有的文件(不可读),
 // 因此磁盘候选必须是「确实可读的文件」, 否则继续回退。
@@ -251,6 +270,24 @@ pub fn resolve_src(vpath: &str) -> Option<Src> {
             }
             continue; // 各根里该归档目录都为空: 试下一个候选(.ext.ext / .txt)
         }
+        // 打包态: rel 落在某个 .una/.arc **文件**内部。dev 的「解包目录」由上面的
+        // Synth 分支处理, 这里处理 release / Android 的预打包产物 —— 缺了它,
+        // /reverie* (语言包 / UI 资源) 在打包版里全部 404, 表现为启动黑屏无反应。
+        if let Some((archive_rel, name)) = split_archive(&rel) {
+            if !name.is_empty() {
+                if let Some(p2) = crate::archive::archive_p2(archive_rel) {
+                    if let Some(arc) = crate::archive::open_archive(archive_rel, p2) {
+                        if arc.contains(name) {
+                            return Some(Src::ArchiveEntry {
+                                archive: archive_rel.to_string(),
+                                name: name.to_string(),
+                                p2,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         for root in &roots {
             let disk = root.join(&rel);
             if disk.exists() {
@@ -274,6 +311,9 @@ pub fn read_all(vpath: &str) -> Option<Vec<u8>> {
             apk_read_range(&rel, 0, len)
         }
         Src::Synth { dir, p2 } => crate::archive::dir_archive(&dir, p2).map(|b| b.as_ref().clone()),
+        Src::ArchiveEntry { archive, name, p2 } => crate::archive::open_archive(&archive, p2)
+            .and_then(|arc| arc.read(&name))
+            .map(|b| b.as_ref().clone()),
     }
 }
 
@@ -283,6 +323,9 @@ pub fn size_of(vpath: &str) -> Option<u64> {
         Src::Disk(p) => std::fs::metadata(p).ok().map(|m| m.len()),
         Src::Apk(rel) => apk_size(&rel),
         Src::Synth { dir, p2 } => crate::archive::dir_archive(&dir, p2).map(|b| b.len() as u64),
+        Src::ArchiveEntry { archive, name, p2 } => {
+            crate::archive::open_archive(&archive, p2).and_then(|arc| arc.size(&name))
+        }
     }
 }
 
@@ -314,7 +357,80 @@ pub fn read_range(vpath: &str, offset: u64, size: usize) -> Option<Vec<u8>> {
             let end = (start + size).min(bytes.len());
             Some(bytes[start..end].to_vec())
         }
+        Src::ArchiveEntry { archive, name, p2 } => {
+            let data = crate::archive::open_archive(&archive, p2)?.read(&name)?;
+            let start = (offset as usize).min(data.len());
+            let end = (start + size).min(data.len());
+            Some(data[start..end].to_vec())
+        }
     }
+}
+
+// 列出「真实相对路径」目录 dir_rel(以 '/' 结尾)的直接子项: (名字, 是否文件, 大小)。
+// 合并 可写层 / 只读资源 / APK assets / 打包态归档内部; 第二个返回值表示目录是否存在。
+// 归档内部(core/una/hiiragi.una/ 这种)磁盘上没有对应目录, 只有归档条目 ——
+// 打包版必须靠这里才能列出 /reverie* 的资源, 否则语言包预取为空。
+pub fn dir_entries(dir_rel: &str) -> (Vec<(String, bool, u64)>, bool) {
+    use std::collections::HashSet;
+    let mut out: Vec<(String, bool, u64)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut exists = false;
+    for root in disk_roots() {
+        if let Ok(entries) = std::fs::read_dir(root.join(dir_rel)) {
+            exists = true;
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
+                let size = if is_file {
+                    e.metadata().map(|m| m.len()).unwrap_or(0)
+                } else {
+                    0
+                };
+                out.push((name, is_file, size));
+            }
+        }
+    }
+    for name in apk_list(dir_rel) {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        let child = if dir_rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{dir_rel}/{name}")
+        };
+        let is_file = apk_size(&child).is_some();
+        let size = if is_file {
+            apk_size(&child).unwrap_or(0)
+        } else {
+            0
+        };
+        exists = true;
+        out.push((name, is_file, size));
+    }
+    if let Some((archive_rel, prefix)) = split_archive(dir_rel) {
+        if let Some(p2) = crate::archive::archive_p2(archive_rel) {
+            if let Some(arc) = crate::archive::open_archive(archive_rel, p2) {
+                let children = arc.children(prefix);
+                exists = exists || !children.is_empty();
+                for (name, is_file) in children {
+                    if !seen.insert(name.clone()) {
+                        continue;
+                    }
+                    let size = if is_file {
+                        arc.size(&format!("{prefix}{name}")).unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    out.push((name, is_file, size));
+                }
+            }
+        }
+    }
+    (out, exists)
 }
 
 // 在可写层里复刻只读资源的目录骨架(**仅目录, 不含文件**)。
@@ -403,6 +519,86 @@ pub fn ensure_config_files(data_root: &Path, asset_root: &Path) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // .una/.arc 内部路径拆分(打包态归档的识别)
+    #[test]
+    fn archive_rel_split() {
+        assert_eq!(
+            split_archive("core/una/hiiragi.una/_VERSION"),
+            Some(("core/una/hiiragi.una", "_VERSION"))
+        );
+        assert_eq!(
+            split_archive("core/una/hiiragi.una/ui/"),
+            Some(("core/una/hiiragi.una", "ui/"))
+        );
+        // 归档文件本身 / 普通路径都不算「归档内部」
+        assert_eq!(split_archive("core/una/hiiragi.una"), None);
+        assert_eq!(split_archive("data/characters/touhou/000/data.json"), None);
+        assert_eq!(
+            split_archive("data/characters/touhou/000/data.arc/voice.ogg"),
+            Some(("data/characters/touhou/000/data.arc", "voice.ogg"))
+        );
+    }
+
+    // 端到端(手动): 打包态 .una 文件下 /reverie* 必须能解析与列举 ——
+    // 打包版启动黑屏就是这里 404 导致的。跑法:
+    //   cargo test --offline -- --ignored --test-threads=1
+    #[test]
+    #[ignore = "需要 dist/game_data 打包产物, 手动运行"]
+    fn packed_bundle_reverie_end_to_end() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let packed = root.join("dist/game_data/core/una");
+        if !packed.join("hiiragi.una").is_file() {
+            return;
+        }
+        // 最小资源根: 只有打包态 .una 文件(模拟 release 打包产物)
+        let tmp = std::env::temp_dir().join(format!("umg_packed_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("core/una")).unwrap();
+        for name in ["hiiragi.una", "zh-CN.una"] {
+            std::fs::copy(packed.join(name), tmp.join("core/una").join(name)).unwrap();
+        }
+        std::env::set_var("UMIGURI_ASSETS_DIR", &tmp);
+        std::env::set_var("UMIGURI_DATA_DIR", tmp.join("user"));
+
+        // /reverie/_VERSION 就是用户日志里 404 的那个: 探测失败 -> 游戏放弃归档分支 -> 黑屏
+        let want = std::fs::read(root.join("assets/core/una/hiiragi.una/_VERSION.txt")).unwrap();
+        assert_eq!(
+            read_all("/reverie/_VERSION").as_deref(),
+            Some(want.as_slice())
+        );
+        assert_eq!(size_of("/reverie/_VERSION"), Some(want.len() as u64));
+        let head = want.len().min(2);
+        assert_eq!(
+            read_range("/reverie/_VERSION", 0, 2).as_deref(),
+            Some(&want[..head])
+        );
+        let zh = std::fs::read(root.join("assets/core/una/zh-CN.una/_VERSION.txt")).unwrap();
+        assert_eq!(
+            read_all("/reverie_zh-CN/_VERSION").as_deref(),
+            Some(zh.as_slice())
+        );
+        // /reverie* 的目录列举(打包版否则是空的 -> 语言包预取全空)
+        let (entries, exists) = dir_entries("core/una/hiiragi.una/");
+        assert!(exists, "归档根目录列举失败");
+        assert!(
+            entries.iter().any(|(n, f, _)| !*f && n == "ui"),
+            "缺少 ui/ 子目录: {entries:?}"
+        );
+        assert!(
+            entries.iter().any(|(n, f, _)| *f && n == "_VERSION"),
+            "缺少 _VERSION 条目: {entries:?}"
+        );
+        let (sub, _) = dir_entries("core/una/hiiragi.una/textures/");
+        assert!(!sub.is_empty(), "textures/ 子目录为空");
+        assert!(
+            sub.iter().all(|(_, f, _)| *f),
+            "子目录里应只有文件: {sub:?}"
+        );
+    }
 
     // 首次启动把 config/*.json 复制到可写层, 且不覆盖已有文件。
     #[test]

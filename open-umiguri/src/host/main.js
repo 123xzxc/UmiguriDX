@@ -17,6 +17,7 @@ import { setupHardware } from './bridge/hardware.js';
 import { installTextureFilter } from './platform/texture-filter.js';
 import { setupWindowDragPause } from './platform/window-drag.js';
 import { installDxtSoftwareDecode } from './platform/textures-dxt.js';
+import { installCompressionStreams } from './platform/compression-stream.js';
 import { setupStorageAccessCheck } from './platform/storage-access.js';
 import { installLayoutDiagnostics } from './platform/layout.js';
 import { installDevtoolsShortcut } from './platform/devtools.js';
@@ -40,6 +41,9 @@ function whenPageReady(fn) {
 
 // ---- 立即执行(不触发 IPC) ----
 diagLog('[umg][nav] ' + location.href); // 埋点: 区分 ?fix(修复模式)/?errDisp(错误页)
+// 归档文件体是 gzip(M2=true), 游戏用 DecompressionStream 解; WebKit < 16.4 缺该 API 会静默读不到
+// 资源 -> 启动黑屏。必须在 loadMain() 之前装好(原生存在时不生效)。
+installCompressionStreams();
 preventViewportGestures(); // 手势/页面缩放拦截
 installKeyboardListeners(); // 键盘监听
 installPanelShortcut(); // 虚拟按键面板快捷键

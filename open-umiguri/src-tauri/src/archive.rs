@@ -8,7 +8,7 @@
 //         u32le@5 = MAGIC ^ (4 - tableOffset)
 //   表项: u32le(off)^t, u32le(off+4)^e, u8(off+8)^(255&n), name[i]^(255&r)
 //   文件体: 数据 -> [P2=2 补 0 字节] -> [M2 gzip(前补 0 字节)] -> Na 逆 -> XOR 表
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
@@ -324,9 +324,721 @@ pub fn dir_archive(dir: &Path, p2: u8) -> Option<Arc<Vec<u8>>> {
     Some(bytes)
 }
 
+// ---- 打包态归档读取(.una/.arc 是真实文件) ----
+//
+// dev 走上面的 dir_archive(解包目录 -> 现场合成归档字节); 打包产物里 core/una/*.una 与
+// data/**/data.arc 是真实归档文件, 必须能按 vpath 取出内部条目 —— 否则 /reverie* 全部 404
+// (语言包与 UI 资源读不到) -> 打包版启动黑屏无反应。
+// 解密顺序与 tools/umg.cjs 的 readFileData 一致:
+//   XOR 表 -> Na -> [M2: gzip(去首字节)] -> [P2=2: 去首字节]
+
+// Na 正向(解密): plain[t] = cipher[t] ^ K1(t, v[t]) ^ ((117 & plain[t-1]) | (72 & cipher[t-1]))
+fn na(buf: &mut [u8]) {
+    let mut v: i32 = 250;
+    let mut e: u8 = 0;
+    let mut n: u8 = 0;
+    for t in 0..buf.len() {
+        let r = n;
+        n = buf[t];
+        buf[t] ^= k1_at(t, v as u8) ^ ((117 & r) | (72 & e));
+        v -= (t % 3) as i32;
+        if v < 0 {
+            v = 255;
+        }
+        e = buf[t];
+    }
+}
+
+// ---- DEFLATE(RFC1951)解码 ----
+// 发布归档全部 M2=true(pack-assets 用 zlib.gzipSync 真压缩), 因此必须自带 inflate:
+// 不引入新依赖, 与 src/host/platform/compression-stream.js 同一套实现(LSB-first, puff 结构)。
+#[rustfmt::skip]
+const LEN_BASE: [u16; 29] = [
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
+];
+#[rustfmt::skip]
+const LEN_EXTRA: [u8; 29] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+];
+#[rustfmt::skip]
+const DIST_BASE: [u16; 30] = [
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+];
+#[rustfmt::skip]
+const DIST_EXTRA: [u8; 30] = [
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
+];
+// 动态块里「码长码」的传输顺序(RFC1951 §3.2.7)
+const CL_ORDER: [usize; 19] = [
+    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+];
+// 单条目明文缓存上限: 超过它的条目每次重解, 避免大资源常驻内存。
+const PLAIN_CACHE_MAX: usize = 4 << 20;
+
+struct Huff {
+    counts: [u16; 16],
+    symbols: Vec<u16>,
+}
+
+// 规范 Huffman 表(与 JS buildHuffman 一致); 码长过订阅时返回 None
+fn build_huffman(lengths: &[u8]) -> Option<Huff> {
+    let mut counts = [0u16; 16];
+    for &l in lengths {
+        counts[(l as usize) & 15] += 1;
+    }
+    let mut left: i32 = 1;
+    for len in 1..16 {
+        left = (left << 1) - counts[len] as i32;
+        if left < 0 {
+            return None;
+        }
+    }
+    counts[0] = 0;
+    let mut offs = [0u16; 16];
+    for i in 1..16 {
+        offs[i] = offs[i - 1] + counts[i - 1];
+    }
+    let mut symbols = vec![0u16; lengths.len()];
+    for (i, &l) in lengths.iter().enumerate() {
+        if l != 0 && (l as usize) < 16 {
+            symbols[offs[l as usize] as usize] = i as u16;
+            offs[l as usize] += 1;
+        }
+    }
+    Some(Huff { counts, symbols })
+}
+
+// 固定 Huffman 表(块类型 1)
+fn fixed_trees() -> (Huff, Huff) {
+    let mut lit = [0u8; 288];
+    for (i, l) in lit.iter_mut().enumerate() {
+        *l = match i {
+            0..=143 => 8,
+            144..=255 => 9,
+            256..=279 => 7,
+            _ => 8,
+        };
+    }
+    (
+        build_huffman(&lit).expect("fixed lit"),
+        build_huffman(&[5u8; 30]).expect("fixed dist"),
+    )
+}
+
+struct BitReader<'a> {
+    src: &'a [u8],
+    pos: usize,
+    buf: u32,
+    cnt: u32,
+}
+
+impl<'a> BitReader<'a> {
+    fn new(src: &'a [u8], from: usize) -> Self {
+        BitReader {
+            src,
+            pos: from,
+            buf: 0,
+            cnt: 0,
+        }
+    }
+
+    // 取 need 位(LSB-first)
+    fn bits(&mut self, need: u32) -> Option<u32> {
+        if need == 0 {
+            return Some(0);
+        }
+        while self.cnt < need {
+            let b = *self.src.get(self.pos)? as u32;
+            self.pos += 1;
+            self.buf |= b << self.cnt;
+            self.cnt += 8;
+        }
+        let v = self.buf & ((1u32 << need) - 1);
+        self.buf >>= need;
+        self.cnt -= need;
+        Some(v)
+    }
+}
+
+fn decode_sym(br: &mut BitReader, t: &Huff) -> Option<u16> {
+    let mut code: i32 = 0;
+    let mut first: i32 = 0;
+    let mut index: i32 = 0;
+    for len in 1..16 {
+        code |= br.bits(1)? as i32;
+        let count = t.counts[len] as i32;
+        if code - count < first {
+            return t.symbols.get((index + (code - first)) as usize).copied();
+        }
+        index += count;
+        first = (first + count) << 1;
+        code <<= 1;
+    }
+    None
+}
+
+// 回溯复制(dist/count); 逐字节以支持自重叠
+fn copy_back(out: &mut Vec<u8>, dist: usize, count: usize) -> Option<()> {
+    if dist == 0 || dist > out.len() {
+        return None;
+    }
+    let start = out.len() - dist;
+    for i in 0..count {
+        let b = out[start + i];
+        out.push(b);
+    }
+    Some(())
+}
+
+fn inflate_block(br: &mut BitReader, lit: &Huff, dist: &Huff, out: &mut Vec<u8>) -> Option<()> {
+    loop {
+        let sym = decode_sym(br, lit)?;
+        if sym < 256 {
+            out.push(sym as u8);
+            continue;
+        }
+        if sym == 256 {
+            return Some(());
+        }
+        let li = (sym - 257) as usize;
+        if li >= LEN_BASE.len() {
+            return None;
+        }
+        let count = LEN_BASE[li] as usize + br.bits(LEN_EXTRA[li] as u32)? as usize;
+        let dsym = decode_sym(br, dist)? as usize;
+        if dsym >= DIST_BASE.len() {
+            return None;
+        }
+        let d = DIST_BASE[dsym] as usize + br.bits(DIST_EXTRA[dsym] as u32)? as usize;
+        copy_back(out, d, count)?;
+    }
+}
+
+// stored(未压缩)块: 先对齐到字节边界(位缓冲里整字节的输入退回)
+fn stored_block(br: &mut BitReader, out: &mut Vec<u8>) -> Option<()> {
+    let drop = br.cnt & 7;
+    if drop != 0 {
+        br.buf >>= drop;
+        br.cnt -= drop;
+    }
+    br.pos = br.pos.checked_sub((br.cnt >> 3) as usize)?;
+    br.buf = 0;
+    br.cnt = 0;
+    let n = *br.src.get(br.pos)? as usize | ((*br.src.get(br.pos + 1)? as usize) << 8);
+    let nn = *br.src.get(br.pos + 2)? as usize | ((*br.src.get(br.pos + 3)? as usize) << 8);
+    br.pos += 4;
+    if (n ^ 0xffff) != nn {
+        return None;
+    }
+    let end = br.pos.checked_add(n)?;
+    if end > br.src.len() {
+        return None;
+    }
+    out.extend_from_slice(&br.src[br.pos..end]);
+    br.pos = end;
+    Some(())
+}
+
+fn dynamic_block(br: &mut BitReader, out: &mut Vec<u8>) -> Option<()> {
+    let hlit = br.bits(5)? as usize + 257;
+    let hdist = br.bits(5)? as usize + 1;
+    let hclen = br.bits(4)? as usize + 4;
+    let mut cl = [0u8; 19];
+    for i in 0..hclen {
+        cl[CL_ORDER[i]] = br.bits(3)? as u8;
+    }
+    let cltree = build_huffman(&cl)?;
+    let total = hlit + hdist;
+    let mut lens = vec![0u8; total];
+    let mut i = 0usize;
+    while i < total {
+        let sym = decode_sym(br, &cltree)?;
+        if sym < 16 {
+            lens[i] = sym as u8;
+            i += 1;
+            continue;
+        }
+        let (prev, count) = match sym {
+            16 => {
+                if i == 0 {
+                    return None;
+                }
+                (lens[i - 1], 3 + br.bits(2)? as usize)
+            }
+            17 => (0u8, 3 + br.bits(3)? as usize),
+            _ => (0u8, 11 + br.bits(7)? as usize),
+        };
+        if i + count > total {
+            return None;
+        }
+        for _ in 0..count {
+            lens[i] = prev;
+            i += 1;
+        }
+    }
+    let lit = build_huffman(&lens[..hlit])?;
+    let dist = build_huffman(&lens[hlit..])?;
+    inflate_block(br, &lit, &dist, out)
+}
+
+// 裸 DEFLATE 流
+fn inflate_raw(src: &[u8], from: usize) -> Option<Vec<u8>> {
+    let mut br = BitReader::new(src, from);
+    let mut out: Vec<u8> = Vec::with_capacity(src.len().saturating_mul(3).max(256));
+    loop {
+        let last = br.bits(1)?;
+        match br.bits(2)? {
+            0 => stored_block(&mut br, &mut out)?,
+            1 => {
+                let (lit, dist) = fixed_trees();
+                inflate_block(&mut br, &lit, &dist, &mut out)?;
+            }
+            2 => dynamic_block(&mut br, &mut out)?,
+            _ => return None,
+        }
+        if last == 1 {
+            return Some(out);
+        }
+    }
+}
+
+// gzip 容器(RFC1952): 跳过可选字段后即为裸流
+fn gunzip(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 10 || data[0] != 0x1f || data[1] != 0x8b || data[2] != 8 {
+        return None;
+    }
+    let flg = data[3];
+    let mut p = 10usize;
+    if flg & 4 != 0 {
+        let n = *data.get(p)? as usize | ((*data.get(p + 1)? as usize) << 8);
+        p += 2 + n;
+    }
+    if flg & 8 != 0 {
+        while *data.get(p)? != 0 {
+            p += 1;
+        }
+        p += 1;
+    }
+    if flg & 16 != 0 {
+        while *data.get(p)? != 0 {
+            p += 1;
+        }
+        p += 1;
+    }
+    if flg & 2 != 0 {
+        p += 2;
+    }
+    if p > data.len() {
+        return None;
+    }
+    inflate_raw(data, p)
+}
+
+// ---- 归档对象 ----
+
+// 一个打包态归档(.una / .arc 文件)。只解尾部表, 条目按需解密/解压。
+pub struct Archive {
+    bytes: Vec<u8>,
+    p2: u8,
+    m2: bool,
+    // (名字, 数据区偏移 fileOffset, 加密体长度)
+    entries: Vec<(String, u64, u32)>,
+    index: HashMap<String, usize>,
+    plain: Mutex<HashMap<String, Arc<Vec<u8>>>>,
+    sizes: Mutex<HashMap<String, u64>>,
+}
+
+// 尾部表 -> 条目(字段按 rotr 2/3/5/3 解出, 名字逐字节解)
+fn decrypt_header(arc: &[u8]) -> Vec<(String, u64, u32)> {
+    let len = arc.len();
+    if len < 9 {
+        return Vec::new();
+    }
+    let magic = u32::from_le_bytes([arc[5], arc[6], arc[7], arc[8]]);
+    let table_offset = 4i64 - (MAGIC ^ magic) as i32 as i64;
+    if table_offset < 9 || table_offset as usize >= len {
+        return Vec::new();
+    }
+    let mut offset = table_offset as usize;
+    let mut t = SEED_T;
+    let mut e = SEED_E;
+    let mut n = SEED_N;
+    let mut r = SEED_R;
+    // (名字, fileOffset, fileSize, 表项起点)
+    let mut raw: Vec<(String, u64, u32, usize)> = Vec::new();
+    let mut limit = usize::MAX;
+    while offset + 9 <= len {
+        if offset >= limit {
+            break;
+        }
+        let pos = offset;
+        t = rotr(t, 2);
+        e = rotr(e, 3);
+        n = rotr(n, 5);
+        let file_offset = (u32::from_le_bytes([
+            arc[offset],
+            arc[offset + 1],
+            arc[offset + 2],
+            arc[offset + 3],
+        ]) ^ t) as u64;
+        let file_size = u32::from_le_bytes([
+            arc[offset + 4],
+            arc[offset + 5],
+            arc[offset + 6],
+            arc[offset + 7],
+        ]) ^ e;
+        let name_len = (arc[offset + 8] ^ (255 & n as u8)) as usize;
+        offset += 9;
+        let mut name = String::with_capacity(name_len);
+        for i in 0..name_len {
+            if offset + i >= len {
+                break;
+            }
+            r = rotr(r, 3);
+            name.push((arc[offset + i] ^ (255 & r as u8)) as char);
+        }
+        offset += name_len;
+        raw.push((name, file_offset, file_size, pos));
+        if limit == usize::MAX {
+            let data_start = file_offset as usize + HEADER;
+            if data_start > offset {
+                limit = data_start;
+            }
+        }
+    }
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    // 数据区在表之前时, 越过数据区起点的表项是脏数据(与 JS decryptHeader 同一过滤)
+    let first = raw[0].3;
+    let data_first = raw[0].1 as usize + HEADER < first;
+    raw.into_iter()
+        .filter(|(_, off, size, _)| {
+            let s = *off as usize + HEADER;
+            if *size == 0 || s + *size as usize > len {
+                return false;
+            }
+            !data_first || s + *size as usize <= first
+        })
+        .map(|(name, off, size, _)| (name, off, size))
+        .collect()
+}
+
+impl Archive {
+    // 解析归档(只解表, 不碰文件体)
+    pub fn parse(bytes: Vec<u8>, p2: u8) -> Option<Archive> {
+        if bytes.len() < 9 || bytes[4] & 2 == 0 {
+            return None; // R2=0: 没有尾部表, 无法按条目读
+        }
+        let entries = decrypt_header(&bytes);
+        if entries.is_empty() {
+            return None;
+        }
+        let mut index = HashMap::with_capacity(entries.len());
+        for (i, (name, _, _)) in entries.iter().enumerate() {
+            index.entry(name.clone()).or_insert(i);
+        }
+        Some(Archive {
+            m2: bytes[4] & 1 != 0,
+            bytes,
+            p2,
+            entries,
+            index,
+            plain: Mutex::new(HashMap::new()),
+            sizes: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.index.contains_key(name)
+    }
+
+    // 明文长度。M2 时读 gzip 尾部的 ISIZE —— 只解密(body)不 inflate, 比 read() 便宜。
+    pub fn size(&self, name: &str) -> Option<u64> {
+        if let Ok(map) = self.sizes.lock() {
+            if let Some(n) = map.get(name) {
+                return Some(*n);
+            }
+        }
+        let body = self.body(name)?;
+        let raw = if self.m2 {
+            if body.len() < 4 {
+                return None;
+            }
+            u32::from_le_bytes(body[body.len() - 4..].try_into().ok()?) as u64
+        } else {
+            body.len() as u64
+        };
+        let len = raw.saturating_sub(u64::from(self.p2 == 2));
+        if let Ok(mut map) = self.sizes.lock() {
+            if map.len() >= 4096 {
+                map.clear();
+            }
+            map.insert(name.to_string(), len);
+        }
+        Some(len)
+    }
+
+    // 读条目明文(解密 + 解压); 小条目结果缓存
+    pub fn read(&self, name: &str) -> Option<Arc<Vec<u8>>> {
+        if let Ok(map) = self.plain.lock() {
+            if let Some(d) = map.get(name) {
+                return Some(d.clone());
+            }
+        }
+        let data = Arc::new(self.decode(name)?);
+        if data.len() <= PLAIN_CACHE_MAX {
+            if let Ok(mut map) = self.plain.lock() {
+                if map.len() >= 256 {
+                    map.clear();
+                }
+                map.insert(name.to_string(), data.clone());
+            }
+        }
+        Some(data)
+    }
+
+    // 解密: XOR 表 -> Na(不含 gzip / P2 去首字节)
+    fn body(&self, name: &str) -> Option<Vec<u8>> {
+        let (_, off, size) = self.entries.get(*self.index.get(name)?)?;
+        let start = *off as usize + HEADER;
+        let end = start.checked_add(*size as usize)?;
+        if end > self.bytes.len() {
+            return None;
+        }
+        let mut buf = self.bytes[start..end].to_vec();
+        xor_table(&mut buf, *off, self.p2);
+        na(&mut buf);
+        Some(buf)
+    }
+
+    fn decode(&self, name: &str) -> Option<Vec<u8>> {
+        let mut buf = self.body(name)?;
+        if self.m2 {
+            buf = gunzip(buf.get(1..)?)?;
+        }
+        if self.p2 == 2 {
+            if buf.is_empty() {
+                return None;
+            }
+            buf.drain(..1);
+        }
+        Some(buf)
+    }
+
+    // prefix(以 '/' 结尾, 可为空)下的直接子项: (名字, 是否文件)
+    pub fn children(&self, prefix: &str) -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for (name, _, _) in &self.entries {
+            let Some(rest) = name.strip_prefix(prefix) else {
+                continue;
+            };
+            if rest.is_empty() {
+                continue;
+            }
+            match rest.find('/') {
+                Some(i) => {
+                    let dir = &rest[..i];
+                    if seen.insert(dir.to_string()) {
+                        out.push((dir.to_string(), false));
+                    }
+                }
+                None => {
+                    if seen.insert(rest.to_string()) {
+                        out.push((rest.to_string(), true));
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+// 归档文件在磁盘/APK 上的签名(只 stat, 不读内容)
+fn archive_stamp(rel: &str) -> Option<u64> {
+    for root in crate::paths::disk_roots() {
+        let p = root.join(rel);
+        if let Ok(md) = std::fs::metadata(&p) {
+            if md.is_file() {
+                let mt = md
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                return Some(md.len() ^ mt.rotate_left(21));
+            }
+        }
+    }
+    crate::paths::apk_size(rel)
+}
+
+// 归档文件原始字节(磁盘优先, 其次 APK assets)
+fn archive_blob(rel: &str) -> Option<Vec<u8>> {
+    for root in crate::paths::disk_roots() {
+        let p = root.join(rel);
+        if p.is_file() {
+            if let Ok(b) = std::fs::read(&p) {
+                return Some(b);
+            }
+        }
+    }
+    let len = crate::paths::apk_size(rel)? as usize;
+    crate::paths::apk_read_range(rel, 0, len)
+}
+
+type ArchiveCache = Mutex<HashMap<String, (u64, Arc<Archive>)>>;
+static ARCHIVE_CACHE: OnceLock<ArchiveCache> = OnceLock::new();
+
+// 打开打包态归档(磁盘 .una/.arc 文件或 APK 条目), 按 rel 缓存, 签名变化时重建。
+pub fn open_archive(rel: &str, p2: u8) -> Option<Arc<Archive>> {
+    let stamp = archive_stamp(rel)?;
+    let cache = ARCHIVE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some((s, a)) = map.get(rel) {
+            if *s == stamp {
+                return Some(a.clone());
+            }
+        }
+    }
+    let arc = Arc::new(Archive::parse(archive_blob(rel)?, p2)?);
+    if let Ok(mut map) = cache.lock() {
+        if map.len() >= 16 {
+            map.clear();
+        }
+        map.insert(rel.to_string(), (stamp, arc.clone()));
+    }
+    Some(arc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn na_is_inverse_of_na_inv() {
+        let mut buf: Vec<u8> = (0..4096u32)
+            .map(|i| i.wrapping_mul(37).wrapping_add(11) as u8)
+            .collect();
+        let orig = buf.clone();
+        na_inv(&mut buf);
+        assert_ne!(buf, orig);
+        na(&mut buf);
+        assert_eq!(buf, orig);
+    }
+
+    // 合成归档(m2=false) -> 解析 -> 条目可解、size 与明文长度一致
+    #[test]
+    fn synth_archive_roundtrip() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let dir = root.join("assets/core/una/zh-CN.una");
+        if !dir.is_dir() {
+            return;
+        }
+        let bytes = dir_archive(&dir, 2).expect("synth");
+        let arc = Archive::parse(bytes.as_ref().clone(), 2).expect("parse");
+        assert!(arc.contains("_VERSION"));
+        let names: Vec<String> = arc.entries.iter().map(|e| e.0.clone()).collect();
+        assert!(!names.is_empty());
+        for n in &names {
+            let data = arc.read(n).unwrap_or_else(|| panic!("读取失败: {n}"));
+            assert_eq!(arc.size(n), Some(data.len() as u64), "size 不一致: {n}");
+        }
+    }
+
+    // 打包态归档(M2=true, zlib 真压缩)逐条目与解包态 assets 对比, 覆盖
+    // 尾部表解析 / XOR 表 / Na / gzip(RFC1952 + DEFLATE 动态与固定 Huffman) 全链路。
+    // 扫描 dist/game_data 下全部 .una/.arc, 新增归档自动纳入。
+    #[test]
+    fn packed_archive_matches_assets() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let packed = root.join("dist/game_data");
+        let assets = root.join("assets");
+        if !packed.is_dir() {
+            eprintln!(
+                "[archive] 跳过打包态对比: 没有 dist/game_data 产物(先 npm run build:assets)"
+            );
+            return;
+        }
+        let mut rels: Vec<String> = Vec::new();
+        let mut dirs = vec![packed.clone()];
+        while let Some(d) = dirs.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    dirs.push(p);
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                if archive_p2(&name).is_some() {
+                    rels.push(rel_name(&packed, &p));
+                }
+            }
+        }
+        rels.sort();
+        let mut checked = 0usize;
+        for rel in &rels {
+            // 解包态目录: 文件名 = 条目名 + guessExt(多出最后一层扩展名)
+            let dir = assets.join(rel);
+            if !dir.is_dir() {
+                continue;
+            }
+            let bytes = std::fs::read(packed.join(rel)).unwrap();
+            let p2 = archive_p2(rel).unwrap();
+            let arc = Archive::parse(bytes, p2).unwrap_or_else(|| panic!("{rel}: 归档解析失败"));
+            let mut dirs = vec![dir.clone()];
+            while let Some(d) = dirs.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else {
+                    continue;
+                };
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        dirs.push(p);
+                        continue;
+                    }
+                    let rel_in = p
+                        .strip_prefix(&dir)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if rel_in.split('/').any(|s| s.starts_with('.')) {
+                        continue; // .DS_Store 之类
+                    }
+                    let name = strip_guessed_ext(&rel_in);
+                    let want = std::fs::read(&p).unwrap();
+                    let got = arc
+                        .read(&name)
+                        .unwrap_or_else(|| panic!("{rel}: 条目缺失 {name}(来自 {rel_in})"));
+                    assert_eq!(got.as_slice(), want.as_slice(), "{rel}: 内容不一致 {name}");
+                    assert_eq!(
+                        arc.size(&name),
+                        Some(want.len() as u64),
+                        "{rel}: size 不一致 {name}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "没有可对比的条目: {rels:?}");
+        eprintln!(
+            "[archive] 打包态对比通过: {} 个归档 / {checked} 个条目",
+            rels.len()
+        );
+    }
 
     // 合成 assets/core/una/zh-CN.una 供与 JS packDir 逐字节对比(见 tools/verify-synth.sh)
     #[test]

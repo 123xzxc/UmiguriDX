@@ -2,7 +2,9 @@
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use crate::paths::{data_root, disk_roots, read_all, resolve_src, vpath_to_rel, write_path, Src};
+use crate::paths::{
+    data_root, dir_entries, read_all, read_range, size_of, vpath_to_rel, write_path,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -29,64 +31,26 @@ pub struct FsSizeResult {
 // 列目录(合并: 磁盘可写层 + 只读资源 + APK 内置资产; 游戏只使用 name/isDirectory)
 #[tauri::command]
 pub fn fs_list(path: String) -> FsListResult {
-    use std::collections::HashSet;
     let t0 = std::time::Instant::now();
-    let dir_rel = vpath_to_rel(&path);
-    let mut data: Vec<FileEntry> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut any_dir = false;
-    for root in disk_roots() {
-        let disk = root.join(&dir_rel);
-        if let Ok(entries) = std::fs::read_dir(&disk) {
-            any_dir = true;
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().to_string();
-                if !seen.insert(name.clone()) {
-                    continue;
-                }
-                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(false);
-                let size = if is_file {
-                    e.metadata().map(|m| m.len()).unwrap_or(0)
-                } else {
-                    0
-                };
-                data.push(FileEntry {
-                    full_path: format!("/{dir_rel}/{name}"),
-                    is_directory: is_dir,
-                    is_file,
-                    name,
-                    size,
-                });
-            }
-        }
-    }
-    let apk_entries = crate::paths::apk_list(&dir_rel);
-    for name in &apk_entries {
-        if seen.contains(name) {
-            continue;
-        }
-        let child_rel = if dir_rel.is_empty() {
-            name.clone()
-        } else {
-            format!("{dir_rel}/{name}")
-        };
-        // list() 不区分文件/目录: 能用 AAsset 打开就是文件
-        let is_file = crate::paths::apk_size(&child_rel).is_some();
-        let size = if is_file {
-            crate::paths::apk_size(&child_rel).unwrap_or(0)
-        } else {
-            0
-        };
-        data.push(FileEntry {
-            full_path: format!("/{child_rel}"),
+    // 目录列举: 补尾斜杠才能命中 PATH_MAP 的目录前缀(/reverie -> core/una/hiiragi.una/),
+    // 取回后再归一化, 免得 fullPath 出现双斜杠(游戏会拿 fullPath 再拼接)。
+    let dir_rel = vpath_to_rel(&format!("{}/", path.trim_end_matches('/')));
+    let dir_rel = dir_rel.trim_end_matches('/').to_string();
+    let (entries, exists) = dir_entries(&format!("{dir_rel}/"));
+    let data: Vec<FileEntry> = entries
+        .into_iter()
+        .map(|(name, is_file, size)| FileEntry {
+            full_path: if dir_rel.is_empty() {
+                format!("/{name}")
+            } else {
+                format!("/{dir_rel}/{name}")
+            },
             is_directory: !is_file,
             is_file,
-            name: name.clone(),
+            name,
             size,
-        });
-    }
-    let exists = any_dir || !apk_entries.is_empty();
+        })
+        .collect();
     let ms = t0.elapsed().as_millis();
     if ms >= 20 || data.len() >= 16 {
         eprintln!("[umg][list] {} n={} {}ms", path, data.len(), ms);
@@ -107,36 +71,10 @@ pub fn fs_file(path: String) -> Result<String, String> {
 // 文件大小
 #[tauri::command]
 pub fn fs_size(path: String) -> FsSizeResult {
-    match resolve_src(&path) {
-        Some(Src::Disk(p)) => match std::fs::metadata(&p) {
-            Ok(m) => FsSizeResult {
-                status: 0,
-                data: Some(m.len()),
-            },
-            Err(_) => FsSizeResult {
-                status: -1,
-                data: None,
-            },
-        },
-        Some(Src::Apk(rel)) => match crate::paths::apk_size(&rel) {
-            Some(n) => FsSizeResult {
-                status: 0,
-                data: Some(n),
-            },
-            None => FsSizeResult {
-                status: -1,
-                data: None,
-            },
-        },
-        Some(Src::Synth { dir, p2 }) => match crate::archive::dir_archive(&dir, p2) {
-            Some(b) => FsSizeResult {
-                status: 0,
-                data: Some(b.len() as u64),
-            },
-            None => FsSizeResult {
-                status: -1,
-                data: None,
-            },
+    match size_of(&path) {
+        Some(n) => FsSizeResult {
+            status: 0,
+            data: Some(n),
         },
         None => FsSizeResult {
             status: -1,
@@ -148,27 +86,7 @@ pub fn fs_size(path: String) -> FsSizeResult {
 // 读文件 offset/size(归档解密用, base64 编码)
 #[tauri::command]
 pub fn fs_read(path: String, offset: u64, size: usize) -> Result<String, String> {
-    let buf = match resolve_src(&path) {
-        Some(Src::Disk(p)) => {
-            use std::io::{Read, Seek, SeekFrom};
-            let mut f = std::fs::File::open(&p).map_err(|e| e.to_string())?;
-            f.seek(SeekFrom::Start(offset)).map_err(|e| e.to_string())?;
-            let mut buf = vec![0u8; size];
-            let n = f.read(&mut buf).map_err(|e| e.to_string())?;
-            buf.truncate(n);
-            buf
-        }
-        Some(Src::Apk(rel)) => {
-            crate::paths::apk_read_range(&rel, offset, size).ok_or_else(|| format!("apk read failed: {rel}"))?
-        }
-        Some(Src::Synth { dir, p2 }) => {
-            let bytes = crate::archive::dir_archive(&dir, p2).ok_or_else(|| format!("synth failed: {path}"))?;
-            let start = (offset as usize).min(bytes.len());
-            let end = (start + size).min(bytes.len());
-            bytes[start..end].to_vec()
-        }
-        None => return Err(format!("not found: {path}")),
-    };
+    let buf = read_range(&path, offset, size).ok_or_else(|| format!("not found: {path}"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(&buf))
 }
 

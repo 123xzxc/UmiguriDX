@@ -52,9 +52,14 @@ export function installErrorDiagnostics() {
   window.addEventListener('error', (e) =>
     diagLog('JS ERROR ' + e.message + ' @ ' + (e.filename || '') + ':' + e.lineno)
   );
-  window.addEventListener('unhandledrejection', (e) =>
-    diagLog('REJECTION ' + (e.reason && (e.reason.message || e.reason)))
-  );
+  window.addEventListener('unhandledrejection', (e) => {
+    // 带上调用栈前几行: 启动黑屏这类问题只有 message(如 "Out of bounds access")
+    // 无法定位来源。
+    const r = e.reason;
+    const stack =
+      r && r.stack ? ' @ ' + String(r.stack).split('\n').slice(0, 3).join(' | ') : '';
+    diagLog('REJECTION ' + (r && (r.message || r)) + stack);
+  });
   (function poll() {
     // NOTE: 原始逻辑为每秒采样,保留节流计时器;当前实现仅维持定时器。
     window.__diagCalls = window.__diagCalls || [];
