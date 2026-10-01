@@ -5019,6 +5019,9 @@ scope.v_Po_28121.prototype = {
     return null;
   }
   var v_e_34452 = new scope.v_Po_28121(v_t_34451);
+  // 整个解析体兜一层: 越界会抛 "二进制读取越界", 但调用方只看到「表解析失败」。
+  // 带上在哪个阶段炸的, 避免再去猜是头部还是字形表。
+  try {
   // 魔数/版本不符也会返回 null: 旧代码在这两条静默, 排查时只看到「读到了但没生成表」,
   // 无法判断是数据坏还是资源取错。带上长度与前 8 字节, 便于和归档里的原始条目比对。
   var v_mg_34452b = v_e_34452.v3();
@@ -5056,9 +5059,27 @@ scope.v_Po_28121.prototype = {
     };
   for (let v_i_34465 = 0; v_i_34465 < v_n_34453; ++v_i_34465) {
     let v_t_34466;
-    v_t_34466 = v_a_34457 ? await new scope.v_tc_28199(v_e_34452.I3(v_s_34456[v_i_34465].E3)).kR() : v_e_34452.I3(v_s_34456[v_i_34465].E3), v_u_34461 = new glRuntime.Texture(v_r_34455.k_, v_r_34455.b_, v_f_34462), scope.glContext.pixelStorei(scope.glContext.UNPACK_FLIP_Y_WEBGL, !1), 6406 == v_s_34456[v_i_34465].T3 ? scope.glContext.texImage2D(scope.glContext.TEXTURE_2D, 0, v_s_34456[v_i_34465].T3, v_r_34455.k_, v_r_34455.b_, 0, v_s_34456[v_i_34465].T3, scope.glContext.UNSIGNED_BYTE, v_t_34466) : scope.glContext.compressedTexImage2D(scope.glContext.TEXTURE_2D, 0, v_s_34456[v_i_34465].T3, v_r_34455.k_, v_r_34455.b_, 0, v_t_34466), v_r_34455.Mf.push(v_u_34461);
+    // 定位到这张纹理的数据段: L3 是它的文件内起始偏移, E3 是长度(实测 L3+E3 == 文件长度)。
+    // 旧代码直接 I3(E3) —— I3 是「相对当前位置前进 n 并返回该段」, 于是从表尾(约偏移 110)
+    // 读 E3 字节, 拿到的是字形表中段而不是纹理, 解压必然失败(或解出垃圾), 整个 A3 抛异常;
+    // 调用方(d5 的 Id 循环 / h5)只能拿到 null -> 字形表与字体全部缺失 -> 界面上一个字都没有。
+    // 实测字体纹理是 zlib 流(78 9C), 解压后长度恰好等于 k_*b_。
+    v_e_34452.y3(v_s_34456[v_i_34465].L3 - v_e_34452.U2);
+    // 解压(flags&64)或贴图上传失败会让 A3 整个抛出, 调用方只看到「表解析失败」。
+    // 这里兜住并带上纹理序号/格式/长度, 便于区分是解压不可用还是 GL 上传被拒。
+    try {
+      v_t_34466 = v_a_34457 ? await new scope.v_tc_28199(v_e_34452.I3(v_s_34456[v_i_34465].E3)).kR() : v_e_34452.I3(v_s_34456[v_i_34465].E3);
+      v_u_34461 = new glRuntime.Texture(v_r_34455.k_, v_r_34455.b_, v_f_34462), scope.glContext.pixelStorei(scope.glContext.UNPACK_FLIP_Y_WEBGL, !1), 6406 == v_s_34456[v_i_34465].T3 ? scope.glContext.texImage2D(scope.glContext.TEXTURE_2D, 0, v_s_34456[v_i_34465].T3, v_r_34455.k_, v_r_34455.b_, 0, v_s_34456[v_i_34465].T3, scope.glContext.UNSIGNED_BYTE, v_t_34466) : scope.glContext.compressedTexImage2D(scope.glContext.TEXTURE_2D, 0, v_s_34456[v_i_34465].T3, v_r_34455.k_, v_r_34455.b_, 0, v_t_34466), v_r_34455.Mf.push(v_u_34461);
+    } catch (v_err_34466b) {
+      console.log("[umg][rsb] A3(纹理阶段失败): texIndex=" + v_i_34465 + " 压缩=" + (v_a_34457 ? 1 : 0) + " fmt=" + v_s_34456[v_i_34465].T3 + " 尺寸=" + v_r_34455.k_ + "x" + v_r_34455.b_ + " 数据=" + (v_t_34466 && v_t_34466.byteLength) + " " + ((v_err_34466b && v_err_34466b.message) || v_err_34466b));
+      return null;
+    }
   }
   return v_r_34455;
+  } catch (v_err_34451b) {
+    console.log("[umg][rsb] A3(解析异常): off=" + v_e_34452.U2 + "/" + v_t_34451.byteLength + " " + ((v_err_34451b && v_err_34451b.message) || v_err_34451b));
+    return null;
+  }
 }, scope.v_Eo_28125.prototype = {
   B3: function () {
     this.x_ = scope.v_Yo_28141, this.I_ = scope.v_$o_28144, this.y_ = 1 / 0, this.C_ = 1 / 0, this.L_ = 0, this.E_ = 0, this.w_ = 0, this.F_ = !1, this.B_ = !1, this.M_ = !1;
