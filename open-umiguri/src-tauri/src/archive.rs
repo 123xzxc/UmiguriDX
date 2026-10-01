@@ -843,11 +843,19 @@ impl Archive {
             match rest.find('/') {
                 Some(i) => {
                     let dir = &rest[..i];
+                    // 前缀必须以 '/' 结尾: 否则 "ui/xx" 会被解析出空目录名, 上层的目录树
+                    // 遍历会在同一路径上无限递归(-> 栈溢出)。".", ".." 同理必须丢弃。
+                    if dir.is_empty() || dir == "." || dir == ".." {
+                        continue;
+                    }
                     if seen.insert(dir.to_string()) {
                         out.push((dir.to_string(), false));
                     }
                 }
                 None => {
+                    if rest == "." || rest == ".." {
+                        continue;
+                    }
                     if seen.insert(rest.to_string()) {
                         out.push((rest.to_string(), true));
                     }
@@ -929,6 +937,38 @@ mod tests {
         assert_ne!(buf, orig);
         na(&mut buf);
         assert_eq!(buf, orig);
+    }
+
+    // 归档目录列举绝不能产出空目录名: 上层目录树遍历会把它拼回父目录自身
+    // ("" -> "dir/" + ""), 于是在同一路径上无限递归 -> 线程栈溢出 -> 进程 abort。
+    // 触发条件: children 收到不带尾斜杠的前缀(上游把 dir_rel 的尾斜杠裁掉了)。
+    #[test]
+    fn children_never_yields_empty_name() {
+        let files = vec![
+            ("tables/stringTable.rvs".to_string(), b"a".to_vec()),
+            ("tables/sub/deep.bin".to_string(), b"bb".to_vec()),
+            ("/leading.bin".to_string(), b"ccc".to_vec()),
+            ("_VERSION".to_string(), b"d".to_vec()),
+        ];
+        let arc = Archive::parse(build_archive(&files, 2, false), 2).expect("parse");
+
+        let root = arc.children("");
+        let names: Vec<&str> = root.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"tables"), "{names:?}");
+        assert!(names.contains(&"_VERSION"), "{names:?}");
+        assert!(root.iter().all(|(n, _)| !n.is_empty()), "{root:?}");
+
+        // 带尾斜杠: tables/ 下应有 sub(目录) 与 stringTable.rvs(文件)
+        let sub = arc.children("tables/");
+        assert!(sub.iter().any(|(n, f)| n == "sub" && !*f), "{sub:?}");
+        assert!(
+            sub.iter().any(|(n, f)| n == "stringTable.rvs" && *f),
+            "{sub:?}"
+        );
+
+        // 缺尾斜杠时不得产出空名字(修复前这里是 [("", false)])
+        let no_slash = arc.children("tables");
+        assert!(no_slash.iter().all(|(n, _)| !n.is_empty()), "{no_slash:?}");
     }
 
     // 合成归档(m2=false) -> 解析 -> 条目可解、size 与明文长度一致

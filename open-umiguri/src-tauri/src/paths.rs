@@ -366,6 +366,17 @@ pub fn read_range(vpath: &str, offset: u64, size: usize) -> Option<Vec<u8>> {
     }
 }
 
+// 归档内部前缀归一化: children/size 都约定前缀以 '/' 结尾(根为 "")。
+// dir_rel 的尾斜杠在上游可能被裁掉, 少了它 children 会把 "ui/xx" 解析成前缀
+// "ui" + "/xx", 于是产出空目录名 —— 目录树遍历会因此在同一路径上无限递归(栈溢出)。
+fn archive_prefix(raw: &str) -> String {
+    if raw.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", raw.trim_end_matches('/'))
+    }
+}
+
 // 列出「真实相对路径」目录 dir_rel(以 '/' 结尾)的直接子项: (名字, 是否文件, 大小)。
 // 合并 可写层 / 只读资源 / APK assets / 打包态归档内部; 第二个返回值表示目录是否存在。
 // 归档内部(core/una/hiiragi.una/ 这种)磁盘上没有对应目录, 只有归档条目 ——
@@ -414,7 +425,12 @@ pub fn dir_entries(dir_rel: &str) -> (Vec<(String, bool, u64)>, bool) {
     if let Some((archive_rel, prefix)) = split_archive(dir_rel) {
         if let Some(p2) = crate::archive::archive_p2(archive_rel) {
             if let Some(arc) = crate::archive::open_archive(archive_rel, p2) {
-                let children = arc.children(prefix);
+                // 归档内部前缀约定以 '/' 结尾(children/size 都按此解析)。dir_rel 的尾斜杠
+                // 可能在上游被裁掉(见 fs_list / bundle::list_dir 的归一化), 这里必须补回来:
+                // 少了尾斜杠时 children 会把 "ui/xx" 解析出空目录名, 目录树遍历会因此在
+                // 同一路径上无限递归 -> 栈溢出(打包版 /reverie* 启动即崩)。
+                let prefix = archive_prefix(prefix);
+                let children = arc.children(&prefix);
                 exists = exists || !children.is_empty();
                 for (name, is_file) in children {
                     if !seen.insert(name.clone()) {
@@ -540,6 +556,16 @@ mod tests {
         );
     }
 
+    // 归档子目录的前缀必须带尾斜杠: 少了它 children 会产出空目录名,
+    // 目录树遍历会把空名字拼回父目录自身 -> 自引用 -> 无限递归(栈溢出)。
+    #[test]
+    fn archive_prefix_keeps_trailing_slash() {
+        assert_eq!(archive_prefix(""), "");
+        assert_eq!(archive_prefix("ui"), "ui/");
+        assert_eq!(archive_prefix("ui/"), "ui/");
+        assert_eq!(archive_prefix("field/textures/"), "field/textures/");
+    }
+
     // 端到端(手动): 打包态 .una 文件下 /reverie* 必须能解析与列举 ——
     // 打包版启动黑屏就是这里 404 导致的。跑法:
     //   cargo test --offline -- --ignored --test-threads=1
@@ -598,6 +624,10 @@ mod tests {
             sub.iter().all(|(_, f, _)| *f),
             "子目录里应只有文件: {sub:?}"
         );
+        // 不带尾斜杠的写法(目录树遍历器归一化后就是这样)必须与带斜杠等价:
+        // 修复前它会让 children 返回空目录名, fs_bundle_tree 在同一路径上无限递归崩溃。
+        let (sub_no_slash, _) = dir_entries("core/una/hiiragi.una/textures");
+        assert_eq!(sub_no_slash, sub);
     }
 
     // 首次启动把 config/*.json 复制到可写层, 且不覆盖已有文件。

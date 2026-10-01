@@ -35,8 +35,14 @@ fn list_dir(vpath: &str) -> Vec<(String, bool)> {
         .0
         .into_iter()
         .map(|(name, is_file, _)| (name, is_file))
+        // 空名字会让 walk 拼出与父目录同名(带尾斜杠)的子路径 -> 自引用无限递归。
+        .filter(|(name, _)| !name.is_empty())
         .collect()
 }
+
+// 目录树遍历的最大深度。安全网: 虚拟目录(归档/APK)一旦出现自引用或环,
+// 递归会在几十帧内吃光线程栈(macOS 主线程栈 8MB 也扛不住)直接 abort。
+const MAX_WALK_DEPTH: usize = 32;
 
 struct Collector {
     files: Vec<(String, Vec<u8>)>,
@@ -50,7 +56,11 @@ struct Collector {
 
 impl Collector {
     fn walk(&mut self, vpath: &str) {
-        if self.total >= self.max_total {
+        self.walk_at(vpath, 0);
+    }
+
+    fn walk_at(&mut self, vpath: &str, depth: usize) {
+        if self.total >= self.max_total || depth > MAX_WALK_DEPTH {
             return;
         }
         for (name, is_file) in list_dir(vpath) {
@@ -74,7 +84,7 @@ impl Collector {
                     self.files.push((child, data));
                 }
             } else {
-                self.walk(&child);
+                self.walk_at(&child, depth + 1);
             }
         }
     }
@@ -107,6 +117,13 @@ fn file_mtime(vpath: &str) -> u64 {
 }
 
 fn sig_walk(vpath: &str, h: &mut u64, files: &mut u64) {
+    sig_walk_at(vpath, h, files, 0);
+}
+
+fn sig_walk_at(vpath: &str, h: &mut u64, files: &mut u64, depth: usize) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
     for (name, is_file) in list_dir(vpath) {
         if name.starts_with('.') {
             continue;
@@ -121,7 +138,7 @@ fn sig_walk(vpath: &str, h: &mut u64, files: &mut u64) {
             }
             *files += 1;
         } else {
-            sig_walk(&child, h, files);
+            sig_walk_at(&child, h, files, depth + 1);
         }
     }
 }
