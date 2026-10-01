@@ -59,10 +59,26 @@ export function createLanguagePackages(scope) {
   return {
     ue: async function (v_t_35104) {
       if (!v_o_35080) {
-        var v_i_35105;
-        if ("ja-JP" !== v_a_35086(scope.currentLang) && (v_i_35105 = v_a_35086(scope.currentLang), v_u_35085.unshift(new v_n_35079(v_i_35105, "reverie_" + v_i_35105, v_s_35083[v_i_35105]))), v_l_35081 = await new Promise(v_t_35106 => {
-          scope.hostBridge.qu("/reverie/_VERSION", () => v_t_35106(!1), () => v_t_35106(!0));
-        })) for (const v_e_35107 of v_u_35085) {
+        // 语言包回退链: 先把当前语言包放进队首(unshift), 再统一尝试打开归档。
+        if ("ja-JP" !== v_a_35086(scope.currentLang)) {
+          var v_i_35105 = v_a_35086(scope.currentLang);
+          v_u_35085.unshift(new v_n_35079(v_i_35105, "reverie_" + v_i_35105, v_s_35083[v_i_35105]));
+        }
+        // 归档可用性判定: 旧代码靠 /reverie/_VERSION 的 HTTP 结果区分「松散文件」与
+        // 「.una 归档」—— 可读=松散, 404=归档。这对官方 Web 版成立: 那里的资源就是散
+        // 文件, /reverie/_VERSION 天然可读; 打包版把它封进 .una, 该路径 404。
+        //
+        // 我们的宿主把归档内部条目也映射成了 umg:// 路径, 打包态 /reverie/_VERSION 会
+        // 正常返回 200 -> 被误判成「松散模式」-> 资源按 /reverie/<文件> 去读, 而真实内容
+        // 在 hiiragi.una 里 -> 字体(Debug.rgf / NtkwGothic*.rgf)与字符串表
+        // (stringTable.rvs) 全部读不到 -> 界面能渲染但一个字都没有(无文字)。
+        //
+        // 因此不再依赖那次探测: 直接尝试打开基础包, 能打开就按归档模式读。
+        v_l_35081 = await new Promise(v_t_35106 => {
+          let v_i_35108b = new scope.v_ds_27991("/una/hiiragi.una", 0, 2);
+          v_i_35108b.xl(v_s_35107b => v_t_35106(!!v_s_35107b));
+        });
+        if (v_l_35081) for (const v_e_35107 of v_u_35085) {
           let v_i_35108 = new scope.v_ds_27991(v_e_35107.fk, 0, 2);
           if (!(await new Promise(v_t_35109 => v_i_35108.xl(v_t_35109)))) {
             // 归档打不开时旧代码直接 return, 但没置 v_o_35080 —— 之后每次读资源都会

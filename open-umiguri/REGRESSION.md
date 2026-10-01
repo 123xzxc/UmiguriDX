@@ -58,6 +58,15 @@ cargo tauri dev            # 先执行 npm run build(assets + host + game)
 > 失效, 且 macOS(WKWebView)上编码出 `%5C` 的 URL 会**静默** fetch 失败 —— 表现就是启动
 > 画面资源读不到、卡在黑屏。
 
+> **归档/松散模式判定(又一个坑)**: `languagePackages` 用 `/reverie/_VERSION` 的探测结果
+> 决定「从 `.una` 归档读」还是「读散文件」—— 官方 Web 版资源是散文件, 该路径可读; 打包版
+> 把它封进 `.una`, 该路径 404。我们的宿主会把归档内部条目也映射成 `umg://` 路径, 打包态
+> 下 `/reverie/_VERSION` 因而返回 200, 被误判成「松散模式」-> 按 `/reverie/<文件>` 去找,
+> 而真实内容在 `hiiragi.una` 里 -> 字体(`fonts/Debug.rgf`、`fonts/NtkwGothic*.rgf`)与
+> 字符串表(`tables/stringTable.rvs`)全部读不到 -> **界面能渲染但一个字都没有**。
+> 现在改为直接尝试打开基础包(`/una/hiiragi.una`)来判定, 不要再引入依赖「某路径是否 404」
+> 来区分打包/松散的分支。
+
 ## 4. 二分定位(定位是哪类改动引入问题)
 
 `tools/split-game.mjs` 支持逐类关闭:

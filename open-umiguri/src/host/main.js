@@ -110,23 +110,45 @@ whenPageReady(async () => {
   reportGlExtensionsNow();
   setupStorageAccessCheck();
   reportGlExtensionsDelayed(1500);
-  // 实验: 设计空间(= 游戏排版坐标系)是否可改为窗口/屏幕尺寸。
-  // 游戏 UI 坐标若相对设计空间 -> 会整体等比放大(可行); 若是绝对像素 -> 会挤在左上角(不可行)。
+  // 设计空间(= 游戏排版坐标系)。游戏把它当成 16:9 的绝对坐标使用:
+  //   runtime/helpers.js 的视口判定写死 1.777778(16:9); 画布尺寸、正交相机、
+  //   Framebuffer 都按 v_yn_27656 x v_Sn_27657 开, 3D 相机宽高比也是两者相除。
+  // 所以设计空间一旦不是 16:9, 整个画面就会变形(比例不对)。
+  //
+  // auto 的正确含义是「按窗口选一个合适的 16:9 设计空间」, 而不是抄 screen.*:
+  // screen.width/height 在 macOS Retina 下是缩放后的 CSS 像素(2880x1800 ->
+  // 1440x900), 那是屏幕尺寸不是窗口尺寸; 16:10 的屏幕会把设计空间拖成 16:10,
+  // 画面随之被拉伸。
   try {
     const dr = cfg && cfg.designResolution;
     if (dr === 'auto') {
-      window.__umgDesignW = screen.width;
-      window.__umgDesignH = screen.height;
+      const w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1920);
+      const h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1080);
+      // 取「能放进窗口的最大 16:9 区域」
+      const byWidthH = Math.round(w / 16 * 9);
+      const byHeightW = Math.round(h * 16 / 9);
+      const fitH = byWidthH <= h ? byWidthH : h;
+      // 对齐到 1920x1080 的整数倍, 避免出现 1436x808 这种非标准设计空间
+      const scale = Math.max(1, Math.round(fitH / 1080));
+      window.__umgDesignW = 1920 * scale;
+      window.__umgDesignH = 1080 * scale;
     } else if (typeof dr === 'string' && /^\d+x\d+$/.test(dr)) {
-      const [w, h] = dr.split('x').map(Number);
-      window.__umgDesignW = w;
-      window.__umgDesignH = h;
+      let [w, h] = dr.split('x').map(Number);
+      // 自定义设计空间同样必须保持 16:9: 按宽度折算高度, 避免填错比例导致变形
+      if (w > 0 && h > 0 && Math.abs(w / h - 16 / 9) > 0.01) {
+        const fixedH = Math.round(w / 16 * 9);
+        diagLog(`[umg][design] 自定义 ${w}x${h} 不是 16:9, 按宽度折算为 ${w}x${fixedH}`);
+        h = fixedH;
+      }
+      if (w > 0 && h > 0) {
+        window.__umgDesignW = w;
+        window.__umgDesignH = h;
+      }
     }
     if (window.__umgDesignW) {
       diagLog(`[umg][design] 设计空间 = ${window.__umgDesignW}x${window.__umgDesignH} (cfg=${dr})`);
     }
   } catch (e) {}
-
   // 应用名: 取自 Tauri 配置的 productName, 供游戏覆盖 v_G_27652(document.title/错误页)
   try {
     const name = await tryInvoke('app_name', {}, null);
