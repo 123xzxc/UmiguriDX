@@ -4888,6 +4888,9 @@ scope.v_Po_28121.prototype = {
     return this.U2 += 4, this.s_.getInt32(this.U2 - 4, !0);
   },
   v3: function () {
+    // 缓冲区被当作 1 字节占位(A3 拿到 null)时, 旧代码只会抛没有来源的
+    // "Out of bounds access"。带上长度信息, 便于定位是哪个资源没读到。
+    if (this.U2 + 4 > this.kg) throw new Error("二进制读取越界: " + (this.U2 + 4) + " > " + this.kg);
     return this.U2 += 4, this.s_.getUint32(this.U2 - 4, !0);
   },
   w3: function () {
@@ -5007,6 +5010,13 @@ scope.v_Po_28121.prototype = {
     return this.kg;
   }
 }, scope.v_Mo_28124.A3 = async function (v_t_34451) {
+  // 读不到资源时调用方会把 null 传进来, v_Po_28121 会造出 1 字节缓冲, 紧接着 v3() 抛
+  // "Out of bounds access" -> 整个 d5 读取链断在半路 -> 启动场景永不显示(黑屏)。
+  // 这里直接返回 null: 调用方(d5 的 Id 循环 / h5)本来就按「拿不到就跳过」处理。
+  if (!v_t_34451 || !v_t_34451.byteLength) {
+    if (!v_t_34451) console.log("[umg][rsb] A3(null): 资源读不到, 跳过");
+    return null;
+  }
   var v_e_34452 = new scope.v_Po_28121(v_t_34451);
   if (809912146 !== v_e_34452.v3()) return null;
   if (1 !== v_e_34452.u3()) return null;
@@ -6264,7 +6274,15 @@ scope.Framebuffer.prototype = {
       for (var v_i_35036 in v_a_35021.Id) {
         var v_e_35037,
           v_i_35036 = v_a_35021.Id[v_i_35036].ed;
-        this.Id[v_i_35036] || (v_e_35037 = await scope.languagePackages.ck(v_i_35036), this.Id[v_i_35036] = await scope.v_Mo_28124.A3(v_e_35037));
+        if (this.Id[v_i_35036]) continue;
+        v_e_35037 = await scope.languagePackages.ck(v_i_35036);
+        // 读不到就跳过: 旧代码会把 null 继续交给 A3, 抛异常后 d5 的完成回调不再触发,
+        // 启动场景永远不渲染(黑屏)。后面的 6276~6285 已按「拿不到就整体跳过」处理。
+        if (!v_e_35037) {
+          console.log("[umg][rsb] Id 表资源读不到, 跳过: " + JSON.stringify(v_i_35036));
+          continue;
+        }
+        this.Id[v_i_35036] = await scope.v_Mo_28124.A3(v_e_35037);
       }
       scope.v_Me_28078(v_t_35035);
     }, v_t_35038 => {

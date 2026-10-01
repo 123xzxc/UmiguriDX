@@ -51,6 +51,13 @@ cargo tauri dev            # 先执行 npm run build(assets + host + game)
 
 > 重点观察 #6/#8/#10:property 改名最可能影响**序列化字段**与**数据表键**。
 
+> **资源名分隔符约定(踩过坑)**: 游戏侧的资源名来自 RSB/归档表的字符串池, 用的是**反斜杠**
+> (`textures\txLogoMono.dds`、`fonts\NtkwGothicDB16.rgf`), 而宿主侧(bundle/目录预取缓存键、
+> Rust `paths::collapse_vpath`、归档条目名)一律用 `/`。任何「按虚拟路径读文件」的新入口都
+> 必须先把 `\` 归一化成 `/`(见 `src/host/core/protocol.js` 的 `normKey`), 否则预取缓存全部
+> 失效, 且 macOS(WKWebView)上编码出 `%5C` 的 URL 会**静默** fetch 失败 —— 表现就是启动
+> 画面资源读不到、卡在黑屏。
+
 ## 4. 二分定位(定位是哪类改动引入问题)
 
 `tools/split-game.mjs` 支持逐类关闭:

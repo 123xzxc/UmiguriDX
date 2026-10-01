@@ -13,6 +13,17 @@ export function umgUrl(p) {
   return UMG_ORIGIN + encodeURI(p.startsWith('/') ? p : '/' + p);
 }
 
+// 缓存键归一化: 游戏侧的「资源名」来自 RSB/归档表, 分隔符是反斜杠(textures\txLogo.dds),
+// 而 bundle 预取、目录预取与 Rust 侧(collapse_vpath)一律用 '/'。
+// 不归一化的话预热过的文件会被判成未命中, 白跑一次网络请求; 而在 macOS(WKWebView)上
+// 这类带 %5C 的 URL 会直接 fetch 失败 -> 读到 null -> 启动链断掉(黑屏)。
+export function normKey(p) {
+  return String(p)
+    .split('?')[0]
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/');
+}
+
 // 解包脚本给每个文件追加过一次猜测的扩展名(advertise.rsb -> advertise.rsb.rsb),
 // 而游戏按原始名请求。批量预取时顺手登记「去掉末层扩展名」的别名 key(共用同一份数据,
 // 不复制字节), 否则包内资源全部 key 对不上、白取一遍。
@@ -29,6 +40,10 @@ function stripGuessedExt(path) {
 // 由于语言包回退在 Rust 侧一次请求内已试遍所有包, 一旦某相对路径 404, 就把各包前缀的
 // 等价路径一并标记, 后续探测直接本地失败。
 const missCache = new Set();
+// 目录请求(以 '/' 结尾)与 fetch 抛错以前是完全静默的: 排查「读不到资源」时看不到任何
+// 痕迹(既没有 [umg][miss] 也没有请求计数), 这里各登记一次, 便于定位。
+const dirLogged = new Set();
+const netErrLogged = new Set();
 const PACK_PREFIXES = ['/reverie_zh-CN/', '/reverie_exField/', '/reverie_en-US/', '/reverie/'];
 function markMiss(key) {
   let marked = false;
@@ -62,11 +77,24 @@ function fetchInto(key) {
   if (inflight.has(key)) return inflight.get(key);
   const pr = (async () => {
     const t0 = performance.now();
-    const resp = await fetch(umgUrl(key), { cache: 'no-store' });
+    let resp;
+    try {
+      resp = await fetch(umgUrl(key), { cache: 'no-store' });
+    } catch (e) {
+      // fetch 本身抛错(自定义协议/URL 非法/被拦截)以前完全静默: 上层只看到「读不到」。
+      if (!netErrLogged.has(key)) {
+        netErrLogged.add(key);
+        diagLog('[umg][net] fetch 抛错: ' + key + ' ' + ((e && e.message) || e));
+      }
+      throw e;
+    }
     if (!resp.ok) {
       if (resp.status === 404) {
         markMiss(key);
         diagLog('[umg][miss] ' + key);
+      } else if (!netErrLogged.has(key + ' ' + resp.status)) {
+        netErrLogged.add(key + ' ' + resp.status);
+        diagLog('[umg][net] HTTP ' + resp.status + ' ' + key);
       }
       throw new Error('HTTP ' + resp.status + ' ' + key);
     }
@@ -226,10 +254,16 @@ function netTick(t0, n, kind) {
 }
 
 export async function cachedFile(p) {
-  const key = String(p).split('?')[0];
+  const key = normKey(p);
   // 以 / 结尾是目录请求(某些 UI 面板引用了空纹理路径,如 m_Ne.ck("") -> /reverie/)。
   // 直接失败,不发 fetch,避免 404 报错,保持与「读不到」一致的 fallback 语义。
-  if (key.endsWith('/')) throw new Error('is directory: ' + key);
+  if (key.endsWith('/')) {
+    if (!dirLogged.has(key)) {
+      dirLogged.add(key);
+      diagLog('[umg][skip] 目录路径(按读不到处理): ' + key);
+    }
+    throw new Error('is directory: ' + key);
+  }
   return fetchInto(key);
 }
 
@@ -446,7 +480,7 @@ function exact(u8) {
 }
 
 export async function rangeFile(p, offset, size) {
-  const key = String(p).split('?')[0];
+  const key = normKey(p);
   if (key.endsWith('/')) throw new Error('is directory: ' + key);
   if (size <= 0) return { data: new Uint8Array(0), total: -1 };
   try {
@@ -541,7 +575,8 @@ async function rangeFileInner(key, offset, size) {
 // 把以单个 "/" 开头的虚拟路径转成 umg 协议地址(不处理 // 开头的绝对 URL)。
 function toUmg(url) {
   if (typeof url === 'string' && url.indexOf('/') === 0 && url.indexOf('//') !== 0) {
-    return UMG_ORIGIN + url;
+    // 归一化反斜杠: 否则会出现 %5C 这种在 WKWebView 上直接失败的 URL。
+    return UMG_ORIGIN + normKey(url);
   }
   return url;
 }
