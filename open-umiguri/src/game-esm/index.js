@@ -5013,14 +5013,18 @@ scope.v_Po_28121.prototype = {
   // 读不到资源时调用方会把 null 传进来, v_Po_28121 会造出 1 字节缓冲, 紧接着 v3() 抛
   // "Out of bounds access" -> 整个 d5 读取链断在半路 -> 启动场景永不显示(黑屏)。
   // 这里直接返回 null: 调用方(d5 的 Id 循环 / h5)本来就按「拿不到就跳过」处理。
+  // 构建标记放在最前: 只有放在守卫之前, 才能保证「A3 被调用过」这件事一定可见
+  // (守卫分支会提前 return, 放后面的话全是 A3(null) 时就一条都打不出来)。
+  if (!scope.__umgA3Mark) {
+    scope.__umgA3Mark = 1;
+    console.log("[umg][build] A3 修复版 build=1ec8e8b+ (L3 偏移定位已启用)");
+  }
   if (!v_t_34451 || !v_t_34451.byteLength) {
     if (!v_t_34451) console.log("[umg][rsb] A3(null): 资源读不到, 跳过");
     else console.log("[umg][rsb] A3(空): 资源长度为 0, 跳过");
     return null;
   }
   var v_e_34452 = new scope.v_Po_28121(v_t_34451);
-  // 构建标记: 便于一眼判断「运行的包是否包含本轮修复」。只在 A3 首次调用时打一次。
-  if (!scope.__umgA3Mark) { scope.__umgA3Mark = 1; console.log("[umg][build] A3 修复版 build=1ec8e8b+ (L3 偏移定位已启用)"); }
   // 整个解析体兜一层: 越界会抛 "二进制读取越界", 但调用方只看到「表解析失败」。
   // 带上在哪个阶段炸的, 避免再去猜是头部还是字形表。
   try {
