@@ -270,6 +270,9 @@ function dispatch(conn, frame) {
       room.scores.clear();
       room.state = 0;
       respond(conn, op, seq, 0);
+      // 重新选曲 = 回到「准备中」: 立刻广播一次 137(状态 1), 让在大堂/选歌界面
+      // 等 `Tx(1)` 的人醒来(上一局的 5 现在已被清成 0, 不广播的话他们会一直等)。
+      pushState(room, member, 1);
       const w = new Writer();
       w.u32(room.selection.yx).u32(conn.userId).raw(chart);
       const payload = w.bytes();
@@ -465,7 +468,9 @@ function pushScore(room) {
 }
 
 // 137: 对局状态(1..5) —— {yx: u32, n1: u16}。用房间全局状态而不是「谁发的」:
-// 客户端只关心「现在的进度到没到某个值」, 谁先到不重要, 取最大值最稳。
+// 客户端只关心「现在的进度到没到某个值」。
+//   ⚠ 不能用「取最大值」: 状态是要能降回去的(结算完回大堂/选歌 = 1), 取最大值会让
+//     房间永久停在 5, 房主开的下一局对其他人完全不可见(见函数内注释)。
 //
 // ⚠ **每一帧都要广播**, 不能因为「状态没变」就提前返回。
 //   客户端的等待语义是:
@@ -478,7 +483,15 @@ function pushScore(room) {
 //   表现就是「跳过匹配 / 点开始之后, 非房主玩家停在原界面不进歌曲」。
 //   重复帧对客户端是幂等的(它只比较 >= 然后 resolve), 代价可以忽略。
 function pushState(room, from, n1) {
-  const next = Math.max(room.state || 0, n1 | 0);
+  // 状态既可以升(0 → 1 → … → 5)也可以降: 一局打完回到选歌/大堂时, 房主会重报
+  // 状态 1(见客户端 uC(false) 的说明)。**必须允许回退**:
+  //   以前是 Math.max(room.state, n1), 于是房间状态一旦到过 5 就永远 >= 5,
+  //   房主重开一局时广播出来的还是 5 —— 非房主在选歌界面等的 `Tx(1)` 会被立刻
+  //   满足(5 >= 1), 而游戏内那几处 `Tx(3/4/5)` 又被陈旧的高状态直接放行,
+  //   两边状态机彻底错开, 真机表现就是「房主点跳过/Next, 其他人回不到选歌界面」。
+  //   现在按「最后一个上报者的状态」走, 并把每次上报都原样广播一遍
+  //   (客户端的等待语义是「挂上 waiter 之后再收一帧 137 才醒」, 见下方注释)。
+  const next = n1 | 0;
   const changed = next !== room.state;
   room.state = next;
   const w = new Writer();

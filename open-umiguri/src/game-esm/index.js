@@ -4051,7 +4051,23 @@ scope.v_Hs_28017.prototype = {
     return -1 !== this.BC.findIndex(v_t_33866 => v_t_33866.YC === v_i_33865);
   },
   uC: function (v_t_33867) {
-    v_t_33867 ? this.GC = this.Px : this.GC && (v_t_33867 = this.GC, this.GC = 0, this.ZC(v_t_33867));
+    // uC(true) 进入对局 / uC(false) 退出对局(结算 → 离开)。
+    // ⚠ 退出时必须把「我可以开始新一局了」这个状态上报给服务端(状态 1), 否则:
+    //   房主按 Next 结算离开只推进自己的本地状态机, 服务端 room.state 还停在 5,
+    //   其他玩家既收不到任何 137, 也没有任何理由自己走回选歌界面 ——
+    //   真机表现就是「房主点跳过/Next 之后, 其他玩家回不到选歌界面」。
+    //   上报状态 1 会经 pushState 广播 137, 非房主那边 v_Ys_28026.sP = 1,
+    //   选歌界面等的 Tx(1) 就能醒来(见 0063 的 await v_oe_27649.Tx(v_ha_28044))。
+    //   同时它也把「座位被占用」清掉(uC(true) 分支下 this.GC = this.Px)。
+    if (v_t_33867) this.GC = this.Px;
+    else if (this.GC) {
+      var v_umgPrev = this.GC;
+      this.GC = 0, this.ZC(v_umgPrev);
+      console.log("[umg][coop] 退出对局 -> 上报状态 1 (离开座位 slot=" + v_umgPrev + ")");
+      try {
+        this.Gi() && this.LC && this.LC.XC(scope.v_ha_28044, 0);
+      } catch (v_umgUcErr) {}
+    }
   },
   qC: function (v_i_33868, v_t_33869) {
     v_t_33869 = new scope.v_Ia_28059(this.LC, v_i_33868, v_t_33869);
@@ -4102,7 +4118,7 @@ scope.v_Hs_28017.prototype = {
     } else if (v_i_33880 === scope.v_aa_28037) v_e_33881.nx !== scope.v_oe_27649.sx() && this.iR(v_e_33881.nx);else if (v_i_33880 === scope.v_Vs_28021) {
       v_t_33882 = new scope.v_Gs_28015();
       v_t_33882.nx = v_e_33881.nx, v_t_33882.yx = v_e_33881.yx, v_t_33882.ng = v_e_33881.ng, v_t_33882.Jx = "cjkt:" + v_t_33882.yx, v_t_33882.Mx = v_e_33881.nx === scope.v_oe_27649.sx(), this.Ix.set(v_t_33882.yx, v_t_33882), v_e_33881.nx === scope.v_oe_27649.sx() ? (this.Px = v_e_33881.yx, this.jC(), this.nT(v_t_33882.nx)) : (scope.renderer.Yt.Zt[v_t_33882.Jx] = scope.renderer.Yt.Mf["textures\\txDummyJacket.dds"], this.eR(v_t_33882.yx));
-    } else if (v_i_33880 === scope.v_Xs_28023) this.GC !== v_e_33881.yx && (this.nT(v_e_33881.nx), this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te), v_e_33881.nx === scope.v_oe_27649.sx()) && (this.Px = v_e_33881.yx);else if (v_i_33880 === scope.v_zs_28024) this.GC !== v_e_33881.yx && this.sT(v_e_33881.nx);else if (v_i_33880 === scope.v_Zs_28028) this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te);else if (v_i_33880 === scope.v_Ys_28026) this.sP = v_e_33881.n1, this.DC === v_e_33881.n1 && (v_e_33881.n1 === scope.v_ha_28044 && this.aT(), this.FC) && (this.FC(!0), this.FC = void 0);else if (v_i_33880 === scope.v_Qs_28030) this.aP = v_e_33881.n1, this.nP === v_e_33881.n1 && this.rP && (this.rP(!0), this.rP = void 0);else if (v_i_33880 === scope.v_qs_28027) {
+    } else if (v_i_33880 === scope.v_Xs_28023) this.GC !== v_e_33881.yx && (this.nT(v_e_33881.nx), this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te), v_e_33881.nx === scope.v_oe_27649.sx()) && (this.Px = v_e_33881.yx);else if (v_i_33880 === scope.v_zs_28024) this.GC !== v_e_33881.yx && this.sT(v_e_33881.nx);else if (v_i_33880 === scope.v_Zs_28028) this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te);else if (v_i_33880 === scope.v_Ys_28026) this.sP = v_e_33881.n1, console.log("[umg][coop] 137 收到: 房状态 sP=" + this.sP + " (本地 137 等待值 DC=" + this.DC + ")"), this.DC === v_e_33881.n1 && (console.log("[umg][coop] 137 唤醒了等 " + v_e_33881.n1 + " 的人"), v_e_33881.n1 === scope.v_ha_28044 && this.aT(), this.FC) && (this.FC(!0), this.FC = void 0);else if (v_i_33880 === scope.v_Qs_28030) this.aP = v_e_33881.n1, this.nP === v_e_33881.n1 && this.rP && (this.rP(!0), this.rP = void 0);else if (v_i_33880 === scope.v_qs_28027) {
       this.aC = v_e_33881.oT;
       for (var v_n_33883 of v_e_33881.lT) {
         var v_r_33884 = this.tC(v_n_33883.nx);
@@ -4169,9 +4185,11 @@ scope.v_Hs_28017.prototype = {
     }));
   },
   Tx: function (v_t_33916) {
-    return this.sP >= v_t_33916 || (this.DC = v_t_33916, new Promise(v_t_33917 => {
+    if (this.sP >= v_t_33916) { console.log("[umg][coop] Tx(" + v_t_33916 + ") 已满足 sP=" + this.sP); return !0; }
+    console.log("[umg][coop] Tx(" + v_t_33916 + ") 等待 137 >= " + v_t_33916 + " (当前 sP=" + this.sP + ")");
+    return this.DC = v_t_33916, new Promise(v_t_33917 => {
       this.FC = v_t_33917;
-    }));
+    });
   },
   Cx: function (v_t_33918) {
     v_t_33918 === this.DC && (this.FC && this.FC(!1), this.FC = void 0);
@@ -4187,7 +4205,8 @@ scope.v_Hs_28017.prototype = {
     // 房主推进状态(0 → 1 → … → 5, 见 gameCore 的 v_Hi_30330)时还要上报服务端:
     // 所有人(含房主自己)进下一局前都会 await 137 状态 >= N, 而 137 只有服务端
     // 的 pushState 才会发。不上报的话房主本地 nP 动了、aP 不动, 谁都等不到。
-    if (this.aP >= v_t_33919) return !0;
+    if (this.aP >= v_t_33919) { console.log("[umg][coop] iP(" + v_t_33919 + ") 已满足 aP=" + this.aP); return !0; }
+    console.log("[umg][coop] iP(" + v_t_33919 + ") 等待中 aP=" + this.aP);
     this.nP = v_t_33919;
     try {
       // OP_STATE=19 的上报入口是 v_Pa_28060.XC(n, 0)(v_Hs_28017.xx/Lx 也走它)。
@@ -4796,6 +4815,7 @@ scope.v_Ia_28059.prototype = {
     return this.UT(7), this.GT._g(0), this.HT();
   },
   XC: async function (v_t_34064, v_i_34065) {
+    console.log("[umg][coop] -> 19 上报状态 " + v_t_34064 + " (曲目序号 " + (v_i_34065 || 0) + ")");
     return this.UT(19), this.GT._g(v_t_34064), this.GT._g(v_i_34065 || 0), this.HT();
   },
   oP: async function (v_t_34066) {
