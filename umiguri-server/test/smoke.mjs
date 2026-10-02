@@ -16,6 +16,7 @@ process.env.UMIGURI_ADMIN_TOKEN = "smoke-admin";
 
 const { startServer } = await import("../src/server.js");
 const { totp } = await import("../src/lib/totp.js");
+const { qrMatrix } = await import("../src/lib/qr.js");
 
 const PORT = 8791;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -58,6 +59,10 @@ const created = await adminCreateUser("player1");
 check("建号成功", created.status === 200 && created.body.ok, JSON.stringify(created.body));
 check("返回 TOTP 密钥", typeof created.body.totpSecret === "string" && created.body.totpSecret.length >= 16);
 check("返回 otpauth 链接", String(created.body.otpauthUrl).startsWith("otpauth://totp/"));
+check("返回绑定二维码", String(created.body.otpauthQr).startsWith("data:image/svg+xml;base64,"), String(created.body.otpauthQr).slice(0, 32));
+const qrSvg1 = Buffer.from(String(created.body.otpauthQr).split(",")[1] || "", "base64").toString("utf8");
+const qrM1 = qrMatrix(created.body.otpauthUrl);
+check("二维码画的就是这个 otpauth 链接", !!qrM1 && qrSvg1.includes('viewBox="0 0 ' + (qrM1.size + 8) + " " + (qrM1.size + 8) + '"'), qrM1 ? "v" + qrM1.version + " size=" + qrM1.size : "null");
 const secret1 = created.body.totpSecret;
 const userId1 = created.body.user.id;
 
@@ -272,6 +277,7 @@ check("面板建的密钥可用", /^[0-9]{6}$/.test(panelCode), panelCode);
 
 const panelReset = await call("POST", "/admin-panel/users/" + panelUserId + "/totp-reset", {}, undefined, adminCookie);
 check("面板重置验证器", panelReset.status === 200 && panelReset.body.totpSecret !== panelUser.body.totpSecret);
+check("重置后换一张二维码", panelReset.status === 200 && String(panelReset.body.otpauthQr).startsWith("data:image/svg+xml;base64,") && panelReset.body.otpauthQr !== panelUser.body.otpauthQr);
 
 const panelCard = await call("POST", "/admin-panel/users/" + panelUserId + "/cards", { label: "smoke" }, undefined, adminCookie);
 check("面板发卡", panelCard.status === 200 && /^E004[0-9]{16}$/.test(String(panelCard.body.card.cardId)), JSON.stringify(panelCard.body));

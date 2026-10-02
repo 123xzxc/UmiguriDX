@@ -15,7 +15,7 @@ UMIGURI 联机服务端: 卡号登录、游玩记录、用户名与称号、房�
 | 管理面板 `/admin-panel` | **管理员令牌** | 同上, 登录后换 12 小时会话 cookie |
 
 账号由管理员创建, **不开放自助注册** —— TOTP 密钥若能自助申请, 谁都能绑上任意用户名。
-创建后管理员拿到 `otpauth://` 链接, 用户扫码即完成绑定。
+创建后管理面板直接给出**二维码**, 用户扫一下就绑好了(密钥与 `otpauth://` 链接同时给出)。
 
 卡号是「凭据之一」: 一张卡绑一个账号, 一个账号可持多张卡。卡号泄露等于账号被盗,
 因此支持吊销(`DELETE /cards/:cardId`), 换卡时旧卡立即失效。
@@ -75,11 +75,15 @@ npm start
 ## 测试
 
 ```bash
-node test/smoke.mjs   # 或 npm test
+node test/smoke.mjs   # 或 npm test      —— 全链路(HTTP)
+node test/qr.mjs      # 或 npm run test:qr —— 二维码编码器(离线)
 ```
 
 覆盖 卡号登录 / TOTP 面板 / 发卡与吊销 / 资料 / 记录 / 排行榜 / 房间与实时分数同步
 的 77 项断言。测试每次使用干净的 `data/smoke.db`, 可重复运行。
+
+二维码那 77 项是纯离线自检: 版本与分块表对照规范公布的总码字数/容量、格式信息与版本
+信息的 BCH 常数、矩阵结构(定位/定时/校正图形), 以及把画好的矩阵**反向解码回原文**。
 
 ## 打包部署
 
@@ -157,8 +161,8 @@ node tools/pack.mjs   # 或 npm run pack
 | POST | `/admin-panel/logout` | 退出 |
 | GET | `/admin-panel/me` | 探活(有效则返回账号总数) |
 | GET | `/admin-panel/users` | 账号列表, 每项带自己的卡号 |
-| POST | `/admin-panel/users` | `{username}` -> `{user, totpSecret, otpauthUrl}` |
-| POST | `/admin-panel/users/:id/totp-reset` | 换一把新 TOTP 密钥 |
+| POST | `/admin-panel/users` | `{username}` -> `{user, totpSecret, otpauthUrl, otpauthQr}` |
+| POST | `/admin-panel/users/:id/totp-reset` | 换一把新 TOTP 密钥, 同样回 `otpauthQr` |
 | GET | `/admin-panel/users/:id/cards` | 该账号的卡号 |
 | POST | `/admin-panel/users/:id/cards` | 给该账号发卡 |
 | DELETE | `/admin-panel/cards/:cardId` | 吊销卡号 |
@@ -168,24 +172,26 @@ node tools/pack.mjs   # 或 npm run pack
 - **不把管理员令牌直接写进 cookie**: 令牌是长期凭据且不过期, 落到浏览器里就没法单独作废。登录换取的是随机会话 token + 12 小时 TTL, 换令牌不影响已发会话。
 - **会话用 `HttpOnly` + `SameSite=Strict`**: 管理面板无跨站跳转需求, 直接堵掉 CSRF。
 - **登录失败节流**: 同一 IP 连续失败 8 次锁 5 分钟(见 `UMIGURI_ADMIN_MAX_FAILS` / `UMIGURI_ADMIN_LOCK`), 防在线爆破。可用 `X-Forwarded-For` 走反代时按真实 IP 计。
-- **密钥只显示一次**: TOTP 密钥在创建/重置的响应里返回, 之后从不再吐。页面提示管理员当场交给玩家。
+- **密钥只显示一次**: TOTP 密钥与二维码在创建/重置的响应里返回, 之后从不再吐。页面提示管理员当场交给玩家扫码。
 - **没有自助注册**: 这是刻意的。若允许自助申请 TOTP 密钥, 任何人都能对已存在的用户名重新申请, 等于接管账号。建号只能由管理员做。
+- **二维码自己画**: 面板不外链任何 CDN(要能离线部署), Node 又没内置二维码, 所以 `src/lib/qr.js` 是一个零依赖编码器(byte 模式 + 纠错等级 M + 版本 1-10 自适应)。它的正确性由 `test/qr.mjs` 反向解码验证, 而不是只靠肉眼看图。
 ### 管理接口(Bearer 管理员令牌)
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/admin/users` | `{username}` -> `{user, totpSecret, otpauthUrl}` |
-| POST | `/admin/users/:id/totp-reset` | 换一把新 TOTP 密钥 |
+| POST | `/admin/users` | `{username}` -> `{user, totpSecret, otpauthUrl, otpauthQr}` |
+| POST | `/admin/users/:id/totp-reset` | 换一把新 TOTP 密钥, 同样回 `otpauthQr` |
 | POST | `/admin/cards` | `{userId, cardId?, label?}` 给指定账号发卡 |
 
-`otpauthUrl` 交给用户用 Google 验证器扫码即可。密钥在用户首次用有效验证码
-登录前处于「未确认」状态, 该状态下登录会被拒绝 —— 避免建号后被人抢绑。
+`otpauthQr` 是服务端直接画好的二维码(data: URI 的 SVG, 零依赖, 见 `src/lib/qr.js`),
+`otpauthUrl` 是它编码的原文, 两者内容一致 —— 前端不想要 data URI 也可以自己拿链接去渲染。
+密钥在用户首次用有效验证码登录前处于「未确认」状态, 该状态下登录会被拒绝 —— 避免建号后被人抢绑。
 
 ### 建号流程示例
 
 **推荐用网页**: 打开 `/admin-panel`, 粘贴管理员令牌登录, 在「建号」里填用户名。
-页面会显示一把 TOTP 密钥, 交给玩家在验证器 App(Google Authenticator 等)里选
-「手动输入密钥」添加。密钥只显示这一次, 之后再也拿不到。
+页面会显示一张**二维码**, 让玩家用验证器 App(Google Authenticator 等)直接扫 —— 扫一下就绑好了,
+不用手抄密钥。二维码与密钥只显示这一次, 之后再也拿不到(换手机就点「重置验证器」重发一张)。
 
 **脚本方式**(CI / 批量建号):
 
@@ -197,7 +203,7 @@ curl -X POST http://127.0.0.1:8787/admin/users \
   -H "content-type: application/json" \
   -H "authorization: Bearer $ADMIN_TOKEN" \
   -d '{"username":"yourname"}'
-# 返回 {user, totpSecret, otpauthUrl}
+# 返回 {user, totpSecret, otpauthUrl, otpauthQr}
 ```
 
 拿到密钥后交给玩家绑定; 玩家登录 `/panel` 后可在面板里自行生成卡号,

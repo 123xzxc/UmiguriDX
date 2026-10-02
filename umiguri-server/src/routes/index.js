@@ -15,6 +15,7 @@ import { assertCardId } from "../lib/card.js";
 import { createUser, getUserById, listUsers, resetTotp, updateProfile } from "../users.js";
 import { findCard, issueCard, listCards, resolveCard, revokeCard } from "../cards.js";
 import { otpauthUrl } from "../lib/totp.js";
+import { qrDataUri } from "../lib/qr.js";
 import {
   clearCookieHeader, cookieHeader, destroyPanelSession, loginWithTotp,
   requirePanelSession, resolvePanelSession
@@ -32,6 +33,15 @@ import {
   adminCookieHeader, clearAdminCookieHeader, clientIp, destroyAdminSession,
   loginAdmin, requireAdminSession, resolveAdminSession
 } from "../admin-panel.js";
+
+// 绑定验证器的完整载荷: 密钥 + otpauth 链接 + 二维码。
+// 二维码是服务端自己画的 SVG(零依赖, 见 lib/qr.js), 面板直接 <img src="..."> ——
+// 玩家用验证器 App 扫一下就绑好了, 不必手抄 32 位密钥。链接长到 10 版都装不下时
+// (现实中不会发生: otpauth 链接最长约 150 字节) qr 为 null, 面板退回显示密钥原文。
+function totpPayload(user, secret) {
+  const url = otpauthUrl({ secret, account: user.username, issuer: "UMIGURI" });
+  return { user, totpSecret: secret, otpauthUrl: url, otpauthQr: qrDataUri(url) };
+}
 
 // 从 Authorization 头解析并校验 JWT(游戏端)
 function authResolver(req) {
@@ -306,22 +316,14 @@ export function registerPanelRoutes(r) {
     requireAdminSession(req);
     const username = assertUsername(body.username);
     const { user, secret } = createUser(username);
-    return {
-      user,
-      totpSecret: secret,
-      otpauthUrl: otpauthUrl({ secret, account: username, issuer: "UMIGURI" })
-    };
+    return totpPayload(user, secret);
   });
 
   r.post("/admin-panel/users/:id/totp-reset", ({ req, params }) => {
     requireAdminSession(req);
     const id = assertInt(params.id, "id", { min: 1 });
     const { user, secret } = resetTotp(id);
-    return {
-      user,
-      totpSecret: secret,
-      otpauthUrl: otpauthUrl({ secret, account: user.username, issuer: "UMIGURI" })
-    };
+    return totpPayload(user, secret);
   });
 
   r.get("/admin-panel/users/:id/cards", ({ req, params }) => {
@@ -350,22 +352,14 @@ export function registerPanelRoutes(r) {
     requireAdmin(req);
     const username = assertUsername(body.username);
     const { user, secret } = createUser(username);
-    return {
-      user,
-      totpSecret: secret,
-      otpauthUrl: otpauthUrl({ secret, account: username, issuer: "UMIGURI" })
-    };
+    return totpPayload(user, secret);
   });
 
   r.post("/admin/users/:id/totp-reset", ({ req, params }) => {
     requireAdmin(req);
     const id = assertInt(params.id, "id", { min: 1 });
     const { user, secret } = resetTotp(id);
-    return {
-      user,
-      totpSecret: secret,
-      otpauthUrl: otpauthUrl({ secret, account: user.username, issuer: "UMIGURI" })
-    };
+    return totpPayload(user, secret);
   });
 
   r.post("/admin/cards", ({ req, body }) => {
