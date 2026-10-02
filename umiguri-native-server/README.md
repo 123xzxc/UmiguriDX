@@ -137,6 +137,27 @@ node test/native-smoke.mjs
 | `/1/umiguri/setProfile` | 存档案(只覆盖带上来的字段) |
 | `/1/umiguri/getOptions` `setOptions` | 设置项(scrollSpeed / 判定偏移 / 音量 / 各种显示开关) |
 | `/1/umiguri/getRecords` `setRecord` | 单曲成绩(同一曲同一难度只留最高分) |
+
+成绩里还会带上**判定构成**(`data.judge`, 基线版客户端不发这个字段):
+
+- `justiceCritical` / `justice` / `attack` / `miss` —— 结算面板左侧四个数。
+- `fast` / `late` —— 面板右下角。
+- `maxCombo` / `noteCount` —— 最大连击 / 总物量。
+- `lanes.tap|hold|slide|air|flick` = `{ hits, total }` —— 右侧五个曲种行。
+
+判定明细跟着**最高分那一局**走: 低分不会覆盖高分, 也不会把两局的判定拼在一起。
+
+### 曲名与难度等级
+
+客户端上报的 `musicId` 是谱面里的 `@SONGID`, `musicDiff` 是**难度槽位 0-5**
+(`BAS/ADV/EXP/MAS/WE/ULT`), 都不是给人看的。服务端启动时扫一遍游戏的
+`data/music/*/*/*.ugc`(或 `.sus`)表头, 建 `@SONGID -> {曲名, 各难度等级}` 的目录
+(见 `src/lib/music-catalog.js`), 面板就能显示 `Tateren / MAS 10` 这种可读内容。
+难度等级原样保留, `14+` 这类写法不会被拆开。
+
+扫描根目录可用 `UMIGURI_MUSIC_DIR` 指定; 默认找仓库里的
+`open-umiguri/dist/game_data/data/music`。**谱面若打包在 `.una` 归档里, 扫不到就
+只能退回显示 `musicId`** —— 这种情况需要把曲库解出来, 或指定一个散装谱面目录。
 | `/1/umiguri/getCourseRecords` `setRecord` | Course 成绩 |
 | `/1/umiguri/getCharaStates` `setCharaState` | 角色等级/经验/技能 |
 

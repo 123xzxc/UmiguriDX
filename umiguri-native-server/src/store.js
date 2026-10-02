@@ -250,7 +250,7 @@ export function writeOptions(userId, data) {
 
 export function listRecords(userId) {
   return getDb()
-    .prepare("SELECT music_id, difficulty, score, flags, play_count, updated_at FROM native_records WHERE user_id = ?")
+    .prepare("SELECT * FROM native_records WHERE user_id = ?")
     .all(userId)
     .map((r) => ({
       musicId: r.music_id,
@@ -258,20 +258,89 @@ export function listRecords(userId) {
       score: r.score,
       flags: r.flags,
       playCount: r.play_count,
-      updatedAt: r.updated_at
+      updatedAt: r.updated_at,
+      // 判定构成(老成绩没有, 全 0)。
+      judge: {
+        justiceCritical: r.judge_jc,
+        justice: r.judge_j,
+        attack: r.judge_atk,
+        miss: r.judge_miss,
+        fast: r.judge_fast,
+        late: r.judge_late
+      },
+      lanes: {
+        tap: r.lane_tap,
+        hold: r.lane_hold,
+        slide: r.lane_slide,
+        air: r.lane_air,
+        flick: r.lane_flick
+      }
     }));
 }
 
-export function putRecord(userId, { musicId, musicDiff, score, flags, playCount, updatedAt }) {
+// 把客户端上报的 judge 结构拍平成列值; 缺字段一律 0(基线版客户端不上报)。
+function flattenJudge(judge) {
+  const j = judge && typeof judge === "object" ? judge : {};
+  const lanes = j.lanes && typeof j.lanes === "object" ? j.lanes : {};
+  const lane = (name) => {
+    const v = lanes[name];
+    if (v && typeof v === "object") return num(v.hits) + num(v.total) * 1e6;
+    return num(v);
+  };
+  return {
+    judgeJc: num(j.justiceCritical),
+    judgeJ: num(j.justice),
+    judgeAtk: num(j.attack),
+    judgeMiss: num(j.miss),
+    judgeFast: num(j.fast),
+    judgeLate: num(j.late),
+    // 曲种命中数只存命中数(总物量随曲目固定, 面板用曲目目录自己算百分比)。
+    laneTap: lane("tap") % 1e6,
+    laneHold: lane("hold") % 1e6,
+    laneSlide: lane("slide") % 1e6,
+    laneAir: lane("air") % 1e6,
+    laneFlick: lane("flick") % 1e6
+  };
+}
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+export function putRecord(userId, { musicId, musicDiff, score, flags, playCount, updatedAt, judge, lanes }) {
   const d = getDb();
   const prev = d.prepare("SELECT score, play_count FROM native_records WHERE user_id = ? AND music_id = ? AND difficulty = ?").get(userId, String(musicId), musicDiff | 0);
   const best = Math.min(Math.max(score | 0, 0), 1010000);
   const finalScore = prev ? Math.max(prev.score, best) : best;
   const finalCount = Math.max(prev ? prev.play_count : 0, playCount | 0);
+  const f = flattenJudge(judge);
+  // 判定构成跟着"最高分那一局"走: 分更高就换掉, 否则保留旧的 —— 面板上
+  // 「个人最佳」的判定明细必须和它显示的那个分数同属一局, 不能拼接。
+  const keepOld = !!prev && finalScore <= prev.score;
   d.prepare(
-    "INSERT INTO native_records (user_id, music_id, difficulty, score, flags, play_count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-      "ON CONFLICT(user_id, music_id, difficulty) DO UPDATE SET score = excluded.score, flags = excluded.flags, play_count = excluded.play_count, updated_at = excluded.updated_at"
-  ).run(userId, String(musicId), musicDiff | 0, finalScore, flags | 0, finalCount, updatedAt || now());
+    "INSERT INTO native_records (user_id, music_id, difficulty, score, flags, play_count, updated_at, " +
+      "judge_jc, judge_j, judge_atk, judge_miss, judge_fast, judge_late, lane_tap, lane_hold, lane_slide, lane_air, lane_flick) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+      "ON CONFLICT(user_id, music_id, difficulty) DO UPDATE SET score = excluded.score, flags = excluded.flags, " +
+      "play_count = excluded.play_count, updated_at = excluded.updated_at, " +
+      "judge_jc = CASE WHEN ? THEN native_records.judge_jc ELSE excluded.judge_jc END, " +
+      "judge_j = CASE WHEN ? THEN native_records.judge_j ELSE excluded.judge_j END, " +
+      "judge_atk = CASE WHEN ? THEN native_records.judge_atk ELSE excluded.judge_atk END, " +
+      "judge_miss = CASE WHEN ? THEN native_records.judge_miss ELSE excluded.judge_miss END, " +
+      "judge_fast = CASE WHEN ? THEN native_records.judge_fast ELSE excluded.judge_fast END, " +
+      "judge_late = CASE WHEN ? THEN native_records.judge_late ELSE excluded.judge_late END, " +
+      "lane_tap = CASE WHEN ? THEN native_records.lane_tap ELSE excluded.lane_tap END, " +
+      "lane_hold = CASE WHEN ? THEN native_records.lane_hold ELSE excluded.lane_hold END, " +
+      "lane_slide = CASE WHEN ? THEN native_records.lane_slide ELSE excluded.lane_slide END, " +
+      "lane_air = CASE WHEN ? THEN native_records.lane_air ELSE excluded.lane_air END, " +
+      "lane_flick = CASE WHEN ? THEN native_records.lane_flick ELSE excluded.lane_flick END"
+  ).run(
+    userId, String(musicId), musicDiff | 0, finalScore, flags | 0, finalCount, updatedAt || now(),
+    f.judgeJc, f.judgeJ, f.judgeAtk, f.judgeMiss, f.judgeFast, f.judgeLate,
+    f.laneTap, f.laneHold, f.laneSlide, f.laneAir, f.laneFlick,
+    keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0,
+    keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0, keepOld ? 1 : 0
+  );
   // 网页面板的"最近游玩 / 个人最佳"读的是 plays / bests(与 umiguri-server 共用的表),
   // 原生成绩落在 native_records 里, 所以顺手镜像一份过去 —— 否则面板永远是"暂无记录"。
   // 只在"真的又玩了一局"时记: 分数没涨、playCount 也没涨就不重复记,
@@ -281,10 +350,12 @@ export function putRecord(userId, { musicId, musicDiff, score, flags, playCount,
       musicId: String(musicId),
       difficulty: musicDiff | 0,
       score: finalScore,
-      flags: flags | 0
+      flags: flags | 0,
+      judge,
+      lanes
     });
   }
-  return { musicId, musicDiff, score: finalScore, flags, playCount: finalCount, updatedAt };
+  return { musicId, musicDiff, score: finalScore, flags, playCount: finalCount, updatedAt, judge: f };
 }
 
 // 分数 -> 等级名。阈值与客户端 scope.rankLabel 一致, 只把内部名(Sssp/Sss/...)
@@ -310,11 +381,15 @@ function rankLabelOf(score) {
 // 上报时再用 PA() 打包回去), 所以这里直接取。
 // played_at 用服务器时间: 客户端传的 updatedAt 是"日期"不是时间戳(见 gameCore),
 // 拿它排序会乱。
-function mirrorToPlayTables(userId, { musicId, difficulty, score, flags }) {
+function mirrorToPlayTables(userId, { musicId, difficulty, score, flags, judge, lanes }) {
   const d = getDb();
   const at = now();
   const rank = rankLabelOf(score);
   const clear = flags & 1;
+  // 判定明细: plays 表的 combo/judge_crit/judge_miss 刚好够放「最大连击 / JC / MISS」。
+  const combo = num(judge && judge.maxCombo);
+  const jc = num(judge && judge.justiceCritical);
+  const miss = num(judge && judge.miss);
 
   const prevBest = d
     .prepare("SELECT score FROM bests WHERE user_id = ? AND music_id = ? AND difficulty = ?")
@@ -328,8 +403,8 @@ function mirrorToPlayTables(userId, { musicId, difficulty, score, flags }) {
 
   d.prepare(
     "INSERT INTO plays (user_id, music_id, difficulty, score, rank, clear, combo, judge_crit, judge_miss, played_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)"
-  ).run(userId, musicId, difficulty, score, rank, clear, at);
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(userId, musicId, difficulty, score, rank, clear, combo, jc, miss, at);
 }
 
 export function listCourseRecords(userId) {

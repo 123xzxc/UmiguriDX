@@ -113,7 +113,7 @@ const HTML =
     "    <div class=\"card\">" +
     "      <h2>最近游玩</h2>" +
     "      <table id=\"playTable\">" +
-    "        <thead><tr><th>曲目</th><th>难度</th><th>分数</th><th>等级</th></tr></thead>" +
+    "        <thead><tr><th>曲目</th><th>难度</th><th>分数</th><th>等级</th><th>判定</th></tr></thead>" +
     "        <tbody></tbody>" +
     "      </table>" +
     "    </div>" +
@@ -156,7 +156,7 @@ const HTML =
     "    tb.innerHTML = \"\";" +
     "    if (!cards.length) {" +
     "      var empty = document.createElement(\"tr\");" +
-    "      empty.innerHTML = \"<td colspan='4' style='color:#9aa0a6'>还没有卡号</td>\";" +
+    "      empty.innerHTML = \"<td colspan='5' style='color:#9aa0a6'>还没有卡号</td>\";" +
     "      tb.appendChild(empty);" +
     "      return;" +
     "    }" +
@@ -192,6 +192,18 @@ const HTML =
     "    });" +
     "  }" +
     "" +
+    "  function judgeText(p) {" +
+    "    var parts = [];" +
+    "    if (p.judgeCrit) parts.push(\"JC\" + p.judgeCrit);" +
+    "    if (p.judgeJustice) parts.push(\"J\" + p.judgeJustice);" +
+    "    if (p.judgeAttack) parts.push(\"A\" + p.judgeAttack);" +
+    "    if (p.judgeMiss) parts.push(\"MISS\" + p.judgeMiss);" +
+    "    if (p.judgeFast) parts.push(\"FAST\" + p.judgeFast);" +
+    "    if (p.judgeLate) parts.push(\"LATE\" + p.judgeLate);" +
+    "    if (p.combo) parts.push(\"C\" + p.combo);" +
+    "    return parts.join(\" \");" +
+    "  }" +
+    "" +
     "  function loadPlays() {" +
     "    api(\"GET\", \"/panel/plays?limit=20\").then(function (r) {" +
     "      var tb = $(\"playTable\").querySelector(\"tbody\");" +
@@ -204,7 +216,7 @@ const HTML =
     "      }" +
     "      r.plays.forEach(function (p) {" +
     "        var tr = document.createElement(\"tr\");" +
-    "        var cells = [p.musicId, String(p.difficulty), String(p.score), String(p.rank || \"\")];" +
+    "        var cells = [p.musicTitle || p.musicId, p.diffLabel || String(p.difficulty), String(p.score), String(p.rank || \"\"), judgeText(p)];" +
     "        cells.forEach(function (v) {" +
     "          var td = document.createElement(\"td\");" +
     "          td.textContent = v;" +

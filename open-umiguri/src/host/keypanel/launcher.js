@@ -15,7 +15,7 @@ import {
   mkOverlay, mkBox, mkTitle, mkLabel, mkInput, mkBtn, mkRow, mkHint, onTap, setBtnDisabled,
 } from "./uikit.js";
 import {
-  LS_BASE, LS_TOKEN, readLS, normalizeBase, normalizeCard, isValidCard,
+  LS_BASE, LS_TOKEN, LS_CARD, readLS, normalizeBase, normalizeCard, isValidCard,
   onlineBridge, api, setBase, setSession, restore,
 } from "../online/session.js";
 import { nativePort, setNativePort, DEFAULT_NATIVE_PORT } from "../online/native.js";
@@ -28,12 +28,17 @@ async function boot() {
 
   const savedBase = normalizeBase(readLS(LS_BASE));
   const savedToken = readLS(LS_TOKEN) || "";
-  if (!force && savedBase && savedToken) {
+  const savedCard = normalizeCard(readLS(LS_CARD));
+  // 本机已经绑过卡就直接静默放行, 不再每次启动都弹框要卡号。
+  // 卡号必须一起记: 原生联机(成绩上传 / 联机房间)认的是卡号, 只有 token 没有卡号
+  // 会变成「登录了但不上传成绩」, 比反复输卡号更难看懂。
+  const hasCard = isValidCard(savedCard);
+  if (!force && savedBase && savedToken && hasCard) {
     // 有 token 就先静默校验; 服务器连不上时落到下面, 让用户自己决定
     const user = await restore();
     if (user) {
-      setSession({ base: savedBase, token: savedToken, user });
-      return { base: savedBase, token: savedToken, user, skipped: true };
+      setSession({ base: savedBase, token: savedToken, cardId: savedCard, user });
+      return { base: savedBase, token: savedToken, cardId: savedCard, user, skipped: true };
     }
   }
 
@@ -59,6 +64,10 @@ export function openLauncher(savedBase) {
   box.appendChild(mkLabel("AIME 卡号"));
   const cardInput = mkInput("E004 开头的 20 位卡号");
   cardInput.maxLength = 32;
+  // 回填上次绑的卡号: 之前这里永远空白, 于是「记住了」也没人看得出来,
+  // 玩家只能再输一遍 —— 看起来就像根本没记住。
+  const savedCard = normalizeCard(readLS(LS_CARD));
+  if (savedCard) cardInput.value = savedCard;
   box.appendChild(cardInput);
 
   box.appendChild(mkLabel("原生服务端端口"));

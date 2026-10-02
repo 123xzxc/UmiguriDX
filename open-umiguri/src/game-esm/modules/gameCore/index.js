@@ -4360,6 +4360,43 @@ export function createGameCore(scope) {
       var v_t_31798 = new scope.v_ar_27928();
       v_t_31798.k0 = !0, v_t_31798.ig = !0, v_t_31798.C0 = "UMIGURI/uni", v_$i_30344(v_t_31798);
     },
-    ri: v_ji_30334
+    ri: v_ji_30334,
+    // 本局实时统计快照。结算面板读的就是这几个字段(见 v_Ji_30333 里的
+    // boardDetail* 与 Ta.R5), 这里原样暴露, 保证面板显示与游戏内完全一致。
+    //   tr            JUSTICE CRITICAL / JUSTICE / ATTACK / MISS
+    //   jr            FAST / LATE 及其按判定的细分
+    //   mr            TAP/HOLD/SLIDE/AIR/FLICK 的 命中数 + 总和(与 boardDetail 同源)
+    //   kr / mr      最大连击 / 总物量
+    judgeStats: function () {
+      var v_t_31799 = v_U_30262;
+      if (!v_t_31799 || !v_t_31799.Ta) return null;
+      var v_i_31800 = v_t_31799.Ta;
+      var v_e_31801 = v_i_31800.Mr;
+      var v_n_31802 = v_i_31800.Jr;
+      return {
+        tr: v_i_31800.Tr,
+        jr: v_n_31802,
+        mr: v_e_31801,
+        kr: v_i_31800.kr,
+        pr: v_i_31800.pr,
+        // 逐曲种: [已命中数, 总物量, JC, J, A, MISS] —— 与结算面板每一行一一对应。
+        // Rr/Pr = Tap 的命中数/总和, Dr/Gr = Slide, jr/Nr = Hold, Hr/Ur = Air, Vr/Or = Flick。
+        lanes: {
+          tap: { hits: v_e_31801.Rr, total: v_e_31801.Pr },
+          slide: { hits: v_e_31801.Dr, total: v_e_31801.Gr },
+          hold: { hits: v_e_31801.jr, total: v_e_31801.Nr },
+          air: { hits: v_e_31801.Hr, total: v_e_31801.Ur },
+          flick: { hits: v_e_31801.Vr, total: v_e_31801.Or }
+        },
+        // 逐曲种 x 判定(R5): [JC, J, A, MISS]
+        laneJudge: {
+          tap: [v_i_31800.R5.M5, v_i_31800.R5.D5, v_i_31800.R5.P5, v_i_31800.R5.G5],
+          slide: [v_i_31800.R5.N5, v_i_31800.R5.j5, v_i_31800.R5.H5, v_i_31800.R5.U5],
+          hold: [v_i_31800.R5.V5, v_i_31800.R5.J5, v_i_31800.R5.O5, v_i_31800.R5.W5],
+          air: [v_i_31800.R5.K5, v_i_31800.R5.z5, v_i_31800.R5.X5, v_i_31800.R5.Z5],
+          flick: [v_i_31800.R5.Y5, v_i_31800.R5.q5, v_i_31800.R5.Q5, v_i_31800.R5.e4]
+        }
+      };
+    }
   };
 }

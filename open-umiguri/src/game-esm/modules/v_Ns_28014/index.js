@@ -2,6 +2,35 @@
 // 由 tools/modularize-game.mjs 生成: 原游戏 IIFE 内的模块 IIFE。
 // 依赖通过 scope 注入(见 runtime/scope.js)。
 
+// 本局判定数(JUSTICE CRITICAL / JUSTICE / ATTACK / MISS)。
+// 游戏内计分统计在 gameCore 私有的 v_U_30262.Ta 上, 这里读 gameCore 暴露的实时快照
+// (scope.gameCore.judgeStats); 取不到就返回 null, 让服务端按 0 处理 ——
+// 宁可少显示, 也不要因为取不到数就中断成绩上传。
+scope.__umgJudgeOf = function () {
+  try {
+    var gc = scope.gameCore;
+    var st = gc && gc.judgeStats ? gc.judgeStats() : null;
+    if (!st || !st.tr) return null;
+    return {
+      // JUSTICE CRITICAL / JUSTICE / ATTACK / MISS(结算面板左侧四个数)。
+      justiceCritical: st.tr.Lr | 0,
+      justice: st.tr.Er | 0,
+      attack: st.tr.Fr | 0,
+      miss: st.tr.Br | 0,
+      // LATE / FAST(面板右下角, Ta.Jr.Wr = FAST, Ta.Jr.Kr = LATE)。
+      late: st.jr ? st.jr.Kr | 0 : 0,
+      fast: st.jr ? st.jr.Wr | 0 : 0,
+      maxCombo: st.kr | 0,
+      noteCount: st.mr | 0,
+      // TAP / HOLD / SLIDE / AIR / FLICK(面板右侧, 与结算同源: Ta.Mr)。
+      // 每一项都带: 已命中数 hits、总物量 total、判定(C/JC/A/MISS)细分。
+      lanes: st.lanes || null
+    };
+  } catch (v_e_33835) {
+    return null;
+  }
+};
+
 export function createV_Ns_28014(scope) {
   let v_r_33807 = !1;
   return {
@@ -95,7 +124,7 @@ export function createV_Ns_28014(scope) {
     zy: async function (v_t_33819, v_i_33820, v_e_33821) {
       scope.handshake.Mm.has(v_t_33819) || scope.handshake.Mm.set(v_t_33819, new Map()), scope.handshake.Mm.get(v_t_33819).has(v_i_33820) || scope.handshake.Mm.get(v_t_33819).set(v_i_33820, new scope.v_zr_27970());
       var v_n_33822 = scope.handshake.Mm.get(v_t_33819).get(v_i_33820);
-      v_n_33822.Sr = scope.mathMin(scope.mathMax(v_n_33822.Sr, v_e_33821.Sr, 0), 101e4), v_n_33822.ni = v_e_33821.ni || v_n_33822.ni, v_n_33822.R4 = v_e_33821.R4 || v_n_33822.R4, v_n_33822.B4 = v_e_33821.B4 || v_n_33822.B4, v_n_33822.M4 = v_e_33821.M4 || v_n_33822.M4, v_n_33822.D4 = v_e_33821.D4, v_n_33822.P4 = scope.mathMax(v_n_33822.P4, v_e_33821.P4), v_n_33822.G4 = !0, v_r_33807 || (scope.v_Xt_27648 ? await scope.v_Xt_27648.yA(v_t_33819, v_i_33820, v_n_33822.Sr, scope.v_Bs_28013.PA(v_n_33822.ni, v_n_33822.R4, v_n_33822.B4, v_n_33822.M4), v_n_33822.P4, v_n_33822.D4) : (scope.recordsStore.W0({
+      v_n_33822.Sr = scope.mathMin(scope.mathMax(v_n_33822.Sr, v_e_33821.Sr, 0), 101e4), v_n_33822.ni = v_e_33821.ni || v_n_33822.ni, v_n_33822.R4 = v_e_33821.R4 || v_n_33822.R4, v_n_33822.B4 = v_e_33821.B4 || v_n_33822.B4, v_n_33822.M4 = v_e_33821.M4 || v_n_33822.M4, v_n_33822.D4 = v_e_33821.D4, v_n_33822.P4 = scope.mathMax(v_n_33822.P4, v_e_33821.P4), v_n_33822.G4 = !0, v_r_33807 || (scope.v_Xt_27648 ? await scope.v_Xt_27648.yA(v_t_33819, v_i_33820, v_n_33822.Sr, scope.v_Bs_28013.PA(v_n_33822.ni, v_n_33822.R4, v_n_33822.B4, v_n_33822.M4), v_n_33822.P4, v_n_33822.D4, scope.__umgJudgeOf()) : (scope.recordsStore.W0({
         K0: "music",
         ee: v_t_33819,
         te: v_i_33820

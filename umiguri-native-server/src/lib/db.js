@@ -94,6 +94,8 @@ function migrate(d) {
     );
 
     -- 单曲成绩: 每用户每曲每难度一行(客户端上传的就是个人最佳)。
+    -- judge 列是判定构成(基线版客户端不上报, 全为 0): JC=JUSTICE CRITICAL,
+    -- j=JUSTICE, atk=ATTACK, miss=MISS, fast/late, 以及 TAP/HOLD/SLIDE/AIR/FLICK 命中。
     CREATE TABLE IF NOT EXISTS native_records (
       user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       music_id   TEXT    NOT NULL,
@@ -102,6 +104,17 @@ function migrate(d) {
       flags      INTEGER NOT NULL DEFAULT 0,
       play_count INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL,
+      judge_jc   INTEGER NOT NULL DEFAULT 0,
+      judge_j    INTEGER NOT NULL DEFAULT 0,
+      judge_atk  INTEGER NOT NULL DEFAULT 0,
+      judge_miss INTEGER NOT NULL DEFAULT 0,
+      judge_fast INTEGER NOT NULL DEFAULT 0,
+      judge_late INTEGER NOT NULL DEFAULT 0,
+      lane_tap   INTEGER NOT NULL DEFAULT 0,
+      lane_hold  INTEGER NOT NULL DEFAULT 0,
+      lane_slide INTEGER NOT NULL DEFAULT 0,
+      lane_air   INTEGER NOT NULL DEFAULT 0,
+      lane_flick INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY (user_id, music_id, difficulty)
     );
     CREATE INDEX IF NOT EXISTS idx_native_records_music ON native_records(music_id, difficulty, score DESC);
@@ -126,4 +139,25 @@ function migrate(d) {
       PRIMARY KEY (user_id, chara_id)
     );
   `);
+
+  // 加列迁移: 老库(判定构成之前建的)没有这些列, 这里逐条 ALTER 补上。
+  // 幂等: 已经有了就跳过(PRAGMA table_info 查一次真实列名)。
+  const have = new Set(db.prepare("PRAGMA table_info(native_records)").all().map((r) => r.name));
+  const judgeCols = [
+    ["judge_jc", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_j", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_atk", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_miss", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_fast", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_late", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_tap", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_hold", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_slide", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_air", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_flick", "INTEGER NOT NULL DEFAULT 0"]
+  ];
+  for (const [name, type] of judgeCols) {
+    if (have.has(name)) continue;
+    db.exec("ALTER TABLE native_records ADD COLUMN " + name + " " + type);
+  }
 }

@@ -1,5 +1,7 @@
 // 游玩记录: 上报、查询、排行榜。
 
+// 曲名/难度名的查表由原生服务端提供(两边共用同一份曲目目录)。
+import { describeRecord as musicDescribe } from "../../umiguri-native-server/src/lib/music-catalog.js";
 import { getDb } from "./lib/db.js";
 import { assertInt, assertScore, assertString } from "./lib/validate.js";
 
@@ -42,6 +44,17 @@ export function recordPlay(userId, input) {
   return { id: Number(info.lastInsertRowid), isBest };
 }
 
+// 曲目目录(曲名/难度等级)来自游戏谱面表头, 见 umiguri-native-server/src/lib/music-catalog.js。
+// 取不到就返回空串, 面板会退回显示 musicId。
+function describe(musicId, difficulty) {
+  try {
+    // 动态 import: umiguri-server 单独跑时(没有原生服务端)也能用。
+    return musicDescribe(musicId, difficulty);
+  } catch {
+    return { musicTitle: "", diffName: "", diffLevel: "", diffLabel: "" };
+  }
+}
+
 export function listPlays(userId, { limit = 50, offset = 0 } = {}) {
   const db = getDb();
   const lim = assertInt(limit, "limit", { min: 1, max: 200 });
@@ -59,7 +72,8 @@ export function listPlays(userId, { limit = 50, offset = 0 } = {}) {
     combo: r.combo,
     judgeCrit: r.judge_crit,
     judgeMiss: r.judge_miss,
-    playedAt: r.played_at
+    playedAt: r.played_at,
+    ...describe(r.music_id, r.difficulty)
   }));
 }
 
@@ -75,7 +89,8 @@ export function listBests(userId) {
     score: r.score,
     rank: r.rank,
     clear: r.clear,
-    updatedAt: r.updated_at
+    updatedAt: r.updated_at,
+    ...describe(r.music_id, r.difficulty)
   }));
 }
 

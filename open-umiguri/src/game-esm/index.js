@@ -3722,18 +3722,22 @@ scope.v_Bs_28013.prototype = {
       nw_token: this.qy
     })).result ? v_t_33763 : "card_not_found" === v_t_33763.result ? -11 : scope.v_Es_28010 : scope.v_Es_28010;
   },
-  yA: async function (v_t_33764, v_i_33765, v_e_33766, v_n_33767, v_r_33768, v_s_33769) {
+  yA: async function (v_t_33764, v_i_33765, v_e_33766, v_n_33767, v_r_33768, v_s_33769, v_a_33769a) {
+    var v_o_33769b = {
+      musicId: v_t_33764,
+      musicDiff: v_i_33765,
+      score: v_e_33766,
+      flags: v_n_33767,
+      playCount: v_r_33768,
+      updatedAt: v_s_33769
+    };
+    // 判定构成(JUSTICE CRITICAL/JUSTICE/ATTACK/MISS、FAST/LATE、各曲种命中)随成绩一起上报;
+    // 老服务端不认识这些字段会直接忽略, 所以不需要协商。取不到就不带。
+    if (v_a_33769a) v_o_33769b.judge = v_a_33769a;
     return this.Zy && "ok" === (v_t_33764 = await this.Qy("POST", "/1/umiguri/setRecord", {
       token: this.Zy,
       nw_token: this.qy,
-      data: {
-        musicId: v_t_33764,
-        musicDiff: v_i_33765,
-        score: v_e_33766,
-        flags: v_n_33767,
-        playCount: v_r_33768,
-        updatedAt: v_s_33769
-      }
+      data: v_o_33769b
     })).result ? v_t_33764 : scope.v_Es_28010;
   },
   sA: async function () {

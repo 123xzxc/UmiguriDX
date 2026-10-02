@@ -332,6 +332,77 @@ let userId = 0;
 }
 
 {
+  // 判定构成: 高分那局的明细应当被保存, 且低分不覆盖。
+  await api(base, "/1/umiguri/setRecord", {
+    token,
+    nw_token: "nw-test-0001",
+    data: {
+      musicId: "judge_001",
+      musicDiff: 3,
+      score: 1000000,
+      flags: 1,
+      playCount: 1,
+      updatedAt: 444,
+      judge: {
+        justiceCritical: 8,
+        justice: 7,
+        attack: 5,
+        miss: 689,
+        fast: 6,
+        late: 6,
+        maxCombo: 5,
+        noteCount: 715,
+        lanes: {
+          tap: { hits: 16, total: 700 },
+          hold: { hits: 0, total: 3 },
+          slide: { hits: 4, total: 8 },
+          air: { hits: 0, total: 2 },
+          flick: { hits: 0, total: 2 }
+        }
+      }
+    }
+  });
+  const rec = await api(base, "/1/umiguri/getRecords", { token, nw_token: "nw-test-0001" });
+  const row = rec.table.find((r) => r.musicId === "judge_001");
+  eq(!!row, true, "判定成绩已入库");
+  eq(row.judge.justiceCritical, 8, "JUSTICE CRITICAL 已保存");
+  eq(row.judge.justice, 7, "JUSTICE 已保存");
+  eq(row.judge.attack, 5, "ATTACK 已保存");
+  eq(row.judge.miss, 689, "MISS 已保存");
+  eq(row.judge.fast, 6, "FAST 已保存");
+  eq(row.judge.late, 6, "LATE 已保存");
+  eq(row.lanes.tap, 16, "TAP 命中数已保存");
+  eq(row.lanes.slide, 4, "SLIDE 命中数已保存");
+  eq(row.lanes.hold, 0, "HOLD 命中数已保存");
+  // 低分不覆盖高分, 判定明细也必须保持高分那局。
+  await api(base, "/1/umiguri/setRecord", {
+    token,
+    nw_token: "nw-test-0001",
+    data: {
+      musicId: "judge_001",
+      musicDiff: 3,
+      score: 500000,
+      flags: 0,
+      playCount: 2,
+      updatedAt: 445,
+      judge: { justiceCritical: 0, justice: 0, attack: 0, miss: 999, fast: 0, late: 0 }
+    }
+  });
+  const rec2 = await api(base, "/1/umiguri/getRecords", { token, nw_token: "nw-test-0001" });
+  const row2 = rec2.table.find((r) => r.musicId === "judge_001");
+  eq(row2.score, 1000000, "低分不覆盖高分");
+  eq(row2.judge.justiceCritical, 8, "判定明细仍属于最高分那一局");
+  eq(row2.judge.miss, 689, "MISS 未被低分局覆盖");
+  // 老客户端(不带 judge)也要能正常写, 不报错。
+  const legacy = await api(base, "/1/umiguri/setRecord", {
+    token,
+    nw_token: "nw-test-0001",
+    data: { musicId: "legacy_001", musicDiff: 1, score: 900000, flags: 1, playCount: 1, updatedAt: 446 }
+  });
+  eq(legacy.result, "ok", "不带 judge 的老客户端仍能上报");
+}
+
+{
   await api(base, "/1/umiguri/setRecord", {
     token,
     nw_token: "nw-test-0001",

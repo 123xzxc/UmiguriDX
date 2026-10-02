@@ -13,6 +13,7 @@
 
 import { config } from "./config.js";
 import { getDb } from "./lib/db.js";
+import { levelOf, titleOf } from "./lib/music-catalog.js";
 import {
   createSession,
   ensureUserForCard,
@@ -216,20 +217,31 @@ function handleAuthed(req, res, path, body, s) {
           updatedAt: Number(d.updatedAt) || 0
         });
       } else {
+        // 判定构成(JUSTICE CRITICAL/JUSTICE/ATTACK/MISS、FAST/LATE、各曲种命中)。
+        // 基线版客户端不带这个字段, 那就整条按 0 存, 面板会隐藏明细行。
+        const judge = d.judge && typeof d.judge === "object" ? d.judge : null;
         const saved = putRecord(s.user_id, {
           musicId: d.musicId,
           musicDiff: Number(d.musicDiff) || 0,
           score: Number(d.score) || 0,
           flags: Number(d.flags) || 0,
           playCount: Number(d.playCount) || 0,
-          updatedAt: Number(d.updatedAt) || 0
+          updatedAt: Number(d.updatedAt) || 0,
+          judge,
+          lanes: judge ? judge.lanes : null
         });
         // 战绩一律打一行: 玩家反馈「打完歌服务端没记录」时, 这行能一眼分清是
         // 「游戏根本没上报」(游戏在单机/游客模式, 见宿主日志 [umg][native])还是
         // 「上报了但没存住」。
+        const __t = titleOf(saved.musicId);
+        const __l = levelOf(saved.musicId, saved.musicDiff);
         console.log(
-          "[native] 成绩: user#" + s.user_id + " " + saved.musicId + " 难度" + saved.musicDiff +
-            " " + saved.score + " 次" + saved.playCount
+          "[native] 成绩: user#" + s.user_id + " " + (__t ? __t + " " : "") + saved.musicId +
+            " 难度" + saved.musicDiff + (__l ? "(" + __l + ")" : "") +
+            " " + saved.score + " 次" + saved.playCount +
+            (judge ? " JC" + (judge.justiceCritical | 0) + " J" + (judge.justice | 0) +
+              " A" + (judge.attack | 0) + " M" + (judge.miss | 0) +
+              " FAST" + (judge.fast | 0) + " LATE" + (judge.late | 0) : "")
         );
       }
       sendJson(res, 200, { result: "ok" });
