@@ -106,6 +106,11 @@ export function createV_G1_27905(scope) {
     scope.handshake.Bm.Fm = 0, scope.v_Ns_28014._A(), v_t_28841 ? await scope.v_Xt_27648.Ey() : (scope.v_Te_27911.W4(), await scope.renderer.C7(scope.v_Ge_28204(15)), await scope.v_Ns_28014.cA(), await scope.renderer.C7(scope.v_Ge_28204(15)), scope.v_Te_27911.K4()), v_i_28806();
   }
   async function v_p_28808(v_t_28842) {
+    try {
+      console.log("[umg][card] v_p_28808 入参: argc=" + arguments.length + " type=" + (typeof v_t_28842) +
+        " len=" + (v_t_28842 && v_t_28842.length) + " buf=" + !!(v_t_28842 && v_t_28842.buffer) +
+        " val=" + (v_t_28842 === null ? "null" : v_t_28842 === undefined ? "undefined" : String(v_t_28842)));
+    } catch (v_umgE) {}
     let v_n_28843 = !1,
       v_r_28844;
     // ⚠ 只有「调用方显式地不传卡号」才是游客登录(登录界面的 GuestLogin 按钮:
@@ -116,7 +121,13 @@ export function createV_G1_27905(scope) {
     //   已经把它写成了服务端显示名 —— 于是玩家看到「用我自己的名字进了游客登录」,
     //   成绩还不上传。改用 arguments.length 判定: 传了参数(哪怕是 undefined)都走
     //   真登录分支, 卡号非法时由 hA()/服务端拒掉, 不再静默降级成游客。
-    if (0 === arguments.length && scope.v_Xt_27648) scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();else {
+    if (0 === arguments.length && scope.v_Xt_27648) scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();else if (v_t_28842 === void 0 || v_t_28842 === null) {
+      // 传了参数但值是空: 这是「等刷卡没等到」——不能拿它去登录。
+      // 否则 Py(undefined) 会兜底成全 0 卡号, 服务端只能回 card_not_found,
+      // 玩家看到的就是「点了刷卡但登录不上」, 而且日志里全是误导性的全 0 卡。
+      // 直接退回登录画面, 让玩家重新刷/点 GuestLogin。
+      return void v_o_28849();
+    } else {
       var v_t_28842 = await scope.v_Ns_28014.hA(scope.v_Rs_28007.Py(v_t_28842));
       if (v_t_28842 === scope.v_Fs_28012) return await new Promise(v_t_28850 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorDupLogin"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28850)), void v_o_28849();
       if (v_t_28842 === scope.v_Es_28010) return await new Promise(v_t_28851 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorNetworkError"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28851)), void v_o_28849();

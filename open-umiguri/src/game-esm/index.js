@@ -3644,6 +3644,28 @@ scope.v_Rs_28007.prototype = {
       }
       return this.US = scope.v_Ps_28006, v_umgHostCard;
     }
+    // 兜底: 宿主已经绑了卡(__umgServer.card)就直接用, 不再干等 __umgSwipe。
+    // 实测日志: 游戏内自带刷卡/点 GuestLogin 重试时, Py 收到的是 undefined ——
+    // 说明这条链上没人把字节交出来(等待分支的 Promise 被别的路径 resolve 成空值,
+    // 或宿主那一下没勾上)。宿主本来就握着完整卡号, 与其猜哪一环掉了, 不如直接问它。
+    // 只在「有卡」时短路, 没卡时行为不变(仍然等 __umgSwipe, 玩家照常能进游客)。
+    if (window.__umgServer && window.__umgServer.card) {
+      var v_umgFallback = window.__umgServer.cardBytes;
+      if (!(v_umgFallback && v_umgFallback.buffer && 10 === v_umgFallback.byteLength)) {
+        var v_umgFs = String(window.__umgServer.card).replace(/[^0-9a-fA-F]/g, "");
+        if (20 === v_umgFs.length) {
+          v_umgFallback = new Uint8Array(10);
+          for (var v_umgFi = 0; v_umgFi < 10; ++v_umgFi) v_umgFallback[v_umgFi] = parseInt(v_umgFs.substr(v_umgFi * 2, 2), 16);
+        } else {
+          v_umgFallback = null;
+        }
+      }
+      if (v_umgFallback) {
+        window.__umgServer.cardBytes = null;
+        this.US = scope.v_Ps_28006;
+        return v_umgFallback;
+      }
+    }
     // 等刷卡: resolver 同时挂到 globalThis.__umgSwipe, 宿主的「刷卡」虚拟按钮点它
     // (桌面没有读卡器; 键盘假卡 Ctrl+F9~F12 走的就是 this.Z9, 路径不变)。
     // 刷卡成功/被取消后立刻摘掉钩子, 宿主据此判断「游戏是否正停在读卡界面」。
@@ -4145,9 +4167,25 @@ scope.v_Hs_28017.prototype = {
     v_t_33918 === this.DC && (this.FC && this.FC(!1), this.FC = void 0);
   },
   iP: function (v_t_33919) {
-    return this.aP >= v_t_33919 || (this.nP = v_t_33919, new Promise(v_t_33920 => {
-      this.rP = v_t_33920;
-    }));
+    // 房主会把「下一局的状态」记在这里(0 → 1 → 2 → 3 → 4 → 5, 见 gameCore 的
+    // 结算流程 v_Hi_30330)。但这里原来只更新本地 nP, **没有把状态发给服务端** ——
+    // 而所有人(包括房主自己)进下一局前都要 await 137 状态 >= N, 137 只有服务端
+    // 的 pushState 才会发。于是房主推进后没人推状态, Tx() 永远等不到, 房主只好
+    // 退房; 退房会解散整个房间, 其他人一起掉线 —— 这就是「多人玩不起来」。
+    // 这里在改 nP 的同时上报(XX 是 v_Qs_28030/xx/Lx 共用的上报入口)。
+    var v_umgOk = this.aP >= v_t_33919;
+    if (!v_umgOk) {
+      this.nP = v_t_33919;
+      try {
+        // XX(大写)在 v_Hs_28017 上不存在 —— 小写 xx 是「准备标记」, 语义不同。
+        // tT 开局成功后 LC.vx(this.iT.bind(this)) 挂的是 v_Pa_28060 的 iT, 而
+        // OP_STATE=19 的发送入口是 v_Pa_28060.XC(n, 0)(v_Hs_28017.xx/Lx 走它)。
+        // 没有 LC 或没连接时静默跳过: 单机/无联机不受影响。
+        this.LC.XC(v_t_33919, 0);
+      } catch (v_umgE) {}
+      if (this.rP) this.rP(!0);
+    }
+    return v_umgOk;
   },
   lP: function (v_t_33921) {
     v_t_33921 === this.nP && (this.rP && this.rP(!1), this.rP = void 0);
@@ -4395,7 +4433,18 @@ scope.v_Ia_28059.prototype = {
     }
   },
   XT: async function () {
-    this.VI && "open" !== this.bT.readyState || (await this.zT(), this.LT = !1);
+    // ⚠ 这里原来是 `this.VI && "open" !== this.bT.readyState || (…)` ——
+    //   JS 的 && 优先级高于 ||, 展开后是 `(A && B) || C`, 而 A=false(桌面
+    //   走的是 WebSocket 分支, VI 恒为 false), 整式直接短路到 C, 于是**每次**
+    //   调用都会往下走 await this.zT()。zT() 里只要 ET 非空就会await 一轮
+    //   数据通道发送(见文件后半), 桌面分支还要走 AT.KI() → 2 秒超时。
+    //   进对局瞬间 ET 里已经有要发的角色/头像数据, 于是「开始游戏」必卡 10 秒,
+    //   玩家看到的画面停在选曲界面不动 —— 联机时更明显(要等 P2P 建链)。
+    //   判据应是「本来要发的还没发完, 或者通道还没开」才继续。改成语义直白
+    //   的写法: 通道已开且队列空 -> 什么都不做。
+    var v_umgCh = this.VI ? this.bT : this.DT;
+    if (v_umgCh && v_umgCh.readyState === 1 && 0 === this.ET.length && !this.LT) return;
+    await this.zT(), this.LT = !1;
   },
   zT: async function () {
     if (!this.LT && (this.LT = !0, this.ET.length)) {
