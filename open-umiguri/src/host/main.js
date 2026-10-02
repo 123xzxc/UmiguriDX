@@ -31,7 +31,7 @@ import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
 import { installLauncher } from './keypanel/launcher.js';
 import { installOnlineUI, openOnlineUI } from './online/ui.js';
-import { installNativeServer, nativeStatus } from './online/native.js';
+import { installNativeServer, nativeStatus, autoHostLogin } from './online/native.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
 // 见 tauri#14707 / #15216。因此凡会触发 invoke 的初始化(含游戏启动)一律推迟到
@@ -249,6 +249,16 @@ whenPageReady(async () => {
     }
   } catch (e) {
     diagLog('[umg][native] 注入失败: ' + ((e && e.message) || e));
+  }
+
+  // 宿主直接登录: 必须早于 loadMain() —— 游戏 bootstrap 就会把玩家名写进握手,
+  // 晚了就只能按游客写死(游客态会跳过成绩上报)。失败不挡启动。
+  try {
+    const lr = await autoHostLogin(onlineCfg);
+    if (lr && lr.ok) diagLog('[umg][native] 宿主直登成功: ' + (lr.name || ''));
+    else if (lr && !lr.skipped) diagLog('[umg][native] 宿主直登失败(游戏会是游客, 成绩不上传): ' + (lr.error || '未知'));
+  } catch (e) {
+    diagLog('[umg][native] 宿主直登异常: ' + ((e && e.message) || e));
   }
 
   loadMain(); // 解密并执行游戏前端(main.js.enc)

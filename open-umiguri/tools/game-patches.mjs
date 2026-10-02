@@ -230,6 +230,10 @@ export function applyGamePatches(ast) {
       if (!t.isIdentifier(left.property, { name: 'v_Xt_27648' })) return;
       if (!t.isNullLiteral(path.node.right)) return; // 幂等: 打过之后右侧是三元
       path.node.right = parser.parseExpression(NATIVE_ACCOUNT);
+      if (!JSON.stringify(path.parent).includes('__umgHostLogin')) {
+        path.insertAfter(parser.parse(HOST_LOGIN_BRIDGE, { sourceType: 'script' }).program.body);
+        applied.push('宿主直登后门 __umgHostLogin');
+      }
       nativePatched++;
     },
     NewExpression(path) {
@@ -304,6 +308,39 @@ export function applyGamePatches(ast) {
 
 // 1) 联机账号客户端(HTTP: /1/user/login, /1/umiguri/*)
 const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null';
+
+// 宿主直登: 把「刷卡登录」这件事从游戏的读卡窗口里搬出来。
+//
+// 为什么必须搬: 游戏进「GuestLogin」按钮后走 v_k_28809, 那里是个只认读卡器的循环
+// (await v_D_27646.R9()), 桌面没有 AM 读卡器时通道极窄 —— 实测日志里 R9 从头到尾
+// 没被调用过, 玩家点宿主悬浮球上的「刷卡」也没用, 最后只能游客进去(游客态会跳过
+// 成绩上报, 服务端一条成绩都收不到)。
+//
+// 这里给游戏账号客户端装一个 omgLogin(cardId): 宿主在 loadMain() 之前调它, 直接完成
+// /1/user/login -> 拉档案 -> 灌进 handshake, 游戏启动握手时就已经是「已登录」状态,
+// 走的是 v_Ns_28014.cA() 里 scope.v_Xt_27648 为真的那条分支(不碰游客标志 v_r_33807)。
+// 失败不影响启动: 返回 null, 游戏照旧游客。
+const HOST_LOGIN_BRIDGE = `
+globalThis.__umgHostLogin = async function (v_umgCard) {
+  var v_umgAccount = scope.v_Xt_27648;
+  if (!v_umgAccount) return { ok: false, error: '未接原生联机' };
+  try {
+    var v_umgRet = await v_umgAccount.Fy(String(v_umgCard || ''));
+    // v_Ms_28009 = 0 成功; -10 重复登录; -1 网络/服务端错误
+    if (v_umgRet !== scope.v_Ms_28009) return { ok: false, error: 'login ' + v_umgRet };
+    await v_umgAccount.Ly();   // getProfile -> 写进 handshake(名字/等级/称号/存档)
+    await v_umgAccount.My();   // getRecords -> handshake.Mm
+    await v_umgAccount.CA();   // getOptions -> handshake.On.ae
+    await v_umgAccount.EA();   // getCourseRecords -> handshake.Em
+    await v_umgAccount.MA();   // getCharaStates -> handshake.On.nm
+    scope.v_Ns_28014.fA();     // 清掉可能残留的游客标志
+    console.log('[umg][native] 宿主直登成功: ' + scope.handshake.rm.om);
+    return { ok: true, name: scope.handshake.rm.om };
+  } catch (v_umgErr) {
+    return { ok: false, error: (v_umgErr && v_umgErr.message) || String(v_umgErr) };
+  }
+};
+`;
 
 // 3) 房间客户端(/sock): 官方地址 d.umgr-serv.inonote.jp:8101
 const NATIVE_SOCK_HOST = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.host : "d.umgr-serv.inonote.jp"';

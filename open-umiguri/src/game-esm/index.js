@@ -181,6 +181,29 @@ scope.boardAir = null;
 scope.v_D_27646 = null;
 scope.v_F_27647 = null;
 scope.v_Xt_27648 = window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null;
+// 宿主直登后门: 宿主在 loadMain() 之前用绑定卡号直接完成登录(见 tools/game-patches.mjs
+// 的 HOST_LOGIN_BRIDGE)。游戏进「GuestLogin」按钮后的 v_k_28809 是个只认读卡器的循环,
+// 桌面没读卡器时极难走通 —— 玩家点宿主悬浮球的「刷卡」也进不去, 最后只能游客,
+// 而游客态会跳过成绩上报。这里让宿主把 /1/user/login + 档案拉取直接做完。
+globalThis.__umgHostLogin = async function (v_umgCard) {
+  var v_umgAccount = scope.v_Xt_27648;
+  if (!v_umgAccount) return { ok: false, error: "未接原生联机" };
+  try {
+    var v_umgRet = await v_umgAccount.Fy(String(v_umgCard || ""));
+    // v_Ms_28009 = 0 成功; -10 重复登录; -1 网络/服务端错误
+    if (v_umgRet !== scope.v_Ms_28009) return { ok: false, error: "login " + v_umgRet };
+    await v_umgAccount.Ly();   // getProfile -> 写进 handshake(名字/等级/称号/存档)
+    await v_umgAccount.My();   // getRecords -> handshake.Mm
+    await v_umgAccount.CA();   // getOptions -> handshake.On.ae
+    await v_umgAccount.EA();   // getCourseRecords -> handshake.Em
+    await v_umgAccount.MA();   // getCharaStates -> handshake.On.nm
+    scope.v_Ns_28014.fA();     // 清掉可能残留的游客标志
+    console.log("[umg][native] 宿主直登成功: " + scope.handshake.rm.om);
+    return { ok: true, name: scope.handshake.rm.om };
+  } catch (v_umgErr) {
+    return { ok: false, error: (v_umgErr && v_umgErr.message) || String(v_umgErr) };
+  }
+};
 scope.v_oe_27649 = null;
 scope.v_B_27650 = new TextDecoder("utf-8");
 scope.v_N_27651 = new TextEncoder();

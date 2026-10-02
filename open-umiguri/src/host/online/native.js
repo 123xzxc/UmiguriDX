@@ -128,3 +128,33 @@ export function swipeNow() {
   srv.cardBytes = bytes;
   return true;
 }
+
+// 宿主直接登录(不依赖游戏那个只认读卡器的登录窗口)。
+//
+// 游戏点「GuestLogin」后走 v_k_28809, 那是个只认读卡器的循环; 桌面没读卡器时基本走不通
+// (实测日志里 R9 从未被调用), 玩家最后只能游客进去 —— 而游客态会跳过成绩上报。
+// 游戏侧后门 globalThis.__umgHostLogin 由 tools/game-patches.mjs 注入, 内部就是
+// /1/user/login + 拉档案 + 灌 handshake; 这里负责在 loadMain() 之前调它。
+// 返回 { ok, name?, error? }; 失败不抛异常(游戏照旧游客, 不至于连单机都进不去)。
+export async function hostLoginNow() {
+  const fn = window.__umgHostLogin;
+  if (typeof fn !== 'function') return { ok: false, error: '游戏侧没有直登后门(补丁未生效?)' };
+  try {
+    const r = await fn(window.__umgServer && window.__umgServer.card);
+    return r && typeof r === 'object' ? r : { ok: false, error: '后门返回了非对象' };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
+// 启动时自动直登: 有卡号 + 接了原生服务端才做。
+// 由 main.js 在 loadMain() 之前 await —— 必须早于游戏 bootstrap,
+// 否则握手里的玩家名已经按游客写死了。
+export async function autoHostLogin(sessionCfg) {
+  const srv = window.__umgServer;
+  const card = normalizeCard((sessionCfg && sessionCfg.cardId) || readLS(LS_CARD));
+  if (!srv || !srv.host) return { ok: false, skipped: true, error: '未接原生联机' };
+  if (!cardToBytes(card)) return { ok: false, skipped: true, error: '没绑定卡号' };
+  srv.card = card;
+  return hostLoginNow();
+}
