@@ -33,13 +33,15 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 24
+      # find 用 -print0 + read -d '': 路径带空格时不会被拆成两个文件。
+      # (仓库里目前没这种路径, 但服务端将来加测试文件很容易踩到。)
       - name: 语法检查
         working-directory: umiguri-server
         run: |
           fail=0
-          for f in $(find src test tools -name "*.js" -o -name "*.mjs"); do
+          while IFS= read -r -d '' f; do
             node --check "$f" || fail=1
-          done
+          done < <(find src test tools -type f \( -name "*.js" -o -name "*.mjs" \) -print0)
           exit $fail
       - name: 冒烟测试(卡号 / TOTP / 面板 / 房间)
         working-directory: umiguri-server
