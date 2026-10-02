@@ -700,6 +700,9 @@ let guestB = 0;
 // 137: 对局状态上报(op=19)。服务端以前在这里引用了未定义的 PUSH_STATE,
 // 一收到就抛 ReferenceError 把连接打断 —— 对局流程根本走不下去。
 {
+  // 进房时服务端无条件补发过一帧 137(状态 0), 先排空, 只看这次上报触发的。
+  a.pushes.set(137, []);
+  b.pushes.set(137, []);
   const r = await a.request(19, new Writer().u16(3).u16(0));
   eq(r.body.u16(), 0, "上报对局状态结果码 0");
   const stA = await a.nextPush(137);
@@ -708,13 +711,30 @@ let guestB = 0;
   const stB = await b.nextPush(137);
   ok(stB.u32() > 0, "137 也带对局号");
   eq(stB.u16(), 3, "137 也广播给 B");
-  // 回退: 更小的状态不应该把房间状态拉低。状态没推进 => 服务端不重复广播,
-  // 所以这里断言「没有新的 137」, 而不是等一帧。
+  // 回退: 更小的状态不应该把房间状态拉低, 但仍要**回一帧**当前(较大的)状态 ——
+  // 客户端的等法是 aP < n 时挂 Promise 等 137, 所以「等的人已经挂上之后」
+  // 再收到任何一帧 137 才会醒。服务端如果因为「状态没变」就不发, 等的人会永久卡住
+  // (真机表现: 跳过匹配/点开始后非房主玩家停在原界面不进歌曲)。
+  b.pushes.set(137, []); // 排空历史上压下的 137, 只看这次请求触发的那一帧
   const r2 = await b.request(19, new Writer().u16(1).u16(0));
   eq(r2.body.u16(), 0, "B 上报更小状态也成功");
-  await new Promise((v) => setTimeout(v, 120));
-  eq(b.pushCount(137), 0, "状态回退不产生新的 137 广播");
+  const stBack = await b.nextPush(137);
+  ok(stBack.u32() > 0, "回退时那帧 137 同样先带对局号");
+  eq(stBack.u16(), 3, "状态回退时回的还是当前(较大的)状态 3");
   // 推进到 4 就应该再广播一次, 且是 4(取最大)
+  b.pushes.set(137, []);
+  // ⚠ 关键回归: 同一个状态值**再报一次**, 也必须回一帧 137。
+  //   客户端的等待是「aP/sP < n → 挂 Promise, 等 137 来 resolve」(v_Hs_28017.iP/Tx),
+  //   所以「等的人已经挂上、状态又恰好等于目标值」时, 只有再来一帧才会醒。
+  //   以前服务端 next === room.state 就 return, 真机表现就是「跳过匹配/点开始之后,
+  //   非房主玩家停在大厅不进歌曲界面」。
+  b.pushes.set(137, []);
+  const rRepeat = await b.request(19, new Writer().u16(3).u16(0));
+  eq(rRepeat.body.u16(), 0, "重复上报同一状态结果码 0");
+  const stRepeat = await b.nextPush(137);
+  ok(stRepeat.u32() > 0, "重复上报也回 137(带对局号)");
+  eq(stRepeat.u16(), 3, "重复上报回的还是那个状态值(不能被吞掉)");
+
   const r3 = await b.request(19, new Writer().u16(4).u16(0));
   eq(r3.body.u16(), 0, "B 上报状态 4 成功");
   const stB2 = await b.nextPush(137);
@@ -722,23 +742,23 @@ let guestB = 0;
   eq(stB2.u16(), 4, "137 推进到 4");
 }
 
-// op=115 是房主「角度/角色数据通道」的分块上传 —— 客户端 v_Ia_28059.zT 里
-// 每一块都带 [u32 YC 局号][u32 hT 曲目序号][u32 分块标志], 最后一块收尾。
-// 客户端(以及所有等待方)下一步要 await 137 状态 >= 4/5, 而 137 只有服务端
-// pushState 会发 —— 以前 115 落到 default 回非 0, 房主打完第一局就卡在「等待
-// 对手」, 只好退房; 退房会解散房间, 所有人一起掉线。
-// 所以 115 只负责「回 0 + 把上行的角度数据转给同房间其他人」, 真正推进状态的
-// 是开局(134 / op=6)与状态上报(19), 那两条走 pushState。
+// op=115 是「资源提供方回给请求方」的数据块通道(客户端 v_Ia_28059.zT):
+//   [u32 YC 自己的玩家槽位][u32 hT 资源 id][u32 分块标志(bit1=2 数据/bit2=4 头/bit0=1 末块)] + 数据
+// 请求方在 v_Ia_28059.XI() 里等的是 **227**, 且读法正好是这三项, 所以服务端
+// 必须把 115 改写成 227 再转发(115 是请求码, 原样转会被当成响应而进不了推送分发)。
+// 以前原样转 115 -> 对端永远收不到资源 -> 对局里看不到对手角色/头像。
 {
   const wx115 = new Writer().u32(1).u32(0).u32(1).raw(Buffer.from([0xde, 0xad, 0xbe, 0xef]));
   const r115 = await a.request(115, wx115);
-  eq(r115.body.u16(), 0, "115(角色数据块)结果码 0");
-  // B 应当收到转发的 115(与官方一致: 大厅里其他人的角度数据也要同步)。
-  const relay115 = await b.nextPush(115);
-  eq(relay115.u32(), 1, "转发的 115 带上了原样回放的局号");
-  eq(relay115.u32(), 0, "转发的 115 带上了原样回放的曲目序号");
-  eq(relay115.u32(), 1, "转发的 115 带上了原样回放的分块标志");
-  ok(relay115.rest().equals(Buffer.from([0xde, 0xad, 0xbe, 0xef])), "转发的 115 原样带回数据块");
+  eq(r115.body.u16(), 0, "115(资源数据块)结果码 0");
+  // B 应当收到的是转发的 227(布局与载荷逐字节一致)。
+  const relay115 = await b.nextPush(227);
+  eq(relay115.u32(), 1, "转发的 227 带上了原样回放的 YC(发送者槽位)");
+  eq(relay115.u32(), 0, "转发的 227 带上了原样回放的资源 id");
+  eq(relay115.u32(), 1, "转发的 227 带上了原样回放的分块标志");
+  ok(relay115.rest().equals(Buffer.from([0xde, 0xad, 0xbe, 0xef])), "转发的 227 原样带回数据块");
+  await new Promise((v) => setTimeout(v, 120));
+  eq(a.pushCount(227), 0, "资源数据不回声给发送者自己");
 
   // 开局推进靠 op=6(134)/op=19: 这里补一次 op=19 到 5, 后面的「中途进房」
   // 用例期望的当前状态就是 5。
@@ -764,10 +784,11 @@ let guestB = 0;
   r.body.u32();
   r.body.u32();
   await c.nextPush(130);
+  // 进房会补发一帧当前状态(现在无条件发, 包括 0)。
   const stC = await c.nextPush(137);
   // 载荷与 pushState 一致: 先 u32 局号, 再 u16 状态(客户端的 137 分支就是这么读的)
   ok(stC.u32() > 0, "C 收到的 137 也带局号");
-  eq(stC.u16(), 5, "C 进房立刻收到当前状态 5(!=2 的 0/1 值已随 115 推高)");
+  eq(stC.u16(), 5, "C 进房立刻收到当前状态 5");
   c.close();
   await new Promise((v) => setTimeout(v, 50));
 }
@@ -790,28 +811,112 @@ let guestB = 0;
   eq(p145.str(), "hello 联机", "145 带上了聊天文本");
 }
 
-// op=114 是玩家间 WebRTC 信令(头像/角色图 P2P): 服务端只负责转给同房间其他人,
-// 不能回非 0 —— 以前回 1 导致对局里永远看不到对手头像。
+// 客户端「gg」写串 = u32 字节长度 + UTF-8; 这里配一个读法用来逐字节复核原样透传。
+const ggRead = (r) => { const n = r.u32(); return r.rest() ? Buffer.from(r.slice(n)).toString("utf8") : ""; };
+
+// op=114 是玩家间 P2P 信令(头像/角色图): 服务端只负责转给同房间其他人, 不能回非 0。
+//
+// ⚠ 114 **一律**转成 226, 不能按载荷内容拆 226/227:
+//   226 的读法 = u32 YC + u8 子类型 + 参数(= 114 载荷本身);
+//   227 的读法 = u32 YC + u32 资源 id + u32 分块标志(= op=115 的载荷)。
+//   以前按「YC 是不是 1」拆, 于是槽位不是 1 的玩家发什么都被丢进 227,
+//   对面 XI 拿 u8 子类型当 u32 读 -> 抛「二进制读取越界」。
 {
-  // YC=1(offer) 应转成 226
+  // 子类型 10 = 「请把这个资源 id 发给我」-> 226 原样转发
   const req114 = new Writer().u32(1).u8(10).u32(7).u8(3);
   const r = await a.request(114, req114);
   eq(r.body.u16(), 0, "信令转发结果码 0(不是非 0)");
   const relayB = await b.nextPush(226);
-  eq(relayB.u32(), 1, "226 里第一个 u32 是 YC(offer=1)");
+  eq(relayB.u32(), 1, "226 里第一个 u32 是 YC(发送者槽位)");
   eq(relayB.u8(), 10, "226 原样带上子类型");
   eq(relayB.u32(), 7, "226 原样带上请求 id");
-  eq(relayB.u8(), 3, "226 原样带上角色 id");
+  eq(relayB.u8(), 3, "226 原样带上资源类型");
   await new Promise((v) => setTimeout(v, 120));
   eq(a.pushCount(226), 0, "信令不回声给发送者自己");
 
-  // YC=2(ICE candidate) 应转成 227
-  const reqIce = new Writer().u32(2).u8(9);
+  // 槽位不是 1 的玩家发的信令同样走 226(以前会被误判成 227)
+  const reqIce = new Writer().u32(2).u8(2).raw(Buffer.from([0x7b, 0x7d]));
   const r2 = await a.request(114, reqIce);
   eq(r2.body.u16(), 0, "ICE 转发结果码 0");
-  const relayIce = await b.nextPush(227);
-  eq(relayIce.u32(), 2, "227 里 YC=2");
-  eq(relayIce.u8(), 9, "227 原样带上子类型");
+  const relayIce = await b.nextPush(226);
+  eq(relayIce.u32(), 2, "226 里 YC 是发送者槽位 2");
+  eq(relayIce.u8(), 2, "226 原样带上子类型(ICE)");
+  await new Promise((v) => setTimeout(v, 120));
+  eq(a.pushCount(227), 0, "114 不会被误转成 227");
+
+  // 114 转成 227 时曾经越界: 用 226 的读法逐字节复核一遍载荷没有被动过。
+  // 客户端写串用的是「u32 长度 + UTF-8」(gg), 不是服务端底层的 u16 str。
+  const gg = (w, v) => { const b = Buffer.from(v, "utf8"); w.u32(b.length); w.raw(b); return w; };
+  const reqOffer = gg(gg(new Writer().u32(1).u8(1), "v=0"), "o=- 1 1 IN IP4 0.0.0.0");
+  await a.request(114, reqOffer);
+  const relayOffer = await b.nextPush(226);
+  eq(relayOffer.u32(), 1, "226 的 YC");
+  eq(relayOffer.u8(), 1, "226 的子类型(SDP offer)");
+  eq(ggRead(relayOffer), "v=0", "226 载荷里的 SDP 原样透传(第一段)");
+  eq(ggRead(relayOffer), "o=- 1 1 IN IP4 0.0.0.0", "226 载荷里的 SDP 原样透传(第二段)");
+
+
+// ---- 3b. 头像/角色 P2P: 用客户端**真实读法**复核 226/227 两条通道 ----
+// 这段把 v_Ia_28059.OI / XI 的读法逐行搬过来, 直接喂服务端发出去的那一帧,
+// 目的: 一旦有人再把 114 转成 227(或把 115 原样转), 这里会立刻抛「二进制读取越界」,
+// 而不是等到真机上「看不到对手头像/角色」才发现。
+//
+// nextPush 交回来的 Reader 已经读掉了 magic/op/seq(off=6), buf 是整帧。
+// 客户端 onmessage 也是这么读的, 所以这里从同一个位置接着读即可。
+const clientReaderClass = (() => {
+  // 等价于 open-umiguri/src/game-esm/index.js 的 v_Po_28121:
+  //   th = new Uint8Array(input.buffer || input);  kg = th.byteLength;  Bp() = th.buffer
+  return class ClientReader {
+    constructor(input) {
+      const th = new Uint8Array(input ? input.buffer || (input.byteLength ? input : 1) : 1);
+      this.th = th;
+      this.s_ = new DataView(th.buffer);
+      this.U2 = 0;
+      this.kg = th.byteLength;
+    }
+    o3() { if (this.U2 + 1 > this.kg) throw new Error("二进制读取越界: " + (this.U2 + 1) + " > " + this.kg); return this.s_.getUint8(this.U2++); }
+    v3() { if (this.U2 + 4 > this.kg) throw new Error("二进制读取越界: " + (this.U2 + 4) + " > " + this.kg); this.U2 += 4; return this.s_.getUint32(this.U2 - 4, true); }
+    y3(n) { this.U2 += n; }
+    Bp() { return this.th.buffer; }
+  };
+})();
+
+// 从「服务端 Reader(已读掉帧头)」还原出客户端视角的位置: 同一块 buf, 同一个 off。
+function asClient(serverReader) {
+  // 客户端拿到的是 WebSocket 的 ArrayBuffer, 而 Node 的 Buffer 是共享内存池的视图
+  // (.buffer 可能是 8KB 的池) —— 这里先拷成独立 Uint8Array, 才是客户端真正的视角。
+  const buf = Uint8Array.from(serverReader.buf);
+  const r = new clientReaderClass(buf);
+  r.y3(serverReader.off);
+  return r;
+}
+
+{
+  const req114b = new Writer().u32(7).u8(10).u32(4242).u8(3);
+  await a.request(114, req114b);
+  const f226 = asClient(await b.nextPush(226));
+  // —— 客户端 226 分支(v_Hs_28017.OI, 桌面路径)原样读: YC, 子类型, id, type ——
+  eq(f226.v3(), 7, "226 客户端读法: YC = 发送者槽位(不是 1 也必须走 226)");
+  eq(f226.o3(), 10, "226 客户端读法: 子类型 10(要资源)");
+  eq(f226.v3(), 4242, "226 客户端读法: 资源 id");
+  eq(f226.o3(), 3, "226 客户端读法: 资源类型");
+  ok(f226.U2 === f226.kg, "226 载荷恰好读满, 没有多余/缺失字节");
+
+  // 资源提供方回 115(u32 YC + u32 id + u32 标志 + 数据) -> 服务端必须转成 227
+  const data = Buffer.from([0x01, 0x02, 0x03, 0x04, 0x05]);
+  const wx = new Writer().u32(7).u32(4242).u32(2 | 1).raw(data);
+  await a.request(115, wx);
+  const f227 = asClient(await b.nextPush(227));
+  // —— 客户端 227 分支(v_Ia_28059.XI)原样读: 先 YC, 再 y3(U2) 之后 id, flag, data ——
+  eq(f227.v3(), 7, "227 客户端读法: YC");
+  const off = f227.U2;
+  const r2 = new clientReaderClass(f227.Bp());
+  r2.y3(off);
+  eq(r2.v3(), 4242, "227 客户端读法: 资源 id(把 114 转成 227 时这里会读到子类型字节)");
+  eq(r2.v3(), 3, "227 客户端读法: 分块标志 2|1(数据+末块)");
+  const payload = new Uint8Array(f227.Bp()).subarray(8 + off);
+  ok(Buffer.from(payload).equals(data), "227 客户端读法: 数据块原样");
+}
 
   const r3 = await a.request(99, new Writer().u32(1));
   ok(r3.body.u16() !== 0, "未实现的操作码回非 0");

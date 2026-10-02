@@ -9,6 +9,7 @@ export function createSettingsStore(scope) {
   let v___29155 = void 0,
     v_a_29156 = [],
     v_o_29157 = [],
+    v_umgSelfBubble,
     v_h_29158 = new v_s_29154(),
     v_n_29159;
   function v_l_29160() {
@@ -69,7 +70,24 @@ export function createSettingsStore(scope) {
   }
   function v_w_29167(v_t_29191, v_i_29192) {
     var v_e_29193, v_n_29194, v_r_29195, v_s_29196;
-    v_t_29191 === scope.v_js_28019 ? (v_v_29166(), v_u_29163(), 4 <= scope.v_oe_27649.ix.size && v_g_29168(scope.v_z1_27915)) : v_t_29191 === scope.v_sa_28036 ? (v_v_29166(), v_u_29163()) : v_t_29191 === scope.v_aa_28037 ? v_v_29166() : v_t_29191 === scope.v_ia_28032 ? 0 <= (v_e_29193 = v_h_29158.$S.findIndex(v_t_29197 => v_t_29197 === v_i_29192.nx)) && (v_n_29194 = scope.v_Wr_27968.oI(v_i_29192.fI)) && v_o_29157[v_n_29194.lI] && (v_r_29195 = v_a_29156[v_e_29193], scope.v_sl_28151(v_s_29196 = v_o_29157[v_n_29194.lI].Ve(!0), v_n_29194), v_r_29195.tn(), v_r_29195.Ze(v_s_29196), v_r_29195.Be = !0, v___29155.e8(2 + v_n_29194.lI, v_a_29156[v_e_29193]), scope.v_Ae_27892.dn("chat" + v_n_29194.lI)) : v_t_29191 !== scope.v_$s_28029 || scope.v_oe_27649.tx || (65535 === scope.v_oe_27649._x ? v_g_29168(scope.v_z1_27915) : scope.sceneManager.JS(scope.v_oe_27649._x));
+    v_t_29191 === scope.v_js_28019 ? (v_v_29166(), v_u_29163(), 4 <= scope.v_oe_27649.ix.size && v_g_29168(scope.v_z1_27915)) : v_t_29191 === scope.v_sa_28036 ? (v_v_29166(), v_u_29163()) : v_t_29191 === scope.v_aa_28037 ? v_v_29166() : v_t_29191 === scope.v_ia_28032 ? function () {
+        // 144 = 对局内快捷聊天。$S 里只装了「对手」的玩家槽(填的时候刻意跳过自己, 见 v_v_29166),
+        // 所以自己发的话 findIndex 永远落空 -> 自己看不到自己发的聊天(别人能看到)。
+        // 服务端已经改成连同发送者一起推(见 umiguri-native-server/src/sock.js 的 broadcastChat),
+        // 这里补上「发送者是自己」这一支: 借一个专用气泡回显, 不动 $S 的槽位含义
+        // (那三个槽是 playerContainer0/1/2 的索引, 把自己塞进去会在 4 人房挤掉一个对手)。
+        if (v_i_29192.nx === scope.v_oe_27649.sx()) {
+          var v_umgSelf = scope.v_Wr_27968.oI(v_i_29192.fI);
+          if (!v_umgSelf || !v_o_29157[v_umgSelf.lI] || !v_umgSelfBubble) return;
+          var v_umgSelfText = v_o_29157[v_umgSelf.lI].Ve(!0);
+          scope.v_sl_28151(v_umgSelfText, v_umgSelf);
+          v_umgSelfBubble.tn(), v_umgSelfBubble.Ze(v_umgSelfText), v_umgSelfBubble.Be = !0;
+          v___29155.e8(2 + v_umgSelf.lI, v_umgSelfBubble);
+          scope.v_Ae_27892.dn("chat" + v_umgSelf.lI);
+          return;
+        }
+        0 <= (v_e_29193 = v_h_29158.$S.findIndex(v_t_29197 => v_t_29197 === v_i_29192.nx)) && (v_n_29194 = scope.v_Wr_27968.oI(v_i_29192.fI)) && v_o_29157[v_n_29194.lI] && (v_r_29195 = v_a_29156[v_e_29193], scope.v_sl_28151(v_s_29196 = v_o_29157[v_n_29194.lI].Ve(!0), v_n_29194), v_r_29195.tn(), v_r_29195.Ze(v_s_29196), v_r_29195.Be = !0, v___29155.e8(2 + v_n_29194.lI, v_a_29156[v_e_29193]), scope.v_Ae_27892.dn("chat" + v_n_29194.lI));
+      }() : v_t_29191 !== scope.v_$s_28029 || scope.v_oe_27649.tx || (65535 === scope.v_oe_27649._x ? v_g_29168(scope.v_z1_27915) : scope.sceneManager.JS(scope.v_oe_27649._x));
   }
   async function v_g_29168(v_t_29198) {
     let v_i_29199 = v_t_29198;
@@ -94,7 +112,7 @@ export function createSettingsStore(scope) {
       scope.v_Le_28076([v_i_29208 => {
         scope.languagePackages.it("ui/coopLobby.rsb", function (v_t_29209) {
           v_t_29209 ? (v_t_29209 = new scope.v_Dl_28181(v_t_29209), scope.renderer.nt(v_t_29209.rt(scope.renderer.p5()), v_t_29210 => {
-            v___29155 = v_t_29210, v_a_29156 = [v___29155.lt.yk(103), v___29155.lt.yk(104), v___29155.lt.yk(105)], v_o_29157 = [v___29155.lt.yk(109), v___29155.lt.yk(113), v___29155.lt.yk(117), v___29155.lt.yk(121), v___29155.lt.yk(126), v___29155.lt.yk(130), v___29155.lt.yk(134), v___29155.lt.yk(138)], scope.v_Me_28078(v_i_29208);
+            v___29155 = v_t_29210, v_a_29156 = [v___29155.lt.yk(103), v___29155.lt.yk(104), v___29155.lt.yk(105)], v_o_29157 = [v___29155.lt.yk(109), v___29155.lt.yk(113), v___29155.lt.yk(117), v___29155.lt.yk(121), v___29155.lt.yk(126), v___29155.lt.yk(130), v___29155.lt.yk(134), v___29155.lt.yk(138)], v_umgSelfBubble = v___29155.lt.yk(142), scope.v_Me_28078(v_i_29208);
           })) : v_e_29207();
         });
       }, v_t_29211 => {

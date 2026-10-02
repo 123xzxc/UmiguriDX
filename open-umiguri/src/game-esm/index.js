@@ -4177,25 +4177,26 @@ scope.v_Hs_28017.prototype = {
     v_t_33918 === this.DC && (this.FC && this.FC(!1), this.FC = void 0);
   },
   iP: function (v_t_33919) {
-    // 房主会把「下一局的状态」记在这里(0 → 1 → 2 → 3 → 4 → 5, 见 gameCore 的
-    // 结算流程 v_Hi_30330)。但这里原来只更新本地 nP, **没有把状态发给服务端** ——
-    // 而所有人(包括房主自己)进下一局前都要 await 137 状态 >= N, 137 只有服务端
-    // 的 pushState 才会发。于是房主推进后没人推状态, Tx() 永远等不到, 房主只好
-    // 退房; 退房会解散整个房间, 其他人一起掉线 —— 这就是「多人玩不起来」。
-    // 这里在改 nP 的同时上报(XX 是 v_Qs_28030/xx/Lx 共用的上报入口)。
-    var v_umgOk = this.aP >= v_t_33919;
-    if (!v_umgOk) {
-      this.nP = v_t_33919;
-      try {
-        // XX(大写)在 v_Hs_28017 上不存在 —— 小写 xx 是「准备标记」, 语义不同。
-        // tT 开局成功后 LC.vx(this.iT.bind(this)) 挂的是 v_Pa_28060 的 iT, 而
-        // OP_STATE=19 的发送入口是 v_Pa_28060.XC(n, 0)(v_Hs_28017.xx/Lx 走它)。
-        // 没有 LC 或没连接时静默跳过: 单机/无联机不受影响。
-        this.LC.XC(v_t_33919, 0);
-      } catch (v_umgE) {}
-      if (this.rP) this.rP(!0);
-    }
-    return v_umgOk;
+    // ⚠ 返回值语义必须保持原样: 已经到位的返回 true, 否则返回一个 **Promise**,
+    //   等 137(PUSH_STATE) 把 aP 推到目标值时才 resolve(见 Tx/lP 与 rP)。
+    //   调用方(s.ClearStore 的 v_g_29168 / gameCore)都是 `await v_oe_27649.iP(n)`。
+    //   曾经为了「把状态发给服务端」把它改成返回布尔的同步函数 —— 于是 await 立刻
+    //   拿到 false 不等待, 而真正等状态的 rP 再也没人挂上, 表现是「点了开始/跳过
+    //   匹配之后, 非房主玩家一直停在原地不进歌曲界面」。
+    //
+    // 房主推进状态(0 → 1 → … → 5, 见 gameCore 的 v_Hi_30330)时还要上报服务端:
+    // 所有人(含房主自己)进下一局前都会 await 137 状态 >= N, 而 137 只有服务端
+    // 的 pushState 才会发。不上报的话房主本地 nP 动了、aP 不动, 谁都等不到。
+    if (this.aP >= v_t_33919) return !0;
+    this.nP = v_t_33919;
+    try {
+      // OP_STATE=19 的上报入口是 v_Pa_28060.XC(n, 0)(v_Hs_28017.xx/Lx 也走它)。
+      // 没有 LC(单机)或没连接时静默跳过。
+      this.LC.XC(v_t_33919, 0);
+    } catch (v_umgE) {}
+    return new Promise(v_t_33920 => {
+      this.rP = v_t_33920;
+    });
   },
   lP: function (v_t_33921) {
     v_t_33921 === this.nP && (this.rP && this.rP(!1), this.rP = void 0);

@@ -300,14 +300,18 @@ function dispatch(conn, frame) {
       return;
     }
 
-    // 115: 不是「开局」, 而是玩家角度/角色数据的分块上传通道。
-    // 客户端 v_Ia_28059.zT 对每个等待同步的资源都发一组 115, 每块载荷是:
-    //   [u32 YC 局号][u32 hT 曲目序号][u32 分块标志(1=空数据/2|1=最后一块)] + 数据
-    // 官方服务端原样转给同房间其他人(对端在大厅里要看到别人的角度/动作),
-    // 自己回一个成功码。
+    // 115: 资源提供方回给请求方的「资源数据块」通道。客户端 v_Ia_28059.zT 对每个
+    // 等待同步的资源发一组 115, 每块载荷是:
+    //   [u32 YC 自己的玩家槽位][u32 hT 资源 id][u32 分块标志(bit1=2 数据/bit2=4 头/bit0=1 末块)] + 数据
     //
-    // ⚠ 这里**必须**用「原样回放」而不是先解析再转发: 115 的载荷对老客户端也
-    //   是自由格式, 服务端解释它的内部结构只会在字段变化时把整条链路弄断。
+    // ⚠ 转发时必须改写成 **227**, 不能原样回 115:
+    //   - 115 是请求码(<128), 原样转会被接收端当成「自己的请求的响应」, 进不了推送分发;
+    //   - 请求方真正在等的是 v_Ia_28059.XI() 里的 227, 布局就是上面这三项。
+    //   以前这里原样转 115, 于是「请求发出去了、数据也回上来了, 但对端永远收不到」,
+    //   对局里看不到对手的角色/头像(P2P 建链直接卡死在第一次要资源)。
+    //
+    // 同样必须用「原样回放」而不是先解析再重组: 115 的载荷对老客户端也是自由格式,
+    // 服务端解释内部结构只会在字段变化时把整条链路弄断(这里只读前 12 字节改 op, 不动载荷)。
     //
     // 另外先前这里把 room.state 推到 5 —— 那是猜的, 并且会让房主在**还没开局**
     // 时状态就跳到「对局中」。真正推进状态的是 op=6(134 开局)与 op=19(上报),
@@ -315,11 +319,7 @@ function dispatch(conn, frame) {
     case OP_START_115: {
       const payload = Buffer.from(body.rest());
       respond(conn, op, seq, 0);
-      const w = new Writer();
-      w.raw(payload);
-      const out = w.bytes();
-      forEachOther(room, member, (m) => push(m.conn, OP_START_115, out));
-      trace("房间 #" + room.id + " " + conn.name + " 上传角度数据 " + payload.length + " 字节, 已转发");
+      relayAssetData(room, member, payload);
       return;
     }
 
@@ -425,12 +425,11 @@ function dispatch(conn, frame) {
       // 对端在 OI() 里按 YC(帧类型) 分发。所以这里**必须原样转发**, 不能回非 0 ——
       // 以前直接回 1, 对局里就永远看不到对手的头像/角色图(P2P 握手从来没接上)。
       //
-      // 载荷 = 客户端自己拼的一整段(u32 YC + 后续字段), 服务端不解释它的内部结构,
-      // 原封不动转发即可(与官方一致)。
-      // 整段原样转发(含开头 u32 YC): 接收端的 OI() 就是从这段里自己取 YC 的。
+      // 载荷 = 客户端自己拼的一整段(u32 YC + u8 子类型 + 请求 id + 参数), 服务端不解释,
+      // 但**必须原样转成 226**, 不能转 227 —— 见 relaySignaling() 的说明。
       const payload = Buffer.from(body.rest());
       respond(conn, op, seq, 0);
-      relayAvatar(room, member, payload);
+      relaySignaling(room, member, payload);
       return;
     }
 
@@ -467,14 +466,20 @@ function pushScore(room) {
 
 // 137: 对局状态(1..5) —— {yx: u32, n1: u16}。用房间全局状态而不是「谁发的」:
 // 客户端只关心「现在的进度到没到某个值」, 谁先到不重要, 取最大值最稳。
+//
+// ⚠ **每一帧都要广播**, 不能因为「状态没变」就提前返回。
+//   客户端的等待语义是:
+//     v_Hs_28017.iP(n) / Tx(n)  ->  aP/sP < n 时挂一个 Promise, 等 137 来 resolve;
+//     settingsStore 与 gameCore 的调用方都是 `await v_oe_27649.iP(n)`。
+//   也就是说「等的人已经挂上了, 但状态已经等于 n」时, 只有再收到一帧 137 才会醒。
+//   以前这里 `next === room.state` 就 return, 于是:
+//     - 房主原地重报同一个状态(结算 → 下一局回到同一步), 谁也收不到, 一直等;
+//     - 中途进房的人在「把 waiter 挂上」和「服务端补发当前状态」之间有竞态。
+//   表现就是「跳过匹配 / 点开始之后, 非房主玩家停在原界面不进歌曲」。
+//   重复帧对客户端是幂等的(它只比较 >= 然后 resolve), 代价可以忽略。
 function pushState(room, from, n1) {
   const next = Math.max(room.state || 0, n1 | 0);
-  if (next === room.state) {
-    // 状态没推进就不重复广播: 客户端是「等它 >= N」, 重复帧除了刷屏没别的作用,
-    // 而且会把真正推进的那一帧挤到后面(测试/排障时更难看清顺序)。
-    trace("房间 #" + room.id + " 状态 " + next + " 无变化, 不重发");
-    return;
-  }
+  const changed = next !== room.state;
   room.state = next;
   const w = new Writer();
   // 客户端 iT 的 137 分支先 v3() 读一个 u32 局号, 再读 u16 状态 ——
@@ -483,28 +488,59 @@ function pushState(room, from, n1) {
   w.u16(room.state);
   const payload = w.bytes();
   for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);
-  trace("房间 #" + room.id + " 状态 -> " + room.state + " (来自 " + from.name + ")");
+  trace("房间 #" + room.id + " 状态 -> " + room.state + (changed ? "" : "(未变化, 但仍广播)") + " (来自 " + from.name + ")");
 }
 
-// op=114 信令中继: 客户端发上来的 P2P 载荷(structured-clone 风格的自描述数据)
-// 原样转给同房间其他人。
+// op=114/115 信令中继 —— 226 与 227 是两条**语义不同**的通道, 不能混用。
 //
 // 为什么要转成 226/227 再发: 客户端接收端在 v_Hs_28017.iT 里是按 *推送* 处理的 ——
-// 只有 op >= 128 才会进 iT。114 是请求码(<128), 原样回 114 会被当成 response,
-// 对面根本没人等这个响应。官方服务端就是把 114 拆成 226(需要回复)/227(不回) 再转发,
-// 这里跟官方保持一致: 载荷里 YC 为 1(offer/sdp) 时用 226(接收端会回一个 227),
-// 其余用 227。
-function relayAvatar(room, from, payload) {
-  if (!payload || payload.length < 4) return;
-  // YC(载荷第一个 u32)是帧类型: 1 = SDP offer(需要对面回 227), 其它(2=ICE, 4/10/11=
-  // 请求/应答)都走 227。官方也是这么分的 —— 只有需要「对面必须处理」的 offer 用 226。
+// 只有 op >= 128 才会进 iT。114/115 是请求码(<128), 原样回会被人当成自己的响应,
+// 对面根本没人等它。
+//
+// 客户端的两个接收分支(都在 v_Ia_28059.OI, 见 index.js 4404/4422)读法完全不同:
+//
+//   226 (桌面路径 v_Hs_28017.OI -> 非 VI 分支):
+//       u32 YC (发送者的玩家槽位, 用来挑出是哪一对 P2P)
+//       u8  子类型 (1=SDP, 2=ICE, 4=冲刷, 10=要资源, 11=取消)
+//       ... 子类型各自的参数
+//     —— 与客户端发上来的 114 载荷**逐字节相同**, 所以要原样转发。
+//
+//   227 (桌面路径 v_Ia_28059.XI):
+//       u32 YC
+//       u32 资源 id
+//       u32 分块标志 (bit1=2 数据块 / bit2=4 头信息 / bit0=1 最后一块)
+//       ... 数据
+//     —— 这正是客户端 zT() 发上来的 **op=115** 载荷布局。
+//
+// 所以: 114 一律转 226; 115 一律转 227。以前把 114 按「YC 是不是 1」拆成 226/227,
+// 两个错都在里面: (a) YC 是发送者槽位不是帧类型, 槽位 1 的玩家发的所有信令都会被
+// 误判; (b) 114 一旦转成 227, 对面 XI 会拿 u8 子类型当 u32 id 读、再读一个 u32 标志,
+// 帧里根本没有那 4 个字节 -> 抛「二进制读取越界: N > M」, 头像/角色图永远同步不过去。
+function relaySignaling(room, from, payload) {
+  if (!payload || payload.length < 5) return;
   const yc = payload.readUInt32LE(0);
-  const op = yc === 1 ? 226 : 227;
-  trace("114 中继: YC=" + yc + " -> op " + op + " (" + payload.length + " 字节)");
+  const subtype = payload.readUInt8(4);
+  trace("114 中继: YC=" + yc + " 子类型=" + subtype + " -> op 226 (" + payload.length + " 字节)");
   const w = new Writer();
   w.raw(payload);
   const bytes = w.bytes();
-  forEachOther(room, from, (m) => push(m.conn, op, bytes));
+  // 226 = 「对面必须处理」的信令通道, 原样转发(不回声给发送者: 对面才要处理)。
+  forEachOther(room, from, (m) => push(m.conn, 226, bytes));
+}
+
+// op=115 上行(资源提供方回给请求方): 载荷 u32 YC + u32 资源 id + u32 分块标志 + 数据。
+// 请求方在 OI/XI 里等的就是按这个布局来的 227, 所以这里必须转成 **227**(而不是 115),
+// 并且同样不回声给发送者自己。
+function relayAssetData(room, from, payload) {
+  if (!payload || payload.length < 12) return;
+  const yc = payload.readUInt32LE(0);
+  const assetId = payload.readUInt32LE(4);
+  const flags = payload.readUInt32LE(8);
+  trace("115 中继: YC=" + yc + " id=" + assetId + " 标志=" + flags + " -> op 227 (" + payload.length + " 字节)");
+  const w = new Writer();
+  w.raw(payload);
+  const bytes = w.bytes();
+  forEachOther(room, from, (m) => push(m.conn, 227, bytes));
 }
 
 function broadcastRank(room) {
@@ -538,8 +574,10 @@ function broadcastChat(room, from, yx, chatId, text) {
   lobby.str(text);
   const lobbyPayload = lobby.bytes();
 
+  // ⚠ 必须**连同发送者自己**一起推: 客户端不做本地回显(它只把大厅里收到的
+  //   144/145 铺进聊天框), 少了这条, 玩家自己发的快捷聊天自己看不到(别人能看到)。
+  //   接收端按载荷里的 nx 自己判断「这条是不是我发的」, 不需要服务端过滤。
   for (const m of room.members.values()) {
-    if (m === from) continue;
     push(m.conn, PUSH_CHAT_PLAY, playPayload);
     push(m.conn, PUSH_CHAT_LOBBY, lobbyPayload);
   }
@@ -628,9 +666,13 @@ function handleEnter(conn, seq, body) {
   // 中途进房的人补发当前对局状态(1..5), 否则他在「等状态 >= N」那一步会一直等下去。
   // 载荷必须和 pushState 一样是 { yx: u32, n1: u16 } —— 客户端的 137 分支先读 u32 局号,
   // 只写 u16 的话第一个 v3() 就直接越界(报「二进制读取越界」)。
-  if (room.state) {
+  //
+  // 不管当前状态是几(包括 0)**都要补一帧**: 客户端是「先挂 Promise 再等 137」,
+  // 而挂 waiter 和进房补发之间存在竞态 —— 漏发一次就永久卡住(真机表现: 进房后
+  // 非房主玩家不进歌曲界面)。0 对客户端是「还没开始」, 幂等无害。
+  {
     const sw = new Writer();
-    sw.u32(room.selection ? room.selection.yx : room.yx).u16(room.state);
+    sw.u32(room.selection ? room.selection.yx : room.yx).u16(room.state || 0);
     push(conn, PUSH_STATE, sw.bytes());
   }
 
