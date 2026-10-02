@@ -5,6 +5,7 @@
 //   - POST /1/...  游戏原生 HTTP(登录/云存档/成绩), 见 native-http.js
 //   - GET  /sock   游戏内联机 WebSocket, 见 sock.js
 //   - /panel 等    网页面板与管理面板(与 umiguri-server 同一套账号库), 见 web-panel.js
+//   - /auth 等     游戏端旧 REST(启动器/自制前端用的那套), 也见 web-panel.js
 
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
@@ -89,6 +90,7 @@ export function startServer({ port = config.port, host = config.host } = {}) {
     for (const ip of localAddresses()) console.log("             http://" + ip + ":" + shown);
     console.log("             (本机自测可用 http://127.0.0.1:" + shown + ")");
     console.log("[umg-native] 玩家面板 http://127.0.0.1:" + shown + "/panel");
+    console.log("[umg-native] 启动器/自制前端直接把服务端地址填 http://127.0.0.1:" + shown + " 即可");
     console.log("[umg-native] 管理面板 http://127.0.0.1:" + shown + "/admin-panel");
     console.log("[umg-native] 管理员令牌 " + panel.adminToken + " (存于 " + panel.adminTokenPath + ")");
     if (config.traceSock) console.log("[umg-native] 已开启 /sock 帧跟踪(UMIGURI_SOCK_TRACE=1)");

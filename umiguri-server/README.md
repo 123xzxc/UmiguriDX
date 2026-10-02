@@ -38,6 +38,11 @@ npm start
 
 默认监听 `0.0.0.0:8787`, 数据库文件 `./data/umiguri.db`(自动创建)。
 
+> 这套 REST 与网页面板**同时也挂在原生服务端**[`umiguri-native-server`](../umiguri-native-server)(端口 8101)
+> 上(见那边的 `src/web-panel.js`)。启动器的服务端地址填 8101 时, 请求由原生服务端接;
+> 填 8787 时由这里接 —— 两边同一个库、同一套 JWT 密钥, 账号与卡号完全互通。
+> 只想跑一个进程就用原生服务端。
+
 ### Windows 一键启动
 
 双击 `start-server.bat` 即可。它会:

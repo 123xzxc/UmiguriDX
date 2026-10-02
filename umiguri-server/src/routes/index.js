@@ -68,11 +68,21 @@ export function buildRouter() {
 
 // 只挂网页面板的 router。
 // 原生服务端(umiguri-native-server)用它把面板挂到自己的 HTTP 循环上, 这样
-// 玩家只跑一个进程就能既联机又开面板。游戏端那套 REST 不挂 —— 它依赖 JWT
-// 密钥, 而原生服务端的身份体系是 native_sessions, 挂上去只是多开一扇没必要的门。
+// 玩家只跑一个进程就能既联机又开面板。
 export function buildPanelRouter() {
   const r = createRouter();
   registerPanelRoutes(r);
+  return r;
+}
+
+// 只挂游戏端旧 REST 的 router: /auth、/profile、/plays、/cards、/leaderboard、/rooms。
+// 也是给原生服务端用的: 启动器和自制面板走的是这套 REST, 玩家把启动器里的服务端
+// 地址填成 8101 时, 如果 8101 上只有 /1/*, 每个请求都会 404。
+// 两套 router 的响应格式不同(这套是 {ok:...}, 原生是 {result:...}), 所以只能并存,
+// 不能合并 —— 各自的客户端按各自的约定解析。
+export function buildRestRouter() {
+  const r = createRouter();
+  registerGameRoutes(r);
   return r;
 }
 

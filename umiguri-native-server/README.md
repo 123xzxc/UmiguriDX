@@ -1,12 +1,13 @@
 # umiguri-native-server
 
-游戏**原生协议**服务端: 卡号登录、云存档、游戏内联机房间, 外加网页面板。
+游戏**原生协议**服务端: 卡号登录、云存档、游戏内联机房间, 外加网页面板和启动器要的旧 REST。
 
 ## 它解决什么问题
 
 游戏本体其实带了一整套联机实现(登录刷卡、云存档、游戏内房间),但它连的是官方服务器
 `d.umgr-serv.inonote.jp:8101`,而且客户端把协议写死在了 bundle 里。`umiguri-server`
-那套 REST 接口游戏一行都不会调 —— 它是给网页面板和自制面板用的。
+那套 REST 接口**游戏一行都不会调** —— 它是给网页面板、自制面板和**启动器**用的
+(启动器的卡号登录/房间都走它, 见下)。
 
 这个服务端做的事情就是:**按游戏本来就在说的那套协议回答它**。
 
@@ -17,10 +18,11 @@
 | 默认端口 | 8787 | **8101**(游戏写死的端口) |
 | 数据库 | `umiguri-server/data/umiguri.db` | **同一个库**(账号/卡号共用) |
 | 网页面板 | 有(`/panel`, `/admin-panel`) | **有**(同一套页面, 直接挂在 8101 上) |
+| 游戏端旧 REST | 有(`/auth/card` 等) | **有**(整套一起挂在 8101 上, 见下) |
 
-也就是说: **只跑这一个进程就够了** —— 游戏联机、云存档、网页面板、管理后台都在 8101。
-`umiguri-server` 现在只是"不带游戏协议的那半边", 需要时可以两个一起跑(同一个库,
-各听自己的端口), 账号与卡号完全互通。
+也就是说: **只跑这一个进程就够了** —— 游戏联机、云存档、网页面板、管理后台、
+启动器要的 REST 都在 8101。`umiguri-server` 现在只是"不带游戏协议的那半边",
+需要时可以两个一起跑(同一个库, 各听自己的端口), 账号与卡号完全互通。
 
 ## 快速开始
 
@@ -45,7 +47,8 @@ node test/native-smoke.mjs
 ## 网页面板
 
 面板(玩家面板 + 管理面板)与游戏接口**同一个端口**, 页面和凭据体系都复用
-`umiguri-server` 那一套(见 `src/web-panel.js`):
+`umiguri-server` 那一套(见 `src/web-panel.js`)。同一份代码顺带把游戏端旧 REST
+也挂上了(启动器就是靠它登录的, 见下一节):
 
 | 地址 | 用途 | 登录方式 |
 |---|---|---|
@@ -65,6 +68,33 @@ node test/native-smoke.mjs
 - 面板里的"最近游玩"读的是 `plays` / `bests` 表(与 umiguri-server 共用的表),
   原生成绩写进 `native_records` 时会**顺手镜像一份**过去, 所以原生模式下面板也有记录,
   等级按分数算(阈值与客户端 `scope.rankLabel` 一致), 通关状态取 `flags` 第 0 位。
+
+## 启动器要的旧 REST
+
+启动器(以及任何自制前端)用的是 `umiguri-server` 的那套 REST, 不是游戏的 `/1/*`。
+这套接口原先只在 8787 上有, 所以把启动器里的服务端地址填成 `http://<IP>:8101` 时
+**每个请求都会 404** —— 原生服务端只认 `/1/*` 与 `/sock`。现在它与面板一起挂在
+同一个端口上, **启动器的服务端地址直接填 `http://<IP>:8101` 就行**:
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/auth/card` | `{cardId}` -> `{token, user, card}`, 卡号即登录 |
+| GET | `/auth/whoami` | 校验 token 并返回用户 |
+| GET / PATCH | `/profile` | 读 / 改用户名与称号 |
+| GET / POST | `/cards`, `DELETE /cards/:cardId` | 卡号自助管理 |
+| POST / GET | `/plays`, `GET /plays/best` | 上报一局 / 最近记录 / 个人最佳 |
+| GET | `/leaderboard` | 总分榜; 带 `musicId`+`difficulty` 则为单曲榜 |
+| POST | `/rooms` | 建房 |
+| POST | `/rooms/:code/{join,leave,music,ready,start,progress,finish}` | 房间操作 |
+| GET | `/rooms/:code/state` | 房间状态(对手分数) |
+
+两个要注意的点:
+
+- 响应格式是 `{ok:true, ...}`, 与原生 `/1/*` 的 `{result:"ok", ...}` **不一样**。两套
+  并存, 各按各的约定解析, 别混用。
+- 用的是 `umiguri-server/src/config.js` 的 JWT 密钥(`UMIGURI_JWT_SECRET`), 沿用默认值时
+  启动会打一行警告。生产部署务必设置。两个端口共用同一个密钥与同一个库, 所以 8101
+  签发的 token 在 8787 上也认; 房间记录也在库里, 两个端口看到的是同一份。
 
 ## 环境变量
 
@@ -166,6 +196,9 @@ start-server-trace.bat
 - **点进房间没反应 / 大厅是空的**: 看有没有 `<- op=2`。没有就是请求没发到;
   有的话看服务端回的响应码(非 0 表示拒绝了)。
 - **登录失败**: 开 `UMIGURI_NATIVE_HTTP_TRACE=1`, 确认卡号有没有打错、有没有注册。
+- **启动器/自制面板报 404**: 那是它走的是旧 REST。先确认服务端地址填的是 8101(不是
+  8787), 再确认服务端是含这一节的新版本(`curl -X POST http://<地址>:8101/auth/card
+  -H "content-type: application/json" -d '{"cardId":"E0040000000000000000"}'` 不该是 404)。
 
 ## 让游戏连过来
 
@@ -209,7 +242,7 @@ window.__umgServer = {
 
 ```
 src/index.js        入口: 一个端口同时提供 /1/* 、/sock 与网页面板
-src/web-panel.js    把网页面板挂到这个进程上(共用一个数据库连接与一套表)
+src/web-panel.js    把网页面板与游戏端旧 REST 挂到这个进程上(共用一个连接与一套表)
 src/native-http.js  游戏原生 HTTP 协议
 src/sock.js         /sock 协议与房间状态机
 src/store.js        账号/卡号/档案/成绩的数据访问

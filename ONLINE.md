@@ -195,6 +195,7 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 | 协议 | 自家 REST(JSON + JWT) | `POST /1/*`(JSON) + `GET /sock`(加密二进制 WS) |
 | 端口 | 8787 | **8101**(游戏里写死的) |
 | 面板 | `/panel`, `/admin-panel` | **同样挂在这上面**(见 7.1.1) |
+| 游戏端旧 REST | `/auth/card`、`/rooms` 等 | **同样挂在这上面**(见 7.1.2) |
 
 #### 7.1.1 面板也挂在原生服务端上(2026-10 补)
 
@@ -208,14 +209,29 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 - **共用一个数据库连接**: 同一个进程里对同一个库开两个写连接会互相卡死(SQLite 的
   `busy_timeout` 只在跨进程时有用), 所以用 `attachDb()` 把原生服务端的连接交给
   umiguri-server 那套模块, 再由 `migrateSchema()` 补上面板用的表(幂等)。
-- **只挂面板相关路径**: 游戏端旧 REST(`/auth/card` 等依赖 JWT 密钥)不挂, 原生服务端
-  的身份体系是 `native_sessions`, 没必要多开一扇门。
+- **只挂自己那批路径**: 原生服务端先处理 `/1/*` 与 `/sock`, 未命中才轮到面板, 所以
+  面板不可能挡住游戏。
 - **面板要有数据**: 面板读 `plays`/`bests`, 原生成绩写在 `native_records`, 所以
   `setRecord` 时顺手镜像一份(`rankLabelOf()` 按客户端 `scope.rankLabel` 的阈值定级,
   `clear` 取 `flags` 第 0 位), 否则面板永远是"暂无记录"。
 
 管理员令牌统一放在 `umiguri-server/data/admin-token`(两个服务端共用), 环境变量
 `UMIGURI_ADMIN_TOKEN` 优先于该文件。
+
+#### 7.1.2 游戏端旧 REST 也挂上来(2026-10 补)
+
+面板挂上去之后还剩一个坑: **启动器**走的是 `umiguri-server` 那套 REST
+(`/auth/card`、`/auth/whoami`、`/profile`、`/plays`、`/rooms`…), 而原生服务端只认
+`/1/*` 与 `/sock`。玩家要是把启动器里的服务端地址填成 8101, 就会每个请求都 **404**
+(现象就是"连不上新服务端")。
+
+所以 `routes/index.js` 再加一个 `buildRestRouter()`(只含 `registerGameRoutes`),
+由 `src/web-panel.js` 按 **面板 -> 旧 REST** 的顺序挂在同一个端口后面: 两边都用
+`passthrough: true`, 谁都没命中才落到原生服务端的 `{result:"bad"}` 404。
+
+两套响应格式不同(旧 REST 是 `{ok:true,...}`, 原生是 `{result:"ok",...}`), 所以只并存
+不合并 —— 各自的客户端按各自的约定解析。JWT 密钥走 `umiguri-server/src/config.js`
+的 `UMIGURI_JWT_SECRET`, 默认值仅供本地开发。
 
 ### 7.2 客户端: 三个锚点
 

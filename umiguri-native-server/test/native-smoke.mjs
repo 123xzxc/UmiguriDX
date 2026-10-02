@@ -576,6 +576,8 @@ let panelCookie = "";
   eq(res.status, 404, "面板下的未知路径仍然 404");
 }
 
+let restToken = "";
+
 {
   const res = await fetch(base + "/auth/card", {
     method: "POST",
@@ -583,8 +585,44 @@ let panelCookie = "";
     body: JSON.stringify({ cardId: panelCard })
   });
   const data = await res.json();
-  eq(res.status, 404, "游戏端旧 REST(/auth/card)没有挂到原生服务端上");
-  eq(data.result, "bad", "旧 REST 未挂载时回的是原生格式的错误");
+  eq(res.status, 200, "游戏端旧 REST(/auth/card)也挂到了原生服务端上");
+  eq(data.ok, true, "旧 REST 回的是自己的 {ok:...} 格式, 不是原生格式");
+  ok(typeof data.token === "string" && data.token.length > 0, "卡号登录拿到游戏端 JWT");
+  restToken = data.token;
+}
+
+// 启动器拿到 token 之后紧接着会调 /auth/whoami 和 /profile, 这两个也必须通。
+{
+  const res = await fetch(base + "/auth/whoami", { headers: { authorization: "Bearer " + restToken } });
+  const data = await res.json();
+  eq(res.status, 200, "旧 REST 的 /auth/whoami 认可 /auth/card 签发的 token");
+  eq(data.user && data.user.username, "panel01", "whoami 指向卡号所属账号");
+}
+
+{
+  const res = await fetch(base + "/profile", { headers: { authorization: "Bearer " + restToken } });
+  await res.json();
+  eq(res.status, 200, "旧 REST 的 /profile 认可 /auth/card 签发的 token");
+}
+
+// /rooms 是启动器联机用的, 建房间要通(否则启动器会显示联机不可用)。
+{
+  const res = await fetch(base + "/rooms", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + restToken },
+    body: JSON.stringify({})
+  });
+  const data = await res.json();
+  eq(res.status, 200, "旧 REST 能建房");
+  ok(/^[0-9]{6}$/.test(String(data.room && data.room.code)), "房间号是 6 位数字");
+}
+
+// 不在两套 router 路径里的东西必须维持原来的 404(原生格式), 免得把游戏接口吃掉。
+{
+  const res = await fetch(base + "/nope/deep");
+  const data = await res.json();
+  eq(res.status, 404, "未挂载的路径仍然 404");
+  eq(data.result, "bad", "未挂载路径回的是原生格式的错误");
 }
 
 {
