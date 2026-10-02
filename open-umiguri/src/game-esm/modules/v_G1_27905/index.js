@@ -121,13 +121,31 @@ export function createV_G1_27905(scope) {
     //   已经把它写成了服务端显示名 —— 于是玩家看到「用我自己的名字进了游客登录」,
     //   成绩还不上传。改用 arguments.length 判定: 传了参数(哪怕是 undefined)都走
     //   真登录分支, 卡号非法时由 hA()/服务端拒掉, 不再静默降级成游客。
-    if (0 === arguments.length && scope.v_Xt_27648) scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();else if (v_t_28842 === void 0 || v_t_28842 === null) {
-      // 传了参数但值是空: 这是「等刷卡没等到」——不能拿它去登录。
-      // 否则 Py(undefined) 会兜底成全 0 卡号, 服务端只能回 card_not_found,
-      // 玩家看到的就是「点了刷卡但登录不上」, 而且日志里全是误导性的全 0 卡。
-      // 直接退回登录画面, 让玩家重新刷/点 GuestLogin。
-      return void v_o_28849();
+    if (0 === arguments.length && scope.v_Xt_27648) {
+      // 零参 = 登录界面的 GuestLogin 按钮: 明确的游客登录意图, 照旧。
+      scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();
     } else {
+      // 有参但值为空 = 这一次没读到卡(主菜单/读卡循环把 R9() 的 undefined / 取消值
+      // v_Ts_28004 传进来)。桌面没有真实读卡器, 这条路径会反复命中, 处理原则:
+      //
+      //   * 不能走 v_o_28849()(回登录画面): 它开头就调 fA() -> Ry() **登出**,
+      //     主菜单随后再调一次 T0, 就是「主菜单 → 登录画面 → 主菜单」无限循环
+      //     (日志: 一连串 argc=1 val=undefined + 反复 POST /1/user/logout)。
+      //   * 不能拿空值去 Py() 登录: Py(undefined) 兜底成全 0 卡号, 服务端只回
+      //     card_not_found; 也不能 vA() 降级成游客, 那会把宿主刚直登好的账号顶掉。
+      //
+      // 做法: 先从宿主再补一次卡(卡是长期有效的, 见 v_Rs_28007.R9 的说明)——
+      // 补得到就当真卡继续登录(自愈), 补不到就保持现状什么都不做。
+      if (void 0 === v_t_28842 || null === v_t_28842 || v_t_28842 === scope.v_Ts_28004) {
+        console.log("[umg][card] 本次没读到卡, 尝试从宿主补一张");
+        if (window.__umgServer && (window.__umgServer.cardBytes || window.__umgServer.card)) {
+          v_t_28842 = await scope.v_D_27646.R9();
+        }
+      }
+      if (void 0 === v_t_28842 || null === v_t_28842 || v_t_28842 === scope.v_Ts_28004) {
+        console.log("[umg][card] 宿主也没有可用卡, 保持当前状态(不登出/不降级游客)");
+        return;
+      }
       var v_t_28842 = await scope.v_Ns_28014.hA(scope.v_Rs_28007.Py(v_t_28842));
       if (v_t_28842 === scope.v_Fs_28012) return await new Promise(v_t_28850 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorDupLogin"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28850)), void v_o_28849();
       if (v_t_28842 === scope.v_Es_28010) return await new Promise(v_t_28851 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorNetworkError"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28851)), void v_o_28849();

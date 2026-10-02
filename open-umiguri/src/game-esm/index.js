@@ -3620,11 +3620,15 @@ scope.v_Rs_28007.prototype = {
   _S: function (v_t_33746) {},
   R9: async function () {
     // 桌面没有 AM 读卡器: 宿主(启动器)已经把卡号转成 10 字节放在 __umgServer.cardBytes。
-    // 只当一次刷卡(街机也是一次刷卡一次登录), 用完立刻清掉 —— 否则服务端连不上时
-    // 会「登录失败 -> 回标题 -> 立刻又读到卡」死循环, 玩家永远进不去游客模式。
+    //
+    // ⚠ 这里**不能**读完就把 cardBytes 清掉。以前是「一次刷卡一次登录」的街机语义,
+    //   但桌面主菜单(v_N1_27904.v_c_28776)会反复调 R9() 去读卡: 第一轮消费掉之后,
+    //   第二轮起永远读到 undefined, 于是「主菜单 -> 登录画面 -> 主菜单」无限循环,
+    //   日志里就是一连串 argc=1 val=undefined 的 v_p_28808。
+    //   桌面没有真实读卡器, 这张绑定的卡本来就是「长期有效」的 —— 一直供给即可;
+    //   玩家真要换卡/退登录, 走的是游戏自己的 GuestLogin 或面板重新绑卡。
     if (window.__umgServer && window.__umgServer.cardBytes) {
       var v_umgHostCard = window.__umgServer.cardBytes;
-      window.__umgServer.cardBytes = null;
       // 归一化: 宿主侧的 cardBytes 应是 Uint8Array(10), 但宿主桥/序列化之后有可能
       // 变成普通数组或类数组对象。这里统一成 10 字节 Uint8Array —— Py() 只认这一种
       // 形态, 不归一化就会退化成全 0 卡号, 服务端只能回 card_not_found。
@@ -3644,10 +3648,9 @@ scope.v_Rs_28007.prototype = {
       }
       return this.US = scope.v_Ps_28006, v_umgHostCard;
     }
-    // 兜底: 宿主已经绑了卡(__umgServer.card)就直接用, 不再干等 __umgSwipe。
-    // 实测日志: 游戏内自带刷卡/点 GuestLogin 重试时, Py 收到的是 undefined ——
-    // 说明这条链上没人把字节交出来(等待分支的 Promise 被别的路径 resolve 成空值,
-    // 或宿主那一下没勾上)。宿主本来就握着完整卡号, 与其猜哪一环掉了, 不如直接问它。
+    // 兜底: 宿主绑了卡(__umgServer.card)但没下发 cardBytes(或下发的形态不认识)时,
+    // 直接用卡号字符串现场转 10 字节。宿主本来就握着完整卡号, 与其等一条可能永远
+    // 不来的 __umgSwipe, 不如从它那里现算。
     // 只在「有卡」时短路, 没卡时行为不变(仍然等 __umgSwipe, 玩家照常能进游客)。
     if (window.__umgServer && window.__umgServer.card) {
       var v_umgFallback = window.__umgServer.cardBytes;
@@ -3661,7 +3664,6 @@ scope.v_Rs_28007.prototype = {
         }
       }
       if (v_umgFallback) {
-        window.__umgServer.cardBytes = null;
         this.US = scope.v_Ps_28006;
         return v_umgFallback;
       }
