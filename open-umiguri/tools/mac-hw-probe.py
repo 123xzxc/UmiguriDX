@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""macOS 手台串口原始探测 v3(只用 Python 标准库, 不需要 pyserial)。
+"""macOS 手台串口原始探测 v4(只用 Python 标准库, 不需要 pyserial)。
 
-它把「手台连不上」拆成能定位的几层:
+手台「连不上」可以卡在好几层, 这个脚本从底往上逐层问:
 
   A. 设备不在 USB 总线上 / 挑错了口   -> 看第 1 段 USB 设备树
-  B. 在, 但 macOS 读口就报错          -> 脚本会打出 errno 名字(EIO/ENXIO/...)
+  B. 在, 但 macOS 读口就报错          -> 打出 errno 名字(EIO/ENXIO/...)
   C. 在, 读口正常, 但一个字节都不发   -> 分「没碰手台」和「碰了也不发」
   D. 是 macOS 的 CDC 驱动这一层出的错 -> 最后一段 AppleUSBCDC 的内核日志
-  E. 设备到底要什么才开始推流         -> 静听/单次开扫描/补发开扫描/只摸手台/发灯光帧, 哪一步开始
-  F. 帧收到了但校验和对不上吗         -> 对比「未转义后整帧和==0」与「线上原字节整帧和==0」
+  E. 打开串口到「设备开始推帧」要多久  -> 第 [0] 步什么都不发, 计时到第一字节
+  F. 帧到底多长、校验和怎么算         -> 按 0xFF 切帧, 打段长统计 + 候选校验和规则的吻合数
 
-(v2 那次已经出现过「设备在推 cmd=0x01 的帧, 但每帧都被判校验和错」, F 就是为此加的。)
+v3 的教训: 按 size 字段推出 37 字节帧长是错的(真实帧 38 字节, 于是每帧都错位 1 字节,
+校验和自然全对不上); 而且那一轮 32 个压力值全是 0xFE(手压着触摸条/饱和), 数据没变化。
+所以 v4 改成用 0xFF 切帧(固件载荷里不出现 0xFF), 并且分「手离开 / 按住一格 / 左右来回划」
+三段采样, 好对比压力值。
 
 用法(先退出游戏/断开手台, 否则串口被占用):
 
     python3 mac-hw-probe.py
     python3 mac-hw-probe.py /dev/cu.usbmodem3563345B32343
 
-中途会请你用手指在手台上左右来回划(每次几秒), 按屏幕提示做就行。
+跑的时候按屏幕提示做(会请你手离开触摸条、按住最左边一格、左右来回划)。
 整段输出贴回来即可。macOS 自带 /usr/bin/python3。
 """
 import errno as errno_mod
@@ -246,13 +249,7 @@ def write_all(fd, data, label):
 def report(label, data, events):
     say('  [%s]: %s' % (label, hexdump(data)))
     if data:
-        fr = decode_frames(data)
-        if fr:
-            say('      拆出 %d 帧: %s' % (len(fr), ' '.join(
-                'cmd=0x%02X(%d字节%s)' % (c, len(pl), '' if ok else ',校验和错')
-                for c, pl, ok in fr[:8])))
-        else:
-            say('      收到字节, 但拆不出一帧(不像 Affine/官方协议的帧, 或者只收到半帧)')
+        say('      按 0xFF 切出 %d 段(段长/校验和见后面的帧分析)' % len(split_by_sync(data)))
     for e in events:
         say('      !! ' + e)
 
@@ -262,97 +259,93 @@ def send_scan(fd):
     return write_all(fd, AFFINE_START, '开扫描(AIR_START+SCAN_START)')
 
 
-def analyze(data, max_frames=400):
-    """拆帧 + 对比两种校验和规则 + 打出前两帧的原始字节。"""
-    say('  ---- 收到的数据: %d 字节 ----' % len(data))
-    say('  流开头 80 字节: %s' % hexdump(data, 80))
-    if len(data) > 100:
-        say('  流结尾 20 字节: %s' % hexdump(data[-20:], 20))
-    frames = 0
-    logical_ok = 0
-    wire_ok = 0
-    samples = []
-    i = 0
-    n = len(data)
-    while i < n and frames < max_frames:
-        if data[i] != 0xFF:
-            i += 1
-            continue
-        start = i
-        j = i + 1
-        logical = [0xFF]
-        bad = False
-        while len(logical) < 3 and not bad:
-            if j >= n:
-                bad = True
-                break
-            b = data[j]
-            j += 1
-            if b == 0xFF:
-                bad = True
-                break
-            if b == 0xFD:
-                if j >= n:
-                    bad = True
-                    break
-                b = (data[j] + 1) & 0xFF
-                j += 1
-            logical.append(b)
-        if bad or len(logical) < 3:
-            i = start + 1
-            continue
-        size = logical[2]
-        while len(logical) < size + 4 and not bad:
-            if j >= n:
-                bad = True
-                break
-            b = data[j]
-            j += 1
-            if b == 0xFF:
-                bad = True
-                break
-            if b == 0xFD:
-                if j >= n:
-                    bad = True
-                    break
-                b = (data[j] + 1) & 0xFF
-                j += 1
-            logical.append(b)
-        if bad or len(logical) < size + 4:
-            i = start + 1
-            continue
-        wire = data[start:j]
-        frames += 1
-        if sum(logical) & 0xFF == 0:
-            logical_ok += 1
-        if sum(wire) & 0xFF == 0:
-            wire_ok += 1
-        if len(samples) < 2:
-            samples.append((wire, bytes(logical)))
-        i = j
-    say('  拆出 %d 帧; 校验和对比: 「未转义后整帧和==0」%d 帧, 「线上原字节整帧和==0」%d 帧'
-        % (frames, logical_ok, wire_ok))
-    for k, pair in enumerate(samples, 1):
-        wire, logical = pair
-        say('  第 %d 帧 线上字节(%d): %s' % (k, len(wire), hexdump(wire, 64)))
-        say('  第 %d 帧 未转义后(%d): %s' % (k, len(logical), hexdump(logical, 64)))
-        say('       cmd=0x%02X size=%d 末尾校验字节=0x%02X 未转义和=0x%02X 线上和=0x%02X'
-            % (logical[1], logical[2], logical[-1], sum(logical) & 0xFF, sum(wire) & 0xFF))
-    if samples:
-        logical = samples[0][1]
-        pl = logical[3:3 + logical[2]]
-        say('  第 1 帧 payload(%d): %s' % (len(pl), ' '.join('%02X' % b for b in pl)))
-        if len(pl) >= 32:
-            say('      前 32 个=压力值(十进制): %s' % ' '.join('%d' % b for b in pl[:32]))
-        if len(pl) > 32:
-            say('      第 33 个=天键位图: 0b%s' % format(pl[32], '08b'))
-    return frames
+def send_scan(fd):
+    """AUTO_AIR_START + AUTO_SCAN_START(Affine 参考实现的开扫描顺序)"""
+    return write_all(fd, AFFINE_START, '开扫描(AIR_START+SCAN_START)')
 
 
 def countdown(secs):
     for i in range(secs, 0, -1):
         say('      %d…' % i)
         time.sleep(1)
+
+
+def split_by_sync(data):
+    """按 0xFF 切帧。
+
+    实测固件的载荷里根本不出现 0xFF/0xFD(压力值上限就是 0xFE), 所以 0xFF 只可能是帧首,
+    这样切出来的长度直接告诉我们真实帧长 —— 比按 size 字节推算可靠。
+    """
+    idx = [i for i, b in enumerate(data) if b == 0xFF]
+    return [data[idx[k]:idx[k + 1]] for k in range(len(idx) - 1)]
+
+
+def checksum_rules():
+    """候选校验和规则: (名字, 判断函数), 帧 = 以 0xFF 开头的一段。
+
+    实测固件发出来的帧看着像 38 字节: FF 01 21 <32 压力> <air> <x> <y>,
+    其中 x 恰好等于「sync + size + 32 压力 + air」(就是漏算了 cmd 那 1 个字节),
+    y 一直是 0x00。这里把可能的算法都列出来, 谁吻合 100% 就是它。"""
+    def s(xs):
+        return sum(xs) & 0xFF
+
+    return (
+        ('整帧(含末尾)字节和 == 0                    [官方/Affine 发送侧]',
+         lambda f: len(f) > 3 and sum(f) & 0xFF == 0),
+        ('倒数第二字节 == sync+size+载荷            [疑似真实算法: 漏掉 cmd]',
+         lambda f: len(f) > 4 and s(f[0:1] + f[2:-2]) == f[-2]),
+        ('倒数第二字节 == cmd+size+载荷(含 cmd)',
+         lambda f: len(f) > 4 and s(f[1:-2]) == f[-2]),
+        ('倒数第二字节 == sync+cmd+size+载荷(含 sync)',
+         lambda f: len(f) > 4 and s(f[:-2]) == f[-2]),
+        ('倒数第二字节 == size+载荷(不含 sync/cmd)',
+         lambda f: len(f) > 4 and s(f[2:-2]) == f[-2]),
+        ('末尾字节 == sync+size+载荷+倒数第二      [同上但校验在最后]',
+         lambda f: len(f) > 4 and s(f[0:1] + f[2:-1]) == f[-1]),
+        ('末尾字节 == cmd+size+载荷+倒数第二',
+         lambda f: len(f) > 4 and s(f[1:-1]) == f[-1]),
+        ('末尾字节 == 前面所有字节和(含 sync)',
+         lambda f: len(f) > 3 and s(f[:-1]) == f[-1]),
+        ('末尾字节 == -前面所有字节和(含 sync)',
+         lambda f: len(f) > 3 and (-sum(f[:-1])) & 0xFF == f[-1]),
+        ('末尾字节 == 32 个压力值之和',
+         lambda f: len(f) >= 36 and s(f[3:35]) == f[-1]),
+        ('倒数第二字节 == 32 个压力值之和',
+         lambda f: len(f) >= 36 and s(f[3:35]) == f[-2]),
+        ('末尾字节恒为 0(像分隔符)',
+         lambda f: len(f) > 3 and f[-1] == 0),
+        ('末两字节(小端 16 位) == 前面字节和',
+         lambda f: len(f) > 5 and (sum(f[:-2]) & 0xFFFF) == (f[-2] | (f[-1] << 8))),
+        ('末两字节(大端 16 位) == 前面字节和',
+         lambda f: len(f) > 5 and (sum(f[:-2]) & 0xFFFF) == ((f[-2] << 8) | f[-1])),
+    )
+
+def frame_report(label, data):
+    """切帧 + 打印前几帧原始字节 + 压力值 + 各候选校验和规则的吻合数。"""
+    frames = split_by_sync(data)
+    say('  ---- %s: %d 字节, 按 0xFF 切出 %d 段 ----' % (label, len(data), len(frames)))
+    if not frames:
+        return frames
+    hist = {}
+    for f in frames:
+        hist[len(f)] = hist.get(len(f), 0) + 1
+    say('  段长统计: %s' % ', '.join('%d字节×%d' % kv for kv in sorted(hist.items())))
+    for k in range(min(2, len(frames))):
+        f = frames[len(frames) // 2 + k] if len(frames) > 3 else frames[k]
+        say('  第 %d 段(%d 字节): %s' % (k + 1, len(f), hexdump(f, 64)))
+        if len(f) >= 36:
+            say('       前 32 个压力值: %s' % ' '.join('%d' % b for b in f[3:35]))
+            say('       第 33~末尾字节: %s' % ' '.join('%02X' % b for b in f[35:]))
+    for name, fn in checksum_rules():
+        hit = 0
+        for f in frames:
+            try:
+                if fn(f):
+                    hit += 1
+            except IndexError:
+                pass
+        say('  规则「%s」吻合 %d/%d 段' % (name, hit, len(frames)))
+    return frames
 
 
 def full_probe(path):
@@ -363,80 +356,71 @@ def full_probe(path):
         say('  打不开: %s(%s) —— 多半是游戏/别的程序占着这个口'
             % (errno_mod.errorcode.get(e.errno, e.errno), e.strerror))
         return False
-    buf = bytearray()
-    onset = [None]
+    phases = []
+    started = time.time()
 
     def take(label, secs):
         data, events = listen(fd, secs)
         report(label, data, events)
         if data:
-            if onset[0] is None:
-                onset[0] = label
-            buf.extend(data)
+            phases.append((label, data))
         return data
 
     try:
-        say('  已按 115200 8N1 打开, DTR 置位(和 Windows 参考实现的 SETDTR 一致)')
-        write_all(fd, affine_frame(0x04), 'AUTO_SCAN_STOP(先让它回到「没在扫描」)')
-        take('[0] 复位后静听 2.0s', 2.0)
+        say('  已按 115200 8N1 打开, DTR 置位; 下面第 [0] 步什么都不发, 量一下「打开到第一字节」要多久')
+        say('  [0] 什么都不发, 最多听 20s(收到第一字节立刻停)…')
+        t0 = time.time()
+        data, events = listen(fd, 20.0, tick=2.0)
+        say('      第一字节来得耗时 = %s' % ('%.1fs' % (time.time() - t0) if data else '20s 内没有'))
+        if data:
+            phases.append(('[0] 打开后直接听', data))
+        write_all(fd, affine_frame(0x04), 'AUTO_SCAN_STOP')
+        take('[1] AUTO_SCAN_STOP 之后听 1.5s', 1.5)
         send_scan(fd)
-        take('[1] 开扫描 ×1 之后听 3.0s', 3.0)
-        if not buf:
-            for k in range(6):
-                send_scan(fd)
-                if take('[2] 补发开扫描 第 %d 次 之后听 0.7s' % (k + 1), 0.7):
-                    break
-        if not buf:
-            say('  >>> [3] 请现在用手指在手台上左右来回划, 持续 5 秒(这一步不写任何东西)…')
-            countdown(3)
-            take('[3] 只摸手台 → 听 5.0s', 5.0)
-        if not buf:
-            write_all(fd, LED_FRAME, '灯光帧(黄)')
-            take('[4] 发灯光帧(黄) → 听 3.0s', 3.0)
-            say('      >>> 顺便看一眼手台灯带有没有变黄')
-        if not buf:
-            write_all(fd, AIR_LED_FRAME, 'AIR 灯光帧(绿)')
-            take('[5] 发 AIR 灯光帧(绿) → 听 3.0s', 3.0)
+        take('[2] 开扫描之后听 1.5s', 1.5)
 
-        if buf:
-            say('')
-            say('  >>> 数据是在「%s」这一步开始来的' % onset[0])
-            analyze(buf)
-            say('')
-            say('  再摸 3 秒, 看压力值会不会变(确认手台真的在工作)…')
-            countdown(3)
-            data, events = listen(fd, 3.0)
-            if data:
-                analyze(data, max_frames=3)
-            else:
-                say('      这 3 秒没有数据 —— 流可能停了')
-        else:
-            say('')
-            say('  ---- 换一种开法: 控制线全不动 ----')
+        say('  >>> [A] 请把手完全离开手台的触摸条(可以握着两侧外壳, 但别碰触摸面)…')
+        countdown(3)
+        take('[A] 手离开触摸条 → 听 2.5s', 2.5)
+        say('  >>> [B] 请只用一个手指按住触摸条最左边那一格, 按住别动…')
+        countdown(3)
+        take('[B] 按住最左边一格 → 听 2.5s', 2.5)
+        say('  >>> [C] 请用一个手指从左慢慢划到右, 再划回来…')
+        countdown(3)
+        take('[C] 左右来回划 → 听 3.0s', 3.0)
+        say('')
+        say('  ===== 各段帧分析 =====')
+        for label, data in phases:
+            frame_report(label, data)
+        say('')
+        say('  灯光那一步还是照旧(顺便看灯带变不变色):')
+        write_all(fd, LED_FRAME, '灯光帧(黄)')
+        write_all(fd, AIR_LED_FRAME, 'AIR 灯光帧(绿)')
+        take('[D] 发完灯光帧 → 听 1.5s', 1.5)
     finally:
         os.close(fd)
 
-    if not buf:
+    if not phases:
         time.sleep(0.3)
-        if not os.path.exists(path):
-            say('  !! 关掉后 %s 消失了 —— 设备在打开串口时重新枚举了' % path)
+        say('')
+        say('  ---- 一个字节都没有, 换一种开法再试: 控制线全不动 ----')
         try:
             fd = open_port(path, BAUD, False, False)
         except OSError as e:
             say('  重开失败: %s' % e.strerror)
             return False
         try:
-            send_scan(fd)
             say('  >>> 请现在摸手台 6 秒…')
             countdown(3)
             data, events = listen(fd, 6.0)
-            report('[6] 控制线不动 + 摸手台 → 听 6.0s', data, events)
+            report('[E] 控制线不动 → 听 6.0s', data, events)
             if data:
-                analyze(data)
-                buf.extend(data)
+                frame_report('[E] 控制线不动', data)
+                phases.append(('[E]', data))
         finally:
             os.close(fd)
-    return bool(buf)
+    say('  (整段跑完, 共 %.0f 秒)' % (time.time() - started))
+    return bool(phases)
 
 def quick_probe(path):
     try:
@@ -458,40 +442,6 @@ def quick_probe(path):
         return False
     finally:
         os.close(fd)
-
-
-def decode_frames(data):
-    """按 Affine/官方协议拆帧, 返回 [(cmd, payload), ...]。"""
-    frames = []
-    buf = bytearray()
-    esc = False
-    for b in data:
-        if not buf:
-            if b != 0xFF:
-                continue
-            buf.append(b)
-            esc = False
-            continue
-        if b == 0xFF:
-            buf = bytearray([b])
-            esc = False
-            continue
-        if b == 0xFD:
-            if esc:
-                buf = bytearray()
-                esc = False
-                continue
-            esc = True
-            continue
-        if esc:
-            b = (b + 1) & 0xFF
-            esc = False
-        buf.append(b)
-        if len(buf) >= 3 and len(buf) >= buf[2] + 4:
-            frames.append((buf[1], bytes(buf[3:3 + buf[2]]),
-                            (sum(buf) & 0xFF) == 0))
-            buf = bytearray()
-    return frames
 
 
 def main():
@@ -537,13 +487,13 @@ def main():
     say('')
     say('==== 6. 结果怎么看 ====')
     if got:
-        say('  手台说话了 —— 请把这整段贴回来, 尤其是下面这三组:')
-        say('   - 「数据是在「…」这一步开始来的」: 说明设备要什么才会开始推流;')
-        say('   - 「校验和对比」两边的帧数: 哪边等于总帧数, 宿主就该按哪种算法校验')
-        say('     (「未转义后整帧和==0」= 官方/Affine 参考实现的算法; 「线上原字节整帧和==0」')
-        say('     = 连 0xFD 转义字节也一起算进去。现在宿主只认前一种, 所以两种对不上就会')
-        say('     「明明有数据却一帧都不认」);')
-        say('   - 「第 1/2 帧 线上字节 / 未转义后」这两行原始字节。')
+        say('  手台说话了 —— 请把这整段贴回来, 重点是:')
+        say('   - 第 [0] 步「第一字节来得耗时」: 设备是插上就能推, 还是要等一阵子;')
+        say('   - 各段的「段长统计」: 真实帧长是多少字节')
+        say('     (上一轮我们按 size 字段推成 37, 实际 38, 每帧都错位, 所以校验和全错);')
+        say('   - 「规则「…」吻合 N/M 段」里 N 等于 M 的那条: 那就是固件真实的校验和算法,')
+        say('     宿主按它校验就能收下每一帧;')
+        say('   - 三段采样的「前 32 个压力值」: 手离开时是什么、按住一格时是什么。')
     else:
         say('  一个字节都没有。请对照上面三段系统信息:')
         say('   a) USB 设备树里没有 Linnea / idVendor = %d 的设备:' % AFFINE_VID)
