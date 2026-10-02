@@ -58,7 +58,7 @@ jobs:
             node --check "$f" || fail=1
           done < <(find src test -type f \( -name "*.js" -o -name "*.mjs" \) -print0)
           exit $fail
-      - name: 冒烟测试(原生协议: 刷卡登录 / 档案 / 成绩 / 房间 / 实时分数)
+      - name: "冒烟测试(原生协议: 刷卡登录 / 档案 / 成绩 / 房间 / 实时分数)"
         working-directory: umiguri-native-server
         run: node test/native-smoke.mjs
 
