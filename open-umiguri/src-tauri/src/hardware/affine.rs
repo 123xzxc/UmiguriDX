@@ -7,6 +7,13 @@
 //! ```
 //!
 //!   - checksum = 本帧之前所有字节(含 sync)之和取负, 即整帧各字节相加 == 0;
+//!
+//! **实机补充**(macOS 上抓包得到): 手台的 `AUTO_SCAN` 帧实际是 **38 字节**:
+//! `FF 01 21 <32 压力> <天键> <x> <y>`。末尾那两字节既不是「整帧和为 0」, 也不是
+//! 我们试过的任何变体(`x` 恰好等于 `sync + size + 载荷`, 就像漏算了 cmd 那一个字节;
+//! `y` 恒为 `0x00`)。Affine 的参考宿主收侧**从不校验**校验和, 所以这里收侧也只按
+//! 结构收帧(`0xFF` 同步 + cmd + size + 载荷收满), 校验和只记进 `Frame::checksum_ok`
+//! 当参考 —— 拿它当硬门槛会把「每 100ms 都在推的帧」全丢掉。
 //!   - 0xFD 是转义前缀: 0xFF 发 `FD FE`, 0xFD 发 `FD FC`, 收侧把 `FD x` 还原成 `x+1`。
 //!
 //! Affine 在官方协议上追加了自定义命令(同一个串口顺带做 JVS 板的天键/AIR 灯):
@@ -99,20 +106,21 @@ fn push_escaped(out: &mut Vec<u8>, byte: u8) {
 pub struct Frame {
     pub cmd: u8,
     pub payload: Vec<u8>,
+    /// 校验和对不对得上(「整帧和为 0」或「线上字节和为 0」任一成立)。
+    ///
+    /// 只作参考信息, **不参与收不收这一帧的判断**: 实测手台(Linnea 固件)的帧两条
+    /// 都不成立(它那两字节的算法还没对上), 而 Affine 的参考宿主收侧从不校验校验和。
+    pub checksum_ok: bool,
 }
 
-/// 流式拆帧: 逐字节喂入, 收满一帧且校验通过时返回。
+/// 流式拆帧: 逐字节喂入, 结构收满一帧就返回。
 ///
-/// 校验和认两种约定(结构必须对: `0xFF` 同步 + cmd + size):
+/// 判定只看结构: `0xFF` 同步 + `cmd` + `size`(≤ MAX_PAYLOAD) + 载荷收满。校验和只
+/// 顺带算一下放进 `Frame::checksum_ok`, 不参与判定 —— 理由见 `Frame::checksum_ok`。
 ///
-///   A. **逻辑和**: 未转义后的整帧(含 sync)字节和 == 0 —— 本模块 `encode()` 与
-///      Affine 参考实现 `serialslider.c` 发送侧用的算法;
-///   B. **线上和**: 连 `0xFD` 转义前缀一起算的线上原始字节和 == 0。
-///
-/// 之所以两种都认: Affine 的参考宿主收侧**从不校验**校验和, 所以固件用哪种都能用;
-/// 实测手台(Linnea 固件, 帧是 `cmd=0x01 size=33`)的帧只满足 B —— 逻辑和不为 0。
-/// 只认 A 的话会「明明每 100ms 都在推帧, 宿主却一帧都不认」, 报成
-/// 「未收到 Affine 扫描帧」。两种都对不上才算坏帧。
+/// (踩过的坑: 一度要求「未转义后整帧字节和 == 0」才收, 结果手台每 100ms 推一帧、
+/// 宿主却一帧都不认, 报成「未收到 Affine 扫描帧」。参考实现收侧从不校验校验和,
+/// 我们也不该拿它当硬门槛。)
 #[derive(Default)]
 pub struct Decoder {
     buf: Vec<u8>,
@@ -186,11 +194,11 @@ impl Decoder {
         let payload = self.buf[3..3 + nbytes].to_vec();
         self.buf.clear();
         self.wire.clear();
-        if logical_sum == 0 || wire_sum == 0 {
-            Some(Frame { cmd, payload })
-        } else {
-            None
-        }
+        Some(Frame {
+            cmd,
+            payload,
+            checksum_ok: logical_sum == 0 || wire_sum == 0,
+        })
     }
 }
 
@@ -372,12 +380,15 @@ mod tests {
         let f = got.expect("线上和规则的帧应该被接受");
         assert_eq!(f.cmd, CMD_AUTO_SCAN);
         assert_eq!(f.payload, payload.to_vec());
+        assert!(f.checksum_ok, "线上和规则算出来的帧应被标成校验通过");
     }
 
+    /// 校验和对不上也照样收下(只是 checksum_ok = false)—— 实测手台固件就是这样,
+    /// 参考宿主收侧也从不校验。
     #[test]
-    fn decoder_rejects_bad_checksum() {
+    fn decoder_keeps_frame_with_unknown_checksum() {
         let mut frame = encode(CMD_AUTO_SCAN_START, &[]);
-        frame[3] ^= 0x01; // 篡改校验和
+        frame[3] ^= 0x02; // 篡改校验和(别改成 0xFF, 那是同步字节, 会让这一帧重新起头)
         let mut dec = Decoder::new();
         let mut got = None;
         for b in frame {
@@ -385,7 +396,34 @@ mod tests {
                 got = Some(f);
             }
         }
-        assert!(got.is_none());
+        let f = got.expect("结构完整就该收下");
+        assert_eq!(f.cmd, CMD_AUTO_SCAN_START);
+        assert!(!f.checksum_ok, "篡改过的校验和应该被标出来");
+    }
+
+    /// 真机帧(macOS 上抓到的原样 38 字节): 32 个压力 0xFE + air + 0xE0 + 0x00。
+    /// 它的两字节校验和两条已知规则都不成立, 但结构完整, 必须收下。
+    #[test]
+    fn decoder_accepts_real_device_frame() {
+        let mut wire = vec![SYNC, CMD_AUTO_SCAN, 33];
+        wire.extend(std::iter::repeat(0xFEu8).take(32));
+        wire.extend([0x00, 0xE0, 0x00]);
+        assert_eq!(wire.len(), 38);
+        let mut dec = Decoder::new();
+        let mut got = None;
+        for b in wire {
+            if let Some(f) = dec.push(b) {
+                got = Some(f);
+            }
+        }
+        let f = got.expect("真机帧必须收下");
+        assert_eq!(f.cmd, CMD_AUTO_SCAN);
+        assert_eq!(f.payload.len(), 33);
+        assert_eq!(&f.payload[..32], &[0xFEu8; 32][..]);
+        assert_eq!(f.payload[32], 0x00);
+        assert!(!f.checksum_ok, "真机那两字节还没对上, 先记着");
+        let st = parse_scan(&f.payload).expect("32 压力 + 天键要能解出来");
+        assert_eq!(st.touch, [0xFEu8; 32]);
     }
 
     #[test]

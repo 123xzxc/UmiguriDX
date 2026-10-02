@@ -108,7 +108,7 @@ open-umiguri/
 | 协议 | 手台 | 识别方式 |
 |---|---|---|
 | `chu2board` | chu2board 固件: 单字节命令(0xB0 握手 / 0xAF 问 API / 0xB1 读输入 / 0xB2 灯光),主机轮询 | API 版本(0x11)与握手都有响应 |
-| `affine` | Affine_IO 手台([QHPaeek/Affine_IO](https://github.com/QHPaeek/Affine_IO)): 官方滑块板帧协议 `FF cmd nbytes payload chk`(0xFD 转义、整帧字节和为 0),主机发一次 `AUTO_SCAN_START` 后设备主动推「32 压力 + 1 天键位图」 | 开扫描后 ~1.2s 内收到 `AUTO_SCAN`(0x01)或 `AUTO_AIR`(0x05)帧(中途会补发扫描命令) |
+| `affine` | Affine_IO 手台([QHPaeek/Affine_IO](https://github.com/QHPaeek/Affine_IO)): 官方滑块板帧协议 `FF cmd nbytes payload chk`(0xFD 转义),主机发一次 `AUTO_SCAN_START` 后设备主动推「32 压力 + 1 天键位图」。实机帧长 **38 字节**(`FF 01 21 <32 压力> <天键> <x> <y>`,末尾两字节的算法还没对上 —— `x` 像漏算了 cmd,`y` 恒为 0),所以收侧**只按结构收帧**,不拿校验和当门槛 | 开扫描后 ~1.2s 内收到 `AUTO_SCAN`(0x01)或 `AUTO_AIR`(0x05)帧(中途会补发扫描命令) |
 
 `/config/game.json` 里的可选配置(全在顶层 `hardware` 段,不写则自动):
 
@@ -131,7 +131,10 @@ open-umiguri/
 - 输入不走键位映射:Rust 端把 38 个档位(32 触摸 + 6 air)直接写进 `window.__umgLanes`,有变化才通知。
 - 灯光:游戏自带 `ledOutput` 连 `ws://localhost:<led_controller.port>`(默认 8090),
   宿主把 SetLED 载荷转成手台灯光帧;Affine 手台还额外驱动整条 AIR(侧)灯(自定义命令 0x07)。
-- 帧格式与官方参考实现一致(segatools `board/slider-frame.c`),帧内的 `0xFF`/`0xFD` 按规范转义。
+- 帧格式与官方参考实现一致(segatools `board/slider-frame.c`),帧内的 `0xFF`/`0xFD` 按规范转义;
+  但**收侧不硬校验校验和**(Affine 的参考宿主收侧也不校验):结构对就收,校验和结果只记在
+  `Frame::checksum_ok` 里当参考 —— 实测手台那两字节的算法和官方发送侧不一致,硬校验会
+  「明明每 100ms 都在推帧却一帧都不认」,报成「未收到 Affine 扫描帧」。
 - 识别出的天键(0x05 `AUTO_AIR` 帧)与 `AUTO_SCAN` 里的天键位图都会算进 AIR 档位(两者可能是分开的两帧)。
 - 自动连接会重试:前 12 次每 5s,之后每 60s,直到连上或用户手动断开 —— 手台比游戏晚插/晚就绪也能自己连上。
 - 排查:日志里 `[umg][hw] 手台已连接: <端口> (<协议>)`;`window.umgHardware.status()` 可查当前协议。
