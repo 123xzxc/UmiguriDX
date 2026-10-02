@@ -40,6 +40,56 @@ export const umgrElc = {
         .then(() => ({ status: 0, data: { entry: null, writer: null } }))
         .catch(() => ({ status: -1, data: { entry: null, writer: null } })),
   },
+  // 联机服务端桥。游戏侧通过 window.umgr_elc.online 调用。
+  // 走宿主 Rust 侧的 fetch_json(绕过 WebView 跨源限制), 因此聊天/房间接口
+  // 可以部署在任意域名, 不受打包页面的 origin 限制。
+  online: {
+    // 当前服务端地址。游戏侧可用 online.setBase() 覆盖(便于切换自建服)。
+    base: '',
+    setBase(url) {
+      this.base = String(url || '');
+    },
+    // 统一请求入口。返回 { ok, status, data, error }:
+    //   ok=true + status=2xx  -> data 为解析后的 JSON
+    //   ok=true + status>=400 -> data 为服务端错误体, error 为其中的 error 字段
+    //   ok=false              -> 网络层失败(连不上/超时), error 为原因
+    // 不抛异常: 联机界面需要区分「服务端拒绝」与「连不上」并给出不同提示。
+    async request(method, path, body, token) {
+      const url = (this.base || '') + path;
+      let r;
+      try {
+        r = await invoke('fetch_json', {
+          method: String(method || 'GET').toUpperCase(),
+          url,
+          body: body === undefined || body === null ? null : JSON.stringify(body),
+          token: token ? String(token) : null,
+        });
+      } catch (e) {
+        return { ok: false, status: 0, data: null, error: (e && e.message) || String(e) };
+      }
+      if (!r || r.ok !== true) {
+        return { ok: false, status: 0, data: null, error: (r && r.error) || '请求失败' };
+      }
+      let data = null;
+      try {
+        data = r.body ? JSON.parse(r.body) : null;
+      } catch (e) {
+        return { ok: false, status: r.status, data: null, error: '服务端返回非 JSON' };
+      }
+      const status = r.status || 0;
+      const okHttp = status >= 200 && status < 300;
+      return {
+        ok: okHttp,
+        status,
+        data,
+        error: okHttp ? null : (data && data.error) || ('HTTP ' + status),
+      };
+    },
+    get(path, token) { return this.request('GET', path, null, token); },
+    post(path, body, token) { return this.request('POST', path, body, token); },
+    patch(path, body, token) { return this.request('PATCH', path, body, token); },
+    delete(path, token) { return this.request('DELETE', path, null, token); },
+  },
   si: {
     Vu: async () => ({}),
     w2: async () => ({}),

@@ -18,7 +18,10 @@ for (const t of targets) {
     execFileSync(process.execPath, ['--check', f], { stdio: 'pipe' });
     console.log(`OK   ${t}`);
   } catch (e) {
-    console.error(`FAIL ${t}\n${e.stderr}`);
+    // e.stderr 在「子进程根本没起来」(如沙箱 EPERM) 时是 undefined,
+    // 直接打印会输出 "undefined", 排查时看不到真正原因。
+    const detail = String(e.stderr || e.stdout || e.message || e);
+    console.error(`FAIL ${t}\n${detail}`);
     failed++;
   }
 }

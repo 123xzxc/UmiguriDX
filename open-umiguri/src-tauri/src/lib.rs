@@ -132,6 +132,57 @@ async fn fetch_text(url: String) -> Result<String, String> {
     .map_err(|e| e.to_string())?
 }
 
+// 联机服务端请求: 支持自定义方法与 JSON 请求体 + Authorization 头。
+// 复用 fetch_text 的思路(Rust 侧发起, 绕过 WebView 跨源限制), 但需要 POST/PATCH
+// 与请求头, 所以单独一个命令。返回结构固定, 便于前端统一处理:
+//   { ok: bool, status: u16, body: string, error: string|null }
+// 注意: 网络错误(连不上/超时)也返回 ok=false, 不抛异常 —— 前端可据此区分
+// "服务端拒绝" 与 "连不上服务端", 联机界面要给出不同提示。
+#[tauri::command]
+async fn fetch_json(
+    method: String,
+    url: String,
+    body: Option<String>,
+    token: Option<String>,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut req = ureq::request(&method.to_uppercase(), &url)
+            .timeout(std::time::Duration::from_secs(12))
+            .set("accept", "application/json");
+        if let Some(t) = token.as_deref() {
+            if !t.is_empty() {
+                req = req.set("authorization", &format!("Bearer {}", t));
+            }
+        }
+        let resp = match body {
+            Some(b) if !b.is_empty() => req
+                .set("content-type", "application/json; charset=utf-8")
+                .send_string(&b),
+            _ => req.call(),
+        };
+        match resp {
+            Ok(r) => {
+                let status = r.status();
+                let text = r.into_string().unwrap_or_default();
+                serde_json::json!({ "ok": true, "status": status, "body": text, "error": serde_json::Value::Null })
+            }
+            // ureq 2.x: 非 2xx 走 Err(Status), 但响应体里有服务端的错误说明, 必须带回来
+            Err(ureq::Error::Status(code, r)) => {
+                let text = r.into_string().unwrap_or_default();
+                serde_json::json!({ "ok": true, "status": code, "body": text, "error": serde_json::Value::Null })
+            }
+            Err(e) => serde_json::json!({
+                "ok": false,
+                "status": 0,
+                "body": "",
+                "error": e.to_string()
+            }),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 // 重启应用(授权后需要完整重扫追加数据)
 #[tauri::command]
 fn restart_app_cmd() -> bool {
@@ -363,6 +414,7 @@ pub fn run() {
             app_version,
             open_url,
             fetch_text,
+            fetch_json,
             window_fullscreen,
             toggle_devtools,
             hw_init,
