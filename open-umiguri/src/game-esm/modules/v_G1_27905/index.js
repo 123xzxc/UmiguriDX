@@ -108,7 +108,15 @@ export function createV_G1_27905(scope) {
   async function v_p_28808(v_t_28842) {
     let v_n_28843 = !1,
       v_r_28844;
-    if (void 0 === v_t_28842 && scope.v_Xt_27648) scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();else {
+    // ⚠ 只有「调用方显式地不传卡号」才是游客登录(登录界面的 GuestLogin 按钮:
+    //   v_p_28808() 零参调用)。以前这里是 void 0 === v_t_28842, 但游戏自带的刷卡
+    //   循环 v_k_28809 会把读卡结果原样传进来 —— 只要那一次读卡返回 undefined
+    //   (宿主等卡超时/取消/分帧没对上), 就会被误判成游客: 走 vA() 置真游客标志,
+    //   再进 dA() 的游客分支。游客分支的名字来自本机配置(umgr_elc._.O.ct), 而宿主
+    //   已经把它写成了服务端显示名 —— 于是玩家看到「用我自己的名字进了游客登录」,
+    //   成绩还不上传。改用 arguments.length 判定: 传了参数(哪怕是 undefined)都走
+    //   真登录分支, 卡号非法时由 hA()/服务端拒掉, 不再静默降级成游客。
+    if (0 === arguments.length && scope.v_Xt_27648) scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();else {
       var v_t_28842 = await scope.v_Ns_28014.hA(scope.v_Rs_28007.Py(v_t_28842));
       if (v_t_28842 === scope.v_Fs_28012) return await new Promise(v_t_28850 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorDupLogin"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28850)), void v_o_28849();
       if (v_t_28842 === scope.v_Es_28010) return await new Promise(v_t_28851 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorNetworkError"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28851)), void v_o_28849();

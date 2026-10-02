@@ -199,19 +199,8 @@ globalThis.__umgHostLogin = async function (v_umgCard) {
       await new Promise(function (v_umgR) { setTimeout(v_umgR, 100); });
     }
     if (!scope.v_Ns_28014 || !scope.handshake || !scope.handshake.rm) return { ok: false, error: "游戏初始化未完成" };
-    // 游客兜底(关键): 宿主已经绑卡时, 不让游戏再进游客态。
-    // scope.v_Ns_28014.vA() 是**唯一**把游客标志(v_r_33807)置真的地方, 只在
-    // v_p_28808() 无卡登录(登录画面的「GuestLogin」按钮)时调用。桌面没有 AM
-    // 读卡器时玩家常常只剩这个按钮可点 —— 一点就是游客, 成绩不上报。
-    // 这里换掉 vA: 有绑卡时直接返回成功但不置标志, 于是 dA() 落到
-    // v_Xt_27648.Dy() 取真实档案 —— 点 GuestLogin 也进自己的账号。
-    if (scope.v_Ns_28014.vA && !scope.v_Ns_28014.__umgGuestGuard) {
-      var v_umgOrigVA = scope.v_Ns_28014.vA.bind(scope.v_Ns_28014);
-      scope.v_Ns_28014.vA = function () {
-        return window.__umgServer && window.__umgServer.card ? scope.v_Ms_28009 : v_umgOrigVA();
-      };
-      scope.v_Ns_28014.__umgGuestGuard = !0;
-    }
+    // 游客守卫(vA 替换)已经挪到 scope.v_Ns_28014 创建处(见 bootstrap 里那段),
+    // 不再依赖本后门是否被调用 —— 详情见那里的注释。这里直接做真登录。
     var v_umgRet = await v_umgAccount.Fy(String(v_umgCard || ""));
     // v_Ms_28009 = 0 成功; -10 重复登录; -1 网络/服务端错误
     if (v_umgRet !== scope.v_Ms_28009) return { ok: false, error: "login " + v_umgRet };
@@ -3900,6 +3889,19 @@ scope.v_Bs_28013.prototype = {
 // Fy/Dy/Ly/… (原型是整体替换的, 早 new 会挂在旧原型上)。
 scope.v_Xt_27648 = window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null;
 scope.v_Ns_28014 = createV_Ns_28014(scope);
+// 游客守卫: scope.v_Ns_28014.vA() 是**唯一**把游客标志(v_r_33807)置真的地方。
+// 宿主已经绑卡 + 接了原生联机时, 绝不该进游客态 —— 游客态会跳过成绩上报, 而且
+// dA() 的游客分支拿的是本机配置名(宿主已写成服务端显示名), 玩家会看到「用我自己的
+// 名字进了游客登录」, 很难察觉。以前这段守卫只在 globalThis.__umgHostLogin 被调用
+// 时才装 —— 直登没跑(或跑晚了)就有窗口期。改到这里: v_Ns_28014 刚建好就装, 幂等,
+// 与宿主直登解耦。
+if (window.__umgServer && window.__umgServer.card && scope.v_Ns_28014.vA && !scope.v_Ns_28014.__umgGuestGuard) {
+  var v_umgOrigGuestVA = scope.v_Ns_28014.vA.bind(scope.v_Ns_28014);
+  scope.v_Ns_28014.vA = function () {
+    return window.__umgServer && window.__umgServer.card ? scope.v_Ms_28009 : v_umgOrigGuestVA();
+  };
+  scope.v_Ns_28014.__umgGuestGuard = !0;
+}
 scope.v_Hs_28017.prototype = {
   sx: function () {
     return this.nx;
