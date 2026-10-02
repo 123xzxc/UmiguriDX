@@ -1,10 +1,15 @@
 // [DIAG] 诊断: 同时输出到 console 与 Rust stderr(invoke('diag'))。
 import { invoke } from './invoke.js';
 
+// 转发钩子是否已装好。装好之后 console.log 这条路也会把日志送到 stderr(还带 t+ms 时间戳),
+// diagLog 若再自己 invoke 一次, 每条日志就会打两遍 —— 日志量翻倍, IPC 也翻倍。
+let forwardingOn = false;
+
 export function diagLog(msg) {
   try {
     console.log('[DIAG]', msg);
-    if (invoke) {
+    // 只有钩子还没装好(启动早期)时才自己转发, 之后一律交给 console 钩子。
+    if (invoke && !forwardingOn) {
       invoke('diag', { msg: String(msg) }).catch(function () {});
     }
   } catch (e) {}
@@ -12,6 +17,7 @@ export function diagLog(msg) {
 
 // 把 WebView 的 console(仅 [umg]/[DIAG]/error) 转发到 Rust stderr, 便于命令行抓日志。
 export function installConsoleForwarding() {
+  forwardingOn = true;
   const T0 = performance.now();
   const forward = (msg) => {
     if (!invoke) return;

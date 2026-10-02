@@ -63,16 +63,25 @@ export function setTouchKeyCollector(fn) {
   touchKeyCollector = fn;
 }
 
-// 临时诊断: DIK 查询计数
+// 临时诊断: DIK 查询计数。默认关, 需要时 localStorage.umg_diag='1' 打开。
+// (旧版无条件每 2 秒按 ERROR 打一条, 而 ret1=0 其实是正常态「所有键都没按」,
+//  结果命令行日志里刷满 ERROR, 看着像故障。)
+const DIK_DEBUG = (() => {
+  try {
+    return localStorage.getItem('umg_diag') === '1';
+  } catch (e) {
+    return false;
+  }
+})();
 const dikStat = { calls: 0, ret1: 0, escQ: 0, esc1: 0 };
 let dikReporterOn = false;
 function dikReporter() {
-  if (dikReporterOn) return;
+  if (!DIK_DEBUG || dikReporterOn) return;
   dikReporterOn = true;
   setInterval(() => {
     if (!dikStat.calls) return;
     try {
-      console.error('[umg][dik] calls=' + dikStat.calls + ' ret1=' + dikStat.ret1 + ' escQ=' + dikStat.escQ + ' esc1=' + dikStat.esc1);
+      console.log('[umg][dik] calls=' + dikStat.calls + ' ret1=' + dikStat.ret1 + ' escQ=' + dikStat.escQ + ' esc1=' + dikStat.esc1);
     } catch (e) {}
     dikStat.calls = 0; dikStat.ret1 = 0; dikStat.escQ = 0; dikStat.esc1 = 0;
   }, 2000);
