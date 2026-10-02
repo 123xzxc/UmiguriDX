@@ -386,10 +386,12 @@ function mirrorToPlayTables(userId, { musicId, difficulty, score, flags, judge, 
   const at = now();
   const rank = rankLabelOf(score);
   const clear = flags & 1;
-  // 判定明细: plays 表的 combo/judge_crit/judge_miss 刚好够放「最大连击 / JC / MISS」。
+  // 判定明细整局搬进 plays —— 网页面板的「最近游玩」直接读这张表, 只镜像
+  // JC/MISS 的话面板就只剩两个数(「网页端判定显示不全」)。字段铺平见 flattenJudge。
+  // flattenJudge 只吃 judge 里的字段; 曲种命中在独立的 lanes 参数里, 要么并进去要么单独取。
+  const f = flattenJudge({ ...(judge || {}), lanes: lanes || (judge && judge.lanes) });
   const combo = num(judge && judge.maxCombo);
-  const jc = num(judge && judge.justiceCritical);
-  const miss = num(judge && judge.miss);
+  const noteTotal = num(judge && judge.noteCount);
 
   const prevBest = d
     .prepare("SELECT score FROM bests WHERE user_id = ? AND music_id = ? AND difficulty = ?")
@@ -402,9 +404,15 @@ function mirrorToPlayTables(userId, { musicId, difficulty, score, flags, judge, 
   }
 
   d.prepare(
-    "INSERT INTO plays (user_id, music_id, difficulty, score, rank, clear, combo, judge_crit, judge_miss, played_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(userId, musicId, difficulty, score, rank, clear, combo, jc, miss, at);
+    "INSERT INTO plays (user_id, music_id, difficulty, score, rank, clear, combo, " +
+      "judge_crit, judge_j, judge_atk, judge_miss, judge_fast, judge_late, " +
+      "lane_tap, lane_hold, lane_slide, lane_air, lane_flick, note_total, played_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    userId, musicId, difficulty, score, rank, clear, combo,
+    f.judgeJc, f.judgeJ, f.judgeAtk, f.judgeMiss, f.judgeFast, f.judgeLate,
+    f.laneTap, f.laneHold, f.laneSlide, f.laneAir, f.laneFlick, noteTotal, at
+  );
 }
 
 export function listCourseRecords(userId) {

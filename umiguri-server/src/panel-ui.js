@@ -53,6 +53,8 @@ const HTML =
     "  .err { color: #ff8a80; }" +
     "  .ok { color: #7ee787; }" +
     "  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }" +
+    "  /* 判定一列很长(JC/J/ATK/MISS/FAST/LATE/连击/物量/各曲种), 允许换行。 */" +
+    "  #playTable td:last-child { white-space: normal; word-break: break-word; line-height: 1.5; max-width: 520px; }" +
     "  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #232833; }" +
     "  th { color: #9aa0a6; font-weight: 600; font-size: 13px; }" +
     "  code { background: #0f1115; padding: 2px 6px; border-radius: 4px; font-size: 13px; }" +
@@ -195,13 +197,20 @@ const HTML =
     "  function judgeText(p) {" +
     "    var parts = [];" +
     "    if (p.judgeCrit) parts.push(\"JC\" + p.judgeCrit);" +
-    "    if (p.judgeJustice) parts.push(\"J\" + p.judgeJustice);" +
-    "    if (p.judgeAttack) parts.push(\"A\" + p.judgeAttack);" +
+    "    if (p.judgeJ) parts.push(\"J\" + p.judgeJ);" +
+    "    if (p.judgeAtk) parts.push(\"ATK\" + p.judgeAtk);" +
     "    if (p.judgeMiss) parts.push(\"MISS\" + p.judgeMiss);" +
     "    if (p.judgeFast) parts.push(\"FAST\" + p.judgeFast);" +
     "    if (p.judgeLate) parts.push(\"LATE\" + p.judgeLate);" +
     "    if (p.combo) parts.push(\"C\" + p.combo);" +
-    "    return parts.join(\" \");" +
+    "    var laneParts = [];" +
+    "    [ [\"TAP\", p.laneTap], [\"HOLD\", p.laneHold], [\"SLIDE\", p.laneSlide], [\"AIR\", p.laneAir], [\"FLICK\", p.laneFlick] ].forEach(function (kv) {" +
+    "      if (kv[1]) laneParts.push(kv[0] + \"\" + kv[1]);" +
+    "    });" +
+    "    if (p.noteTotal) parts.push(\"物量\" + p.noteTotal);" +
+    "    var text = parts.join(\" \");" +
+    "    if (laneParts.length) text += (text ? \" | \" : \"\") + laneParts.join(\" \");" +
+    "    return text;" +
     "  }" +
     "" +
     "  function loadPlays() {" +
@@ -210,7 +219,7 @@ const HTML =
     "      tb.innerHTML = \"\";" +
     "      if (!r.plays.length) {" +
     "        var empty = document.createElement(\"tr\");" +
-    "        empty.innerHTML = \"<td colspan='4' style='color:#9aa0a6'>暂无记录</td>\";" +
+    "        empty.innerHTML = \"<td colspan='5' style='color:#9aa0a6'>暂无记录</td>\";" +
     "        tb.appendChild(empty);" +
     "        return;" +
     "      }" +

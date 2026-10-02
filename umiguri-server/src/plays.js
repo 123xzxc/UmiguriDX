@@ -7,6 +7,11 @@ import { assertInt, assertScore, assertString } from "./lib/validate.js";
 
 const now = () => Date.now();
 
+// 判定明细字段一律非负整数; 缺省/非法 -> 0(与 judgeCrit/judgeMiss 一致)。
+function judgeInt(input, key) {
+  return input[key] === undefined ? 0 : assertInt(input[key], key, { min: 0, max: 100000 });
+}
+
 // 上报一局。同时维护 bests(每曲每难度个人最佳)。
 export function recordPlay(userId, input) {
   const db = getDb();
@@ -18,12 +23,29 @@ export function recordPlay(userId, input) {
   const combo = input.combo === undefined ? 0 : assertInt(input.combo, "combo", { min: 0, max: 100000 });
   const judgeCrit = input.judgeCrit === undefined ? 0 : assertInt(input.judgeCrit, "judgeCrit", { min: 0, max: 100000 });
   const judgeMiss = input.judgeMiss === undefined ? 0 : assertInt(input.judgeMiss, "judgeMiss", { min: 0, max: 100000 });
+  // 完整判定构成(游戏端 setRecord 一并上报; 老客户端不带这些字段, 一律 0)。
+  const judgeJ = judgeInt(input, "judgeJ");
+  const judgeAtk = judgeInt(input, "judgeAtk");
+  const judgeFast = judgeInt(input, "judgeFast");
+  const judgeLate = judgeInt(input, "judgeLate");
+  const laneTap = judgeInt(input, "laneTap");
+  const laneHold = judgeInt(input, "laneHold");
+  const laneSlide = judgeInt(input, "laneSlide");
+  const laneAir = judgeInt(input, "laneAir");
+  const laneFlick = judgeInt(input, "laneFlick");
+  const noteTotal = judgeInt(input, "noteTotal");
   const playedAt = input.playedAt === undefined ? now() : assertInt(input.playedAt, "playedAt");
 
   const info = db.prepare(`
-    INSERT INTO plays (user_id, music_id, difficulty, score, rank, clear, combo, judge_crit, judge_miss, played_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(userId, musicId, difficulty, score, rank, clear, combo, judgeCrit, judgeMiss, playedAt);
+    INSERT INTO plays (user_id, music_id, difficulty, score, rank, clear, combo,
+      judge_crit, judge_j, judge_atk, judge_miss, judge_fast, judge_late,
+      lane_tap, lane_hold, lane_slide, lane_air, lane_flick, note_total, played_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    userId, musicId, difficulty, score, rank, clear, combo,
+    judgeCrit, judgeJ, judgeAtk, judgeMiss, judgeFast, judgeLate,
+    laneTap, laneHold, laneSlide, laneAir, laneFlick, noteTotal, playedAt
+  );
 
   // 个人最佳: 只在分数更高时更新
   const prev = db.prepare(
@@ -71,7 +93,17 @@ export function listPlays(userId, { limit = 50, offset = 0 } = {}) {
     clear: r.clear,
     combo: r.combo,
     judgeCrit: r.judge_crit,
+    judgeJ: r.judge_j,
+    judgeAtk: r.judge_atk,
     judgeMiss: r.judge_miss,
+    judgeFast: r.judge_fast,
+    judgeLate: r.judge_late,
+    laneTap: r.lane_tap,
+    laneHold: r.lane_hold,
+    laneSlide: r.lane_slide,
+    laneAir: r.lane_air,
+    laneFlick: r.lane_flick,
+    noteTotal: r.note_total,
     playedAt: r.played_at,
     ...describe(r.music_id, r.difficulty)
   }));

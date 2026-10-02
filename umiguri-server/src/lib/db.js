@@ -109,6 +109,8 @@ function migrate(d) {
       expires_at INTEGER NOT NULL
     );
 
+    -- 判定构成: 完整一局明细(JC/J/ATK/MISS、FAST/LATE、各曲种命中 + 最大连击 + 物量)。
+    -- 老库靠 migrate 末尾的 ensureColumns 补列(ALTER TABLE), 所以这里可以放心加。
     CREATE TABLE IF NOT EXISTS plays (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -120,6 +122,16 @@ function migrate(d) {
       combo       INTEGER NOT NULL DEFAULT 0,
       judge_crit  INTEGER NOT NULL DEFAULT 0,
       judge_miss  INTEGER NOT NULL DEFAULT 0,
+      judge_j     INTEGER NOT NULL DEFAULT 0,
+      judge_atk   INTEGER NOT NULL DEFAULT 0,
+      judge_fast  INTEGER NOT NULL DEFAULT 0,
+      judge_late  INTEGER NOT NULL DEFAULT 0,
+      lane_tap    INTEGER NOT NULL DEFAULT 0,
+      lane_hold   INTEGER NOT NULL DEFAULT 0,
+      lane_slide  INTEGER NOT NULL DEFAULT 0,
+      lane_air    INTEGER NOT NULL DEFAULT 0,
+      lane_flick  INTEGER NOT NULL DEFAULT 0,
+      note_total  INTEGER NOT NULL DEFAULT 0,
       played_at   INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_plays_user   ON plays(user_id, played_at DESC);
@@ -158,4 +170,29 @@ function migrate(d) {
       PRIMARY KEY (code, user_id)
     );
   `);
+
+  // 老库升级: 上面是 CREATE TABLE IF NOT EXISTS, 已有的 plays 表不会因此多出新列。
+  // 逐列检查并 ALTER, 幂等可反复跑。
+  ensureColumns(d, "plays", [
+    ["judge_j", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_atk", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_fast", "INTEGER NOT NULL DEFAULT 0"],
+    ["judge_late", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_tap", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_hold", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_slide", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_air", "INTEGER NOT NULL DEFAULT 0"],
+    ["lane_flick", "INTEGER NOT NULL DEFAULT 0"],
+    ["note_total", "INTEGER NOT NULL DEFAULT 0"]
+  ]);
+}
+
+// 给已有表补列。SQLite 没有 ADD COLUMN IF NOT EXISTS, 所以先查 PRAGMA table_info,
+// 缺一列补一列。
+function ensureColumns(d, table, cols) {
+  const have = new Set(d.prepare(`PRAGMA table_info(${table})`).all().map((r) => r.name));
+  for (const [name, decl] of cols) {
+    if (have.has(name)) continue;
+    d.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${decl}`);
+  }
 }
