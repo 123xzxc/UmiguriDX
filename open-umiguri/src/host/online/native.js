@@ -100,6 +100,13 @@ export function installNativeServer(sessionCfg, nwToken) {
       nwToken: String(nwToken || ''),
     };
     window.__umgServer = info;
+    // 诊断: 刷卡全 0 时, 先看这里打出来的卡号对不对 —— 卡号对了说明问题在游戏侧
+    // 的 Py/R9(已加归一化), 卡号本来就空/不对就是绑定/登录那一步的事。
+    try {
+      console.log("[umg][native] 下发联机: card=" + st.card + " bytes=" +
+        (st.cardBytes ? Array.prototype.map.call(st.cardBytes, (b) => ("0" + b.toString(16)).slice(-2)).join(" ") : "null") +
+        " -> " + st.host + ":" + st.port);
+    } catch (e) {}
     return info;
   } catch (e) {
     return null;
@@ -123,6 +130,11 @@ export function swipeNow() {
   if (!srv || !srv.host) return false;
   const bytes = cardToBytes(normalizeCard(srv.card || readLS(LS_CARD)));
   if (!bytes) return false;
+  // cardToBytes 已经返回 Uint8Array; 这里再兜一层: 万一 srv.card 被别处改成了
+  // 非字符串(比如面板直接塞了数组), normalizeCard 出来的长度不对会返回 null ——
+  // 上面那行已经挡掉。保留这一层只是为了让「交出去的永远是 Uint8Array」这条
+  // 不变量显式可见(游戏侧 Py 也做了同样的归一化, 两边互为保险)。
+
   const hook = window.__umgSwipe;
   if (typeof hook === 'function' && hook(bytes) !== false) return true;
   srv.cardBytes = bytes;

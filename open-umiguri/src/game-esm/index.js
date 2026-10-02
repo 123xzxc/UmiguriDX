@@ -3566,6 +3566,40 @@ scope.v_Rs_28007.prototype = {
 }, scope.v_Rs_28007.E9 = function (v_t_33738, v_i_33739) {
   return v_t_33738 && v_t_33738.buffer && 10 === v_t_33738.byteLength ? v_i_33739 ? scope.v_Xa_28081(v_t_33738[0].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[1].toString(16), 2, "0") + "-" + scope.v_Xa_28081(v_t_33738[2].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[3].toString(16), 2, "0") + "-XXXX-XXXX-XXXX" : scope.v_Xa_28081(v_t_33738[0].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[1].toString(16), 2, "0") + "-" + scope.v_Xa_28081(v_t_33738[2].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[3].toString(16), 2, "0") + "-" + scope.v_Xa_28081(v_t_33738[4].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[5].toString(16), 2, "0") + "-" + scope.v_Xa_28081(v_t_33738[6].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[7].toString(16), 2, "0") + "-" + scope.v_Xa_28081(v_t_33738[8].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33738[9].toString(16), 2, "0") : scope.v_Rs_28007.Q9;
 }, scope.v_Rs_28007.Py = function (v_t_33740) {
+  // ⚠ 归一化: 宿主下发的 cardBytes 正常是 Uint8Array(有 .buffer), 但经过宿主桥
+  //   (JSON / structured-clone 不完全一致)可能变成普通数组或类数组对象, 那样
+  //   下面 `v_t_33740.buffer && 10 === v_t_33740.byteLength` 不成立, 就会返回全 0
+  //   卡号 "00000000000000000000" —— 服务端只能回 card_not_found, 玩家看到的就是
+  //   「刷了卡但登录不上」。这里统一转成 10 字节 Uint8Array, 让下游只认一种形态。
+  // (a) 字符串形态的卡号(宿主/别的路径把 "E004…" 直接塞进来时): 转成 10 字节。
+  //     不处理的话长度是 20, 下面那条 `10 === byteLength` 不成立 -> 返回全 0 卡号。
+  if ("string" === typeof v_t_33740) {
+    var v_umgHexS = v_t_33740.replace(/[^0-9a-fA-F]/g, "");
+    if (20 === v_umgHexS.length) {
+      var v_umgArrS = new Uint8Array(10);
+      for (var v_umgJ = 0; v_umgJ < 10; ++v_umgJ) v_umgArrS[v_umgJ] = parseInt(v_umgHexS.substr(v_umgJ * 2, 2), 16);
+      v_t_33740 = v_umgArrS;
+    }
+  }
+  // (b) 类数组形态(JSON 克隆过的 Uint8Array: 只有 0..9 和 length, 没有 .buffer)。
+  if (v_t_33740 && !("string" === typeof v_t_33740) && !(v_t_33740.buffer && 10 === v_t_33740.byteLength)) {
+    var v_umgN = v_t_33740.length;
+    if (10 === v_umgN) {
+      var v_umgArr = new Uint8Array(10);
+      for (var v_umgI = 0; v_umgI < 10; ++v_umgI) v_umgArr[v_umgI] = (v_t_33740[v_umgI] | 0) & 255;
+      v_t_33740 = v_umgArr;
+    }
+  }
+  // 诊断: 刷卡全 0(card_not_found "00000000000000000000")时, 问题一定在这里 ——
+  // 要么宿主根本没把 cardBytes 写进来, 要么写进来的不是 10 字节。把实参打出来,
+  // 一眼就能分清是「宿主没下发」还是「游戏这边读错」。
+  try {
+    var v_umgDbg = v_t_33740;
+    var v_umgDesc = v_umgDbg === null ? "null" : v_umgDbg === undefined ? "undefined" : (typeof v_umgDbg);
+    var v_umgLen = v_umgDbg && v_umgDbg.byteLength;
+    var v_umgHex = v_umgDbg && v_umgDbg.buffer && 10 === v_umgDbg.byteLength ? Array.prototype.map.call(v_umgDbg, function (v_b) { return ("0" + v_b.toString(16)).slice(-2); }).join(" ") : "(非10字节)";
+    console.log("[umg][card] Py 收到 " + v_umgDesc + " byteLength=" + v_umgLen + " hex=" + v_umgHex);
+  } catch (v_umgErr) {}
   return v_t_33740 && v_t_33740.buffer && 10 === v_t_33740.byteLength ? scope.v_Xa_28081(v_t_33740[0].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[1].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[2].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[3].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[4].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[5].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[6].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[7].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[8].toString(16), 2, "0") + scope.v_Xa_28081(v_t_33740[9].toString(16), 2, "0") : scope.v_Rs_28007.Ky;
 }, scope.v_Ls_28008.prototype = {
   ue: async function () {
@@ -3590,7 +3624,25 @@ scope.v_Rs_28007.prototype = {
     // 会「登录失败 -> 回标题 -> 立刻又读到卡」死循环, 玩家永远进不去游客模式。
     if (window.__umgServer && window.__umgServer.cardBytes) {
       var v_umgHostCard = window.__umgServer.cardBytes;
-      return window.__umgServer.cardBytes = null, this.US = scope.v_Ps_28006, v_umgHostCard;
+      window.__umgServer.cardBytes = null;
+      // 归一化: 宿主侧的 cardBytes 应是 Uint8Array(10), 但宿主桥/序列化之后有可能
+      // 变成普通数组或类数组对象。这里统一成 10 字节 Uint8Array —— Py() 只认这一种
+      // 形态, 不归一化就会退化成全 0 卡号, 服务端只能回 card_not_found。
+      if (!(v_umgHostCard && v_umgHostCard.buffer && 10 === v_umgHostCard.byteLength)) {
+        if (v_umgHostCard && 10 === v_umgHostCard.length) {
+          var v_umgNorm = new Uint8Array(10);
+          for (var v_umgK = 0; v_umgK < 10; ++v_umgK) v_umgNorm[v_umgK] = (v_umgHostCard[v_umgK] | 0) & 255;
+          v_umgHostCard = v_umgNorm;
+        } else if ("string" === typeof v_umgHostCard) {
+          var v_umgHexR = v_umgHostCard.replace(/[^0-9a-fA-F]/g, "");
+          if (20 === v_umgHexR.length) {
+            var v_umgNormS = new Uint8Array(10);
+            for (var v_umgL = 0; v_umgL < 10; ++v_umgL) v_umgNormS[v_umgL] = parseInt(v_umgHexR.substr(v_umgL * 2, 2), 16);
+            v_umgHostCard = v_umgNormS;
+          }
+        }
+      }
+      return this.US = scope.v_Ps_28006, v_umgHostCard;
     }
     // 等刷卡: resolver 同时挂到 globalThis.__umgSwipe, 宿主的「刷卡」虚拟按钮点它
     // (桌面没有读卡器; 键盘假卡 Ctrl+F9~F12 走的就是 this.Z9, 路径不变)。
