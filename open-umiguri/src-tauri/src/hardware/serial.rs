@@ -85,6 +85,13 @@ mod imp {
 /// 窗口给足之后, 慢启动的设备第一轮就能连上, 玩家也不必再去跑脚本。
 const AFFINE_PROBE_WINDOW: Duration = Duration::from_secs(8);
 
+/// 探测「快速窗口」: 开扫描后先只等这么久。
+///
+/// 真正的需求是「没接手台时别干等」: 设备若在界里, 基本是开扫描后百毫秒级就开始推帧;
+/// 2 秒还一个字节都没有的端口, 再等 6 秒也是白等 —— 直接跳过, 把整轮时间从 8s 压到 2s。
+/// 设备只要**开过口**(哪怕拆帧失败), 就说明它确实在说话, 于是延长到 AFFINE_PROBE_WINDOW。
+const AFFINE_PROBE_QUICK: Duration = Duration::from_secs(2);
+
 /// 探测期间补发开扫描的间隔。设备刚上电/DTR 刚拉高时可能还在初始化, 或者会丢掉第一次
 /// AUTO_SCAN_START, 所以要反复喊醒它 —— 但别太密, 免得设备忙着回命令顾不上推帧。
 const AFFINE_PROBE_NUDGE: Duration = Duration::from_secs(1);
@@ -349,7 +356,9 @@ const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
         pub fn affine_probe(&self) -> Result<bool> {
             self.drain();
             let mut dec = affine::Decoder::new();
-            let deadline = Instant::now() + AFFINE_PROBE_WINDOW;
+            // 两段式窗口: 先 AFFINE_PROBE_QUICK 快速判定; 设备真开过口才延长到
+            // AFFINE_PROBE_WINDOW。没接手台时整轮从 8s 压到 2s(见常量注释)。
+            let mut deadline = Instant::now() + AFFINE_PROBE_QUICK;
             let mut next_nudge = Instant::now();
             // 顺序很关键: 先点灯把固件叫醒, 再开扫描。
             let _ = self.affine_wake();
@@ -369,12 +378,16 @@ const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
                     let _ = self.affine_start_scan();
                     next_nudge = Instant::now() + AFFINE_PROBE_NUDGE;
                 }
-                // 补发命令也要时间(8 秒窗口里要发 8 次), 所以补发后再查一次超时,
-                // 免得设备一直不回时把窗口拖成 16 秒。
+                // 补发命令也要时间, 所以补发后再查一次超时, 免得把窗口拖长。
                 if Instant::now() >= deadline {
                     break;
                 }
                 let Some(b) = self.read_byte(Duration::from_millis(20))? else {
+                    // 快速窗口内一个字节都没有 -> 这个端口不像有手台, 直接放弃。
+                    // (设备若在, 开扫描后基本百毫秒级就开始推帧。)
+                    if !saw_any && started.elapsed() >= AFFINE_PROBE_QUICK {
+                        break;
+                    }
                     if saw_any && !quiet_logged && started.elapsed() >= AFFINE_QUIET_LOG_AFTER {
                         quiet_logged = true;
                         let rx = self.rx();
@@ -382,6 +395,10 @@ const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
                     }
                     continue;
                 };
+                // 设备开口了: 延长到完整窗口, 给慢启动/慢推帧的固件留足时间。
+                if !saw_any {
+                    deadline = Instant::now() + AFFINE_PROBE_WINDOW;
+                }
                 saw_any = true;
                 if let Some(frame) = dec.push(b) {
                     saw_frame = true;
@@ -530,30 +547,17 @@ mod imp {
     }
 }
 
-
-// ---------------------------------------------------------------------------
-// Android: 用 USB Host API 直接驱动手台(CDC-ACM / USB 串口)。
-//
-// 为什么不能像桌面那样用 serialport crate: 它依赖系统 termios/Win32 串口栈, Android
-// 上不存在。Android 走的是另一条路 —— UsbManager 拿到 UsbDevice, 声明接口后用
-// bulkTransfer 收发原始字节。手台(Arduino/CDC 类 USB 串口)正好就是这种「裸 USB 设备」,
-// 所以这里自己实现一份最小串口: 打开设备 -> 找 bulk in/out 端点 -> 读写。
-//
-// 注意 115200 8N1 的波特率在 CDC-ACM 上由设备固件决定, 主机端不需要(也没有 API)设置;
-// 手台固件本来就是 115200, 直接用即可。DTR 同理: 设备侧若等 DTR, 会在打开后收到
-// SET_CONTROL_LINE_STATE(0x22) 时被 SetDTR。这里补发一次, 与桌面端行为对齐。
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Android: 用 USB Host API 直接驱动手台(CDC-ACM / 裸 USB 串口)。
 //
 // 不能像桌面那样用 serialport crate: 它依赖系统 termios/Win32 串口栈, Android 上没有。
 // Android 走的是另一条路 —— UsbManager 拿到 UsbDevice, 声明接口后用 bulkTransfer 收发。
-// 手台(Arduino/CDC 类 USB 串口)正好就是这种设备, 所以这里实现一份最小串口。
 //
 // 关于 115200 8N1: CDC-ACM 的波特率由设备固件决定, 主机端没有(也不需要)设置接口。
 // 关于 DTR: 手台固件要 DTR 才说话, 打开后补发一次 SET_CONTROL_LINE_STATE, 与桌面端对齐。
 //
-// 首次连接会弹系统「允许访问 USB 设备」授权框; 勾「一律允许」后就不再弹。
+// 首次连接会主动弹系统「允许访问 USB 设备」授权框(openDevice 无权限时只返回 null, 不会弹),
+// 勾「一律允许」后就不再弹。
 // ---------------------------------------------------------------------------
 #[cfg(target_os = "android")]
 mod imp {
@@ -563,8 +567,11 @@ mod imp {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    /// Affine 探测窗口/补发节奏: 与桌面端保持一致, 覆盖「上电几秒后才开口」的慢启动设备。
+    /// Affine 探测窗口/补发节奏: 与桌面端一致, 覆盖「上电几秒后才开口」的慢启动设备。
     const AFFINE_PROBE_WINDOW: Duration = Duration::from_secs(8);
+    /// 快速窗口: 开扫描后先只等这么久, 没反应就换下一个端口(见桌面段同名常量注释)。
+    /// 没接手台时整轮从 8s 压到 2s。
+    const AFFINE_PROBE_QUICK: Duration = Duration::from_secs(2);
     const AFFINE_PROBE_NUDGE: Duration = Duration::from_secs(1);
 
     /// CDC-ACM 数据接口(手台/Arduino 常见)。
@@ -576,8 +583,15 @@ mod imp {
     const XFER_BULK: i32 = 2;
     const DIR_OUT: i32 = 0;
     const DIR_IN: i32 = 128;
-    /// 单次 bulk 读的最大长度(手台帧都很短)。
-    const READ_CHUNK: usize = 64;
+
+    /// 主 Activity 的 Context(申请 USB 权限要用它发 PendingIntent)。
+    fn android_context() -> jni::objects::JObject<'static> {
+        use jni::objects::JObject;
+        if let Some(ctx) = tauri::tao::platform::android::prelude::main_android_context() {
+            return unsafe { JObject::from_raw(ctx.context_jobject.cast()) };
+        }
+        JObject::null()
+    }
 
     fn android_vm() -> Result<jni::JavaVM> {
         let ctx = tauri::tao::platform::android::prelude::main_android_context()
@@ -585,16 +599,23 @@ mod imp {
         Ok(unsafe { jni::JavaVM::from_raw(ctx.java_vm.cast()) }?)
     }
 
+    /// context.getPackageName()。PendingIntent 的 action 必须带包名, 所以要先拿到它。
+    fn package_name(env: &mut jni::JNIEnv, context: &jni::objects::JObject) -> Result<String> {
+        let s = env
+            .call_method(context, "getPackageName", "()Ljava/lang/String;", &[])?
+            .l()?;
+        let js = jni::objects::JString::from(s);
+        Ok(env.get_string(&js)?.into())
+    }
+
     /// context.getSystemService(Context.USB_SERVICE) -> UsbManager
     fn usb_manager(env: &mut jni::JNIEnv) -> Result<jni::objects::JObject<'static>> {
         use jni::objects::{JObject, JValue};
-        let ctx = tauri::tao::platform::android::prelude::main_android_context()
-            .ok_or_else(|| anyhow::anyhow!("没有 Android context"))?;
-        let context = unsafe { JObject::from_raw(ctx.context_jobject.cast()) };
+        let context = android_context();
         let name = env.new_string("usb")?;
         let mgr = env
             .call_method(
-                context,
+                &context,
                 "getSystemService",
                 "(Ljava/lang/String;)Ljava/lang/Object;",
                 &[JValue::Object(&name)],
@@ -606,14 +627,102 @@ mod imp {
         Ok(unsafe { JObject::from_raw(mgr.as_raw()) })
     }
 
-    /// 用迭代器把 getDeviceList() 里的 UsbDevice 逐个取出来。
-    fn each_device(
+    /// 只有拿到了 USB 访问权, openDevice() 才会真的打开设备;
+    /// 没有权限时 openDevice() 只会返回 null —— **不会**弹任何框。
+    fn has_usb_permission(
         env: &mut jni::JNIEnv,
-    ) -> Result<Vec<jni::objects::GlobalRef>> {
+        usb: &jni::objects::JObject,
+        dev: &jni::objects::JObject,
+    ) -> bool {
+        env.call_method(
+            usb,
+            "hasPermission",
+            "(Landroid/hardware/usb/UsbDevice;)Z",
+            &[jni::objects::JValue::Object(dev)],
+        )
+        .and_then(|v| v.z())
+        .unwrap_or(false)
+    }
+
+    /// 主动弹系统授权框。
+    ///
+    /// 必须自己发 requestPermission —— 只调 openDevice 在无权限时是静默返回 null,
+    /// 玩家看到的就是「没弹 OTG 授权框、手台用不了」。
+    ///
+    /// PendingIntent 的 action 必须是 '<包名>.USB_PERMISSION' 这类**带包名**的字符串:
+    /// 早期 Android 用裸的 "USB_PERMISSION" 也能弹, 但新版本会直接静默拒绝
+    /// (不弹框、也不抛异常), 这正是 Android 14 上「没提示授权」的原因。
+    fn request_usb_permission(
+        env: &mut jni::JNIEnv,
+        usb: &jni::objects::JObject,
+        dev: &jni::objects::JObject,
+    ) -> Result<bool> {
+        use jni::objects::{JString, JValue};
+        let context = android_context();
+        let pkg = package_name(env, &context)?;
+        let action = env.new_string(format!("{pkg}.USB_PERMISSION"))?;
+
+        // Intent(action)
+        let intent = env.new_object(
+            "android/content/Intent",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action)],
+        )?;
+        let pkg_s = env.new_string(&pkg)?;
+        let _ = env.call_method(
+            &intent,
+            "setPackage",
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&JString::from(pkg_s).into())],
+        );
+        // FLAG_ACTIVITY_NEW_TASK(0x10000000), 从非 Activity 上下文发广播必须带。
+        let _ = env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(0x10000000)],
+        );
+
+        // PendingIntent.getBroadcast(context, 0, intent, FLAG_IMMUTABLE | FLAG_UPDATE_CURRENT)
+        // 目标 SDK 31+ 时若 PendingIntent 可变会直接抛异常, 所以必须给 FLAG_IMMUTABLE。
+        let pi_cls = env.find_class("android/app/PendingIntent")?;
+        let flags = (1 << 26) | (1 << 27);
+        let pi = env
+            .call_static_method(
+                &pi_cls,
+                "getBroadcast",
+                "(Landroid/content/Context;ILandroid/content/Intent;I)Landroid/app/PendingIntent;",
+                &[
+                    JValue::Object(&context),
+                    JValue::Int(0),
+                    JValue::Object(&intent),
+                    JValue::Int(flags),
+                ],
+            )?
+            .l()?;
+
+        // requestPermission 是异步的: 这里只负责把框弹出去, 是否授权由用户决定。
+        env.call_method(
+            usb,
+            "requestPermission",
+            "(Landroid/hardware/usb/UsbDevice;Landroid/app/PendingIntent;)V",
+            &[JValue::Object(dev), JValue::Object(&pi)],
+        )?;
+        Ok(false)
+    }
+
+    /// 用迭代器把 getDeviceList() 里的 UsbDevice 逐个取出来。
+    fn each_device(env: &mut jni::JNIEnv) -> Result<Vec<jni::objects::GlobalRef>> {
         let usb = usb_manager(env)?;
-        let map = env.call_method(&usb, "getDeviceList", "()Ljava/util/HashMap;", &[])?.l()?;
-        let values = env.call_method(&map, "values", "()Ljava/util/Collection;", &[])?.l()?;
-        let iter = env.call_method(&values, "iterator", "()Ljava/util/Iterator;", &[])?.l()?;
+        let map = env
+            .call_method(&usb, "getDeviceList", "()Ljava/util/HashMap;", &[])?
+            .l()?;
+        let values = env
+            .call_method(&map, "values", "()Ljava/util/Collection;", &[])?
+            .l()?;
+        let iter = env
+            .call_method(&values, "iterator", "()Ljava/util/Iterator;", &[])?
+            .l()?;
         let mut out = Vec::new();
         loop {
             if !env.call_method(&iter, "hasNext", "()Z", &[])?.z()? {
@@ -626,7 +735,9 @@ mod imp {
     }
 
     fn int_of(env: &mut jni::JNIEnv, obj: &jni::objects::JObject, name: &str) -> i32 {
-        env.call_method(obj, name, "()I", &[]).and_then(|v| v.i()).unwrap_or(-1)
+        env.call_method(obj, name, "()I", &[])
+            .and_then(|v| v.i())
+            .unwrap_or(-1)
     }
 
     /// 设备是否像手台: 有 CDC 数据接口就直接算;否则排掉明确不是手台的设备类。
@@ -635,7 +746,12 @@ mod imp {
         let n = int_of(env, dev, "getInterfaceCount");
         for i in 0..n {
             if let Ok(iface) = env
-                .call_method(dev, "getInterface", "(I)Landroid/hardware/usb/UsbInterface;", &[jni::objects::JValue::Int(i)])
+                .call_method(
+                    dev,
+                    "getInterface",
+                    "(I)Landroid/hardware/usb/UsbInterface;",
+                    &[jni::objects::JValue::Int(i)],
+                )
                 .and_then(|v| v.l())
             {
                 if int_of(env, &iface, "getInterfaceClass") == USB_CLASS_CDC_DATA {
@@ -646,15 +762,14 @@ mod imp {
         !matches!(cls, USB_CLASS_HUB | USB_CLASS_MASS_STORAGE | 0x01 | 0x0E)
     }
 
-    struct DevEntry {
-        name: String,
-        device_id: i32,
-    }
-
-    fn entries() -> Vec<DevEntry> {
+    fn entries() -> Vec<String> {
         let Ok(vm) = android_vm() else { return Vec::new() };
-        let Ok(mut env) = vm.attach_current_thread() else { return Vec::new() };
-        let Ok(devs) = each_device(&mut env) else { return Vec::new() };
+        let Ok(mut env) = vm.attach_current_thread() else {
+            return Vec::new()
+        };
+        let Ok(devs) = each_device(&mut env) else {
+            return Vec::new()
+        };
         let mut out = Vec::new();
         for g in devs {
             let dev = g.as_obj();
@@ -664,13 +779,13 @@ mod imp {
             let vid = int_of(&mut env, dev, "getVendorId");
             let pid = int_of(&mut env, dev, "getProductId");
             let id = int_of(&mut env, dev, "getDeviceId");
-            out.push(DevEntry { name: format!("usb:{vid:04x}:{pid:04x}#{id}"), device_id: id });
+            out.push(format!("usb:{vid:04x}:{pid:04x}#{id}"));
         }
         out
     }
 
     pub fn list_ports() -> Vec<String> {
-        entries().into_iter().map(|e| e.name).collect()
+        entries()
     }
 
     /// Android 没有「串口路径」, 候选就是 USB 设备列表。
@@ -700,8 +815,15 @@ mod imp {
         }
         let target = target.ok_or_else(|| anyhow::anyhow!("USB 设备不存在或已拔出: {name}"))?;
 
-        // 没授权时 openDevice 返回 null。第一次会弹系统授权框, 所以这里给出可照做的提示,
-        // 而不是笼统的「失败」。
+        // ⚠ openDevice() 在无权限时**静默返回 null, 不会弹任何框**。必须自己先看
+        // hasPermission, 没有就主动 requestPermission 把系统框弹出来。
+        if !has_usb_permission(&mut env, &usb, target.as_obj()) {
+            let _ = request_usb_permission(&mut env, &usb, target.as_obj());
+            anyhow::bail!(
+                "已弹出 USB 授权框, 请在手机上点「允许」(勾选「一律允许」以后就不用再点): {name}"
+            );
+        }
+
         let conn = env
             .call_method(
                 &usb,
@@ -721,7 +843,12 @@ mod imp {
         let mut chosen: Option<GlobalRef> = None;
         for i in 0..n {
             let iface = env
-                .call_method(target.as_obj(), "getInterface", "(I)Landroid/hardware/usb/UsbInterface;", &[JValue::Int(i)])?
+                .call_method(
+                    target.as_obj(),
+                    "getInterface",
+                    "(I)Landroid/hardware/usb/UsbInterface;",
+                    &[JValue::Int(i)],
+                )?
                 .l()?;
             let is_cdc = int_of(&mut env, &iface, "getInterfaceClass") == USB_CLASS_CDC_DATA;
             if is_cdc || chosen.is_none() {
@@ -738,7 +865,12 @@ mod imp {
         let (mut ep_in, mut ep_out) = (None, None);
         for i in 0..n_ep {
             let ep = env
-                .call_method(iface.as_obj(), "getEndpoint", "(I)Landroid/hardware/usb/UsbEndpoint;", &[JValue::Int(i)])?
+                .call_method(
+                    iface.as_obj(),
+                    "getEndpoint",
+                    "(I)Landroid/hardware/usb/UsbEndpoint;",
+                    &[JValue::Int(i)],
+                )?
                 .l()?;
             if int_of(&mut env, &ep, "getType") != XFER_BULK {
                 continue;
@@ -751,9 +883,7 @@ mod imp {
         }
         let (ep_in, ep_out) = match (ep_in, ep_out) {
             (Some(a), Some(b)) => (a, b),
-            _ => anyhow::bail!(
-                "设备没有可用的 bulk 收发端点 —— 手台应该是 CDC 串口设备: {name}"
-            ),
+            _ => anyhow::bail!("设备没有可用的 bulk 收发端点 —— 手台应该是 CDC 串口设备: {name}"),
         };
 
         let iface_id = int_of(&mut env, iface.as_obj(), "getId");
@@ -809,8 +939,6 @@ mod imp {
         inner: Arc<Mutex<UsbConn>>,
     }
 
-    /// 回调里拿到的 Connection 与本模块公开的 Connection 是同一套方法,
-    /// 这里把它当作一个薄包装: 真正的收发都在 bulk()/read_byte() 里。
     impl Connection {
         pub fn open(name: &str) -> Result<Self> {
             open_device(name)
@@ -825,7 +953,7 @@ mod imp {
         }
 
         /// bulkTransfer 收发。jni 的 JNIEnv 不能跨线程保存, 每次重新 attach。
-        /// 返回实际传输的字节数(<0 表示错误/超时, 与 Android API 一致)。
+        /// 返回实际传输的字节数(<=0 表示错误/超时, 与 Android API 一致)。
         fn bulk(&self, data: &[u8], ep_is_in: bool, timeout_ms: i32) -> Result<i32> {
             let vm = android_vm()?;
             let mut env = vm.attach_current_thread()?;
@@ -835,9 +963,10 @@ mod imp {
                 let arr = env.byte_array_from_slice(data)?;
                 (ep, arr)
             };
+            let conn = self.inner.lock().unwrap().conn.clone();
             let n = env
                 .call_method(
-                    &self.inner.lock().unwrap().conn,
+                    &conn,
                     "bulkTransfer",
                     "(Landroid/hardware/usb/UsbEndpoint;[BII)I",
                     &[
@@ -881,9 +1010,10 @@ mod imp {
                 let guard = self.inner.lock().unwrap();
                 (guard.ep_in.clone(), env.byte_array_from_slice(&[0u8; 64])?)
             };
+            let conn = self.inner.lock().unwrap().conn.clone();
             let n = env
                 .call_method(
-                    &self.inner.lock().unwrap().conn,
+                    &conn,
                     "bulkTransfer",
                     "(Landroid/hardware/usb/UsbEndpoint;[BII)I",
                     &[
@@ -902,9 +1032,6 @@ mod imp {
             if bytes.is_empty() {
                 return Ok(None);
             }
-            // 多读到的一并记进 RxTrace, 但只把第一个字节交给流解码器 ——
-            // Decoder 是逐字节推进的状态机, 剩下的由后续 read_byte 继续喂会给不了,
-            // 因此这里只取一个字节(手台帧很密, 丢尾字节不会影响判定)。
             self.note_rx(&bytes);
             Ok(Some(bytes[0]))
         }
@@ -919,20 +1046,21 @@ mod imp {
                 }
                 let vm = android_vm()?;
                 let mut env = vm.attach_current_thread()?;
-                let want = (buf.len() - n) as i32;
+                let want = ((buf.len() - n) as i32).min(64);
                 let (ep_in, arr) = {
                     let guard = self.inner.lock().unwrap();
                     (guard.ep_in.clone(), env.byte_array_from_slice(&[0u8; 64])?)
                 };
+                let conn = self.inner.lock().unwrap().conn.clone();
                 let got = env
                     .call_method(
-                        &self.inner.lock().unwrap().conn,
+                        &conn,
                         "bulkTransfer",
                         "(Landroid/hardware/usb/UsbEndpoint;[BII)I",
                         &[
                             jni::objects::JValue::Object(ep_in.as_obj()),
                             jni::objects::JValue::Object(&arr),
-                            jni::objects::JValue::Int(want.min(64)),
+                            jni::objects::JValue::Int(want),
                             jni::objects::JValue::Int(20),
                         ],
                     )?
@@ -1020,14 +1148,15 @@ mod imp {
         }
 
         /// Affine 探测: 先点灯唤醒, 再开扫描, 收到 AUTO_SCAN(0x01)/AUTO_AIR(0x05) 即认定。
-        /// 窗口 8s, 每 1s 补发一次(与桌面端一致, 覆盖慢启动的设备)。
+        /// 两段式窗口: 先 QUICK(2s) 快速判定, 设备开口才延长到完整 8s。
         pub fn affine_probe(&self) -> Result<bool> {
             self.drain();
             let mut dec = affine::Decoder::new();
-            let deadline = Instant::now() + AFFINE_PROBE_WINDOW;
+            let mut deadline = Instant::now() + AFFINE_PROBE_QUICK;
             let mut next_nudge = Instant::now();
             let _ = self.affine_wake();
             self.affine_start_scan()?;
+            let started = Instant::now();
             let mut saw_any = false;
             let mut saw_frame = false;
             while Instant::now() < deadline {
@@ -1040,8 +1169,16 @@ mod imp {
                     break;
                 }
                 let Some(b) = self.read_byte(Duration::from_millis(20))? else {
+                    // 快速窗口内一个字节都没有 -> 这个设备不像有手台, 直接放弃。
+                    if !saw_any && started.elapsed() >= AFFINE_PROBE_QUICK {
+                        break;
+                    }
                     continue;
                 };
+                // 设备开口了: 延长到完整窗口, 给慢启动/慢推帧的固件留足时间。
+                if !saw_any {
+                    deadline = Instant::now() + AFFINE_PROBE_WINDOW;
+                }
                 saw_any = true;
                 if let Some(frame) = dec.push(b) {
                     saw_frame = true;
@@ -1051,17 +1188,22 @@ mod imp {
                 }
             }
             if saw_frame {
-                eprintln!("[umg][hw] Affine 探测: 拆出了帧, 但没有 AUTO_SCAN(0x01/0x05)(原始字节: {})", self.rx());
+                eprintln!(
+                    "[umg][hw] Affine 探测: 拆出了帧, 但没有 AUTO_SCAN(0x01/0x05)(原始字节: {})",
+                    self.rx()
+                );
             } else if saw_any {
-                eprintln!("[umg][hw] Affine 探测: 收到字节, 但没拆出完整帧(原始字节: {})", self.rx());
+                eprintln!(
+                    "[umg][hw] Affine 探测: 收到字节, 但没拆出完整帧(原始字节: {})",
+                    self.rx()
+                );
             } else {
-                eprintln!("[umg][hw] Affine 探测: 8s 内一个字节都没收到 —— 查 OTG 线/授权/供电");
+                eprintln!("[umg][hw] Affine 探测: 2s 内一个字节都没收到 —— 查 OTG 线/授权/供电");
             }
             Ok(false)
         }
     }
 }
-
 pub use imp::{list_ports, prepare_for_connect, Connection};
 
 /// 自动连接: 按 USB 优先顺序枚举端口, 逐个探测协议, 找到第一个手台。

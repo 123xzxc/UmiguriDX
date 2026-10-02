@@ -68,6 +68,54 @@ if (!xml.includes('android.hardware.usb.host')) {
   }
 }
 
+// 1.7) USB_DEVICE_ATTACHED: 插上手台时直接把系统授权框弹出来, 不用等应用轮询。
+//      两个前提: (a) res/xml/device_filter.xml 列出支持的 USB 设备;
+//      (b) activity 里加 USB_DEVICE_ATTACHED 的 intent-filter 指向它。
+//      即便没有接收器, 宿主自己也会 requestPermission(见 serial.rs), 这步只是让
+//      「插上就弹框」更顺 —— 缺了它也不会连不上。
+const androidResXml = path.join(androidDir, "app", "src", "main", "res", "xml");
+const deviceFilterPath = path.join(androidResXml, "device_filter.xml");
+if (!fs.existsSync(deviceFilterPath)) {
+  fs.mkdirSync(androidResXml, { recursive: true });
+  const filter = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<!-- UMIGURI: USB 手台(CDC-ACM 串口)。放开整个 CDC 类 + 常见串口芯片厂商, 插上手台时系统直接弹授权框。 -->',
+    '<resources>',
+    '    <usb-device class="2" />',
+    '    <usb-device class="10" />',
+    '    <usb-device vendor-id="4292" />',
+    '    <usb-device vendor-id="1027" />',
+    '    <usb-device vendor-id="6790" />',
+    '    <usb-device vendor-id="9025" />',
+    '    <usb-device vendor-id="1240" />',
+    '    <usb-device vendor-id="1155" />',
+    '</resources>',
+    ''
+  ].join(eol) + eol;
+  fs.writeFileSync(deviceFilterPath, filter);
+  console.log("patch-android-perms: 已写入 " + path.relative(root, deviceFilterPath));
+}
+// 1.8) 给主 Activity 挂 USB_DEVICE_ATTACHED: 指向上面那份 device_filter。
+//      tauri 生成的 MainActivity 没有这个 filter, 这里补上(幂等)。
+const attachedFilter = [
+  '            <intent-filter>',
+  '                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />',
+  '            </intent-filter>',
+  '            <meta-data android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" ',
+  '                       android:resource="@xml/device_filter" />'
+].join(eol);
+if (!xml.includes("USB_DEVICE_ATTACHED")) {
+  // 找主 Activity(MainActivity) 的 </activity> 之前插入。
+  const actRe = /(<activity[^>]*MainActivity[^>]*>)([\s\S]*?)(<\/activity>)/;
+  const am = xml.match(actRe);
+  if (am) {
+    const inner = am[2].endsWith(eol) ? am[2] : am[2] + eol;
+    xml = xml.replace(actRe, am[1] + eol + attachedFilter + eol + inner + am[3]);
+    changed = true;
+  } else {
+    console.log("patch-android-perms: 没找到 MainActivity, 跳过 USB_DEVICE_ATTACHED");
+  }
+}
 // 2) <application android:requestLegacyExternalStorage="true">: API 29 上维持旧的
 //    分区存储行为(API 30+ 无影响, 但对 29 是必需的)。
 if (!xml.includes('requestLegacyExternalStorage') && /<application\s/.test(xml)) {

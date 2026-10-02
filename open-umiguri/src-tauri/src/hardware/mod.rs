@@ -436,11 +436,14 @@ fn input_loop_stream(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>)
 ///
 /// 头几轮特意压到 2 秒: 设备(尤其刚上电的那次)往往要几秒才开口, 早期多试几次能让
 /// 它赶在玩家还盯着启动画面时就连上, 而不是等满一整轮。
+// 2026-10: 玩家反馈「没接手台时等太久」。配合 serial.rs 里把单个端口的探测窗口
+// 从 8s 压到 2s(没开口就跳过), 这里也把重试间隔收紧 —— 没插手台时不需要长时间
+// 空等, 插上后一两秒内就该有反应。
 const AUTOCONNECT_BURST_TRIES: u32 = 6;
-const AUTOCONNECT_BURST_WAIT: u64 = 2;
+const AUTOCONNECT_BURST_WAIT: u64 = 1;
 const AUTOCONNECT_FAST_TRIES: u32 = 12;
-const AUTOCONNECT_FAST_WAIT: u64 = 5;
-const AUTOCONNECT_SLOW_WAIT: u64 = 60;
+const AUTOCONNECT_FAST_WAIT: u64 = 3;
+const AUTOCONNECT_SLOW_WAIT: u64 = 15;
 
 /// 启动时按需自动连接(在后台线程里探测并重试, 不阻塞启动)。
 ///

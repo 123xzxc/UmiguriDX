@@ -130,6 +130,7 @@ Tauri 工程里是默认缺的, 需要自己接:
 | 步骤 | 要点 |
 |---|---|
 | 权限 | `AndroidManifest.xml` 必须有 `<uses-feature android:name="android.hardware.usb.host" />`。缺它时系统**不会弹 USB 授权框**, `UsbManager.openDevice()` 直接返回 `null`。 |
+| 申请 | ⚠ `openDevice()` 无权限时**静默返回 null, 不会弹框**。必须自己 `hasPermission()` → 没有就 `requestPermission(dev, pendingIntent)`。PendingIntent 的 action 必须是 **`<包名>.USB_PERMISSION`**(裸 `USB_PERMISSION` 在 Android 14 会被静默拒绝 = 「没提示授权」), 且 getBroadcast 要带 `FLAG_IMMUTABLE`。 |
 | 枚举 | `UsbManager.getDeviceList()`, 按 `getInterfaceClass()==0x0A`(CDC Data) 优先认手台, 排掉 HUB(0x09)/大容量存储(0x08)。 |
 | 打开 | `openDevice()` 返回 null ⇒ 没授权(提示用户勾「一律允许」) 或被内核驱动占用。 |
 | 端点 | 找该接口下的 **BULK** 端点(type==2), `getDirection()==0` 是 OUT, `==128` 是 IN。 |
@@ -236,6 +237,9 @@ gcc .\test.c .\serialslider.c -o chuni_test.exe -lsetupapi
 | 只有触摸没有天键 | 只处理了 `AUTO_SCAN(size=33)`, 没处理单独的 `0x05` |
 | Android 上 openDevice 返回 null | 没声明 `android.hardware.usb.host`, 或用户没勾「一律允许」|
 | Android 上设备在但读不到 | 忘了 claimInterface / 忘了补发 DTR / 枚举到的是 HUB 而非手台 |
+| Android 没弹授权框 | 用了裸 `USB_PERMISSION`(要 `<包名>.USB_PERMISSION`); 或缺 `uses-feature usb.host` |
+| Android 授权后仍连不上 | 授权是异步的: 本轮会失败, 等下一次自动重连(约 1-3s)即可; 或手动点「连接」|
+| 没接手台时等太久 | 探测窗口是两段式: 2s 内没字节就跳过该端口(开口了才等满 8s); 重连间隔 1s/3s/15s |
 
 ## 7. 需要固件作者确认的点
 
