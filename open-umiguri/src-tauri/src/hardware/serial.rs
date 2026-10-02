@@ -13,9 +13,55 @@ use std::sync::{Arc, Mutex};
 
 use crate::hardware::Kind;
 
+/// 探测时串口上收到的原始字节(最多留前 32 个, 另外记总数)。
+///
+/// 连不上手台时,「设备一句话没说」和「设备说了、但不像手台」要查的地方完全不同:
+/// 前者是线/USB 驱动/固件在 macOS 上的兼容性, 后者是协议。所以失败日志里把这段
+/// 原始字节一起打出来, 一眼就能分清。
+#[derive(Clone, Default)]
+pub struct RxTrace {
+    total: usize,
+    head: Vec<u8>,
+}
+
+impl RxTrace {
+    /// 记一个收到的字节(超过 32 个只加计数)
+    pub fn push(&mut self, byte: u8) {
+        self.total += 1;
+        if self.head.len() < 32 {
+            self.head.push(byte);
+        }
+    }
+
+    /// 清空, 用于开始探测下一种协议
+    pub fn clear(&mut self) {
+        self.total = 0;
+        self.head.clear();
+    }
+}
+
+impl std::fmt::Display for RxTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.total == 0 {
+            return write!(f, "一个字节都没收到");
+        }
+        for (i, b) in self.head.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            write!(f, "{b:02X}")?;
+        }
+        if self.total > self.head.len() {
+            write!(f, " …共 {} 字节", self.total)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod imp {
     pub const BAUD_RATE: u32 = 115_200;
+    use super::RxTrace;
     use std::time::Duration;
     use anyhow::{Context, Result};
     use serialport::{available_ports, SerialPort};
@@ -80,6 +126,8 @@ mod imp {
     #[derive(Clone)]
     pub struct Connection {
         port: Arc<Mutex<Box<dyn SerialPort>>>,
+        /// 串口上收到的原始字节(失败日志用, 见 RxTrace)
+        rx: Arc<Mutex<RxTrace>>,
     }
 
     impl Connection {
@@ -100,6 +148,7 @@ mod imp {
             }
             Ok(Self {
                 port: Arc::new(Mutex::new(port)),
+                rx: Arc::new(Mutex::new(RxTrace::default())),
             })
         }
 
@@ -108,6 +157,23 @@ mod imp {
             port.write_all(cmd).context("发送命令失败")?;
             port.flush().ok();
             Ok(())
+        }
+
+        /// 当前记录到的原始字节快照(探测失败时写进日志)
+        pub fn rx(&self) -> RxTrace {
+            self.rx.lock().unwrap().clone()
+        }
+
+        /// 清空已记录的原始字节(开始探测下一种协议前调用)
+        pub fn rx_reset(&self) {
+            self.rx.lock().unwrap().clear();
+        }
+
+        fn note_rx(&self, bytes: &[u8]) {
+            let mut rx = self.rx.lock().unwrap();
+            for &b in bytes {
+                rx.push(b);
+            }
         }
 
         /// 发送灯光: 0xB2 + 96 字节(32 格 RGB)
@@ -129,7 +195,10 @@ mod imp {
                 }
                 match port.read(&mut buf[n..]) {
                     Ok(0) => {}
-                    Ok(k) => n += k,
+                    Ok(k) => {
+                        self.note_rx(&buf[n..n + k]);
+                        n += k;
+                    }
                     Err(ref e) if e.kind() == ErrorKind::TimedOut => continue,
                     Err(e) => return Err(e.into()),
                 }
@@ -183,7 +252,10 @@ mod imp {
             loop {
                 match port.read(&mut b) {
                     Ok(0) => {}
-                    Ok(_) => return Ok(Some(b[0])),
+                    Ok(_) => {
+                        self.note_rx(&b);
+                        return Ok(Some(b[0]));
+                    }
                     Err(ref e) if e.kind() == ErrorKind::TimedOut => {}
                     Err(e) => return Err(e.into()),
                 }
@@ -272,6 +344,24 @@ mod imp {
         }
 
         #[test]
+        fn rx_trace_summarizes_bytes() {
+            let mut rx = RxTrace::default();
+            assert_eq!(rx.to_string(), "一个字节都没收到");
+            rx.push(0xFF);
+            rx.push(0x01);
+            assert_eq!(rx.to_string(), "FF 01");
+            // 超过 32 个只留头 32 个, 但总数要准(排查时看的就是「到底有没有说话」)
+            for i in 0..40u8 {
+                rx.push(i);
+            }
+            let s = rx.to_string();
+            assert!(s.starts_with("FF 01"), "{s}");
+            assert!(s.ends_with("…共 42 字节"), "{s}");
+            rx.clear();
+            assert_eq!(rx.to_string(), "一个字节都没收到");
+        }
+
+        #[test]
         fn usb_ports_sort_before_bluetooth() {
             let mut ports = vec![
                 "/dev/cu.Bluetooth-Incoming-Port".to_string(),
@@ -319,6 +409,10 @@ mod imp {
         pub fn read_byte(&self, _timeout: Duration) -> Result<Option<u8>> {
             Ok(None)
         }
+        pub fn rx(&self) -> super::RxTrace {
+            super::RxTrace::default()
+        }
+        pub fn rx_reset(&self) {}
         pub fn write_led(&self, _rgb: &[u8; 96]) -> Result<()> {
             anyhow::bail!("Android 不支持串口手台")
         }
@@ -386,17 +480,23 @@ pub fn connect(port: Option<&str>, force: Option<Kind>) -> Result<(String, Conne
 fn probe(conn: &Connection, force: Option<Kind>) -> Result<Kind> {
     match force {
         Some(Kind::Affine) => {
+            conn.rx_reset();
             if conn.affine_probe()? {
                 Ok(Kind::Affine)
             } else {
-                anyhow::bail!("Affine 手台无响应(未收到 AUTO_SCAN 帧)")
+                anyhow::bail!("Affine 手台无响应(未收到 AUTO_SCAN 帧; 开扫描轮: {})", conn.rx())
             }
         }
         Some(Kind::Chu2Board) => {
-            if conn.check_api_level().unwrap_or(false) && conn.handshake().unwrap_or(false) {
+            conn.rx_reset();
+            let hit = conn.check_api_level().unwrap_or(false) && conn.handshake().unwrap_or(false);
+            if hit {
                 Ok(Kind::Chu2Board)
             } else {
-                anyhow::bail!("chu2board 手台无响应(API 版本不符或握手失败)")
+                anyhow::bail!(
+                    "chu2board 手台无响应(API 版本不符或握手失败; 轮询轮: {})",
+                    conn.rx()
+                )
             }
         }
         None => detect(conn),
@@ -409,17 +509,25 @@ fn probe(conn: &Connection, force: Option<Kind>) -> Result<Kind> {
 /// 所以先发的 0xB0/0xAF 不会影响它; 反过来 chu2board 固件只在收到命令时回包,
 /// 收到 0xFF 开头的帧只会当作未知命令忽略。
 fn detect(conn: &Connection) -> Result<Kind> {
+    // 两轮分开记: 「轮询那轮收到什么」和「开扫描那轮收到什么」能看出是哪一侧在说话,
+    // 也就能分清「设备没说话」和「说了但协议不对」。
+    conn.rx_reset();
     let api_ok = conn.check_api_level().unwrap_or(false);
     if api_ok && conn.handshake().unwrap_or(false) {
         return Ok(Kind::Chu2Board);
     }
+    let polled = conn.rx();
+    conn.rx_reset();
     if conn.affine_probe().unwrap_or(false) {
         return Ok(Kind::Affine);
     }
+    let scanning = conn.rx();
     if api_ok {
-        anyhow::bail!("chu2board 握手失败, 且未收到 Affine 扫描帧");
+        anyhow::bail!(
+            "chu2board 握手失败, 且未收到 Affine 扫描帧(轮询轮: {polled}; 开扫描轮: {scanning})"
+        );
     }
-    anyhow::bail!("API 版本不符, 且未收到 Affine 扫描帧")
+    anyhow::bail!("API 版本不符, 且未收到 Affine 扫描帧(轮询轮: {polled}; 开扫描轮: {scanning})")
 }
 
 /// 供 mod.rs 复用

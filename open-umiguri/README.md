@@ -137,6 +137,8 @@ open-umiguri/
 - 排查:日志里 `[umg][hw] 手台已连接: <端口> (<协议>)`;`window.umgHardware.status()` 可查当前协议。
   连接失败时是 `[umg][hw] 未连接手台(第 N 次尝试): 试过 X 个串口, 都不像手台 —— <端口>: <原因> | …`,
   也就是会把**每个**串口的结论都列出来, 免得排在最后的蓝牙口把有用信息顶掉。
+  结论里还带**串口上实际收到的原始字节**(如 `轮询轮: 一个字节都没收到; 开扫描轮: FF 01 20 …`),
+  据此能分清「设备没说话」(线/驱动/固件)和「说话了但协议不对」(命令/解码)。
 
 ### macOS 上连不上时(macOS 最容易踩的几个坑)
 
@@ -148,11 +150,16 @@ open-umiguri/
    在载波(DCD)为低时会卡住打开/读取, 是「Windows 能连、macOS 连不上」的常见原因。
    `hardware.port` 也请写 `/dev/cu.*`。
 3. **DTR**: 手台固件要 DTR 拉高才开始推帧(Affine 的参考实现 `serialslider.c` 里就有一句
-   `EscapeCommFunction(SETDTR)`)。Windows 的 USB 串口驱动默认就拉高, macOS/Linux 不会 ——
-   所以宿主在非 Windows 平台上打开串口后会主动拉 DTR。
+   `EscapeCommFunction(SETDTR)`)。Windows 那边不显式设也常常是拉高的, macOS/Linux 打开串口
+   默认不拉 —— 所以宿主在非 Windows 平台上打开串口后会主动拉 DTR。
 4. **不放心自动探测就手动指定**(`/config/game.json` 的 `hardware` 段):
    `"port": "/dev/cu.usbmodem103"`, 需要的话再加 `"protocol": "affine"`。
-5. 报问题时把 `[umg][hw] 未连接手台…` 那一行发出来: 里面列了系统枚举到的每个串口和各自的结论。
+5. **先用脚本分清是哪一层**: `open-umiguri/tools/mac-hw-probe.py`(只用 Python 标准库,
+   几十秒出结果)会按「不动控制线 / DTR / DTR+RTS」三种开法各试一遍, 把串口上收到的原始字节
+   打成十六进制: 一个字节都没回就是线/驱动/固件这一层, 回了字节就是协议这一层。
+   用法 `python3 tools/mac-hw-probe.py`(自动挑 usbmodem/usbserial 口, 也可以直接把端口名传进去)。
+6. 报问题时把 `[umg][hw] 未连接手台…` 那一行发出来: 里面列了系统枚举到的每个串口、各自的结论,
+   以及**设备到底回了什么字节**。
 
 ## 构建与运行
 
