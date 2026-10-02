@@ -3983,12 +3983,14 @@ scope.v_Hs_28017.prototype = {
     return this.nx;
   },
   Fx: async function () {
+    console.log("[umg][coop] Fx(建房) 被调用");
     this.zS = null, this.tx = !0;
     var v_t_33840 = await this.NC();
     return v_t_33840 !== scope.v_Ms_28009 ? (this.zS = null, this.tx = !1, this.Nx = null, v_t_33840) : scope.v_Ms_28009;
   },
   Bx: async function (v_t_33841) {
     this.zS = v_t_33841, this.tx = !1;
+    console.log("[umg][coop] Bx(加入房间) roomId=" + v_t_33841 + " type=" + typeof v_t_33841);
     v_t_33841 = await this.NC();
     return v_t_33841 !== scope.v_Ms_28009 ? (this.zS = null, this.tx = !1, this.Nx = null, v_t_33841) : scope.v_Ms_28009;
   },
@@ -4754,6 +4756,7 @@ scope.v_Ia_28059.prototype = {
   },
   tT: async function (v_t_34051, v_i_34052, v_e_34053) {
     var v_n_34054 = scope.v_Lr_27953();
+    console.log("[umg][coop] tT 即将写出的房间号 = " + v_e_34053);
     let v_r_34055 = scope.handshake.On.$p;
     var v_s_34056 = scope.v_be_27857.Hp.find(v_t_34057 => v_t_34057.id === v_r_34055),
       v_e_34053 = (this.UT(2), this.GT._g(20), this.GT.hg(v_e_34053), this.GT.vg(v_t_34051), this.GT.vg(v_i_34052), this.GT.vg(scope.handshake.rm.om), this.GT._g(scope.handshake.rm.lm), this.GT._g(scope.handshake.rm.lm), this.GT._g(v_s_34056 ? v_s_34056.rarity : 0), this.GT.vg(v_s_34056 ? v_s_34056.text : "NEW COMER"), this.GT.vg(v_n_34054 ? v_n_34054.Q1.ct[v_n_34054.dC] : "？？？"), this.GT._g(v_n_34054 ? v_n_34054.Ar.Vm : scope.v_gt_27748), this.GT.vg(v_n_34054 ? v_n_34054.Ar.ct : "？？？"), await this.mP());

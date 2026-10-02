@@ -46,7 +46,7 @@ export function createV_X1_27914(scope) {
       case "enter":
         !async function () {
           scope.menuSystem.It(!1), v_r_29127.lt.yk(30).Be = !1, v_r_29127.lt.yk(15).Be = !1;
-          var v_t_29142 = !v_a_29129.YS || (await v_a_29129.YS(scope.v_Pe_28064(v_a_29129.zS.join(""))));
+          var v_umgRoom = scope.v_Pe_28064(v_a_29129.zS.join("")); console.log("[umg][coop] 房间号输入面板 -> " + v_a_29129.zS.join("") + " (解析 " + v_umgRoom + ")"); var v_t_29142 = !v_a_29129.YS || (await v_a_29129.YS(v_umgRoom));
           (v_t_29142 ? v_i_29135 : (v_r_29127.lt.yk(30).Be = !0, v_r_29127.lt.yk(15).Be = !0, v_u_29133))();
         }();
     }

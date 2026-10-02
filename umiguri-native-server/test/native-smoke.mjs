@@ -533,9 +533,11 @@ let userId = 0;
 // ---- 3. /sock ----
 const a = new Sock(port);
 const b = new Sock(port);
+const joiner = new Sock(port); // 专门用来做「加入房间号」的正反例, 不占用 B 的房内状态
 await a.connect();
 await b.connect();
-ok(true, "两个 WebSocket 客户端都连上了");
+await joiner.connect();
+ok(true, "三个 WebSocket 客户端都连上了");
 
 {
   const r = await a.request(1, null);
@@ -583,9 +585,23 @@ let guestB = 0;
   eq(aSecond.str(), "BBB", "A 看到 B 的名字");
 }
 
+// 「输入房间号却进了随机房间」是这条链路上最容易回归的地方, 所以这里正反都钉死:
+//   1. 带一个不存在的号 -> 拒绝, 绝不能顺手新建一个随机房把玩家糊进去;
+//   2. 带一个存在的号 -> 必须进那个号, 而不是又新建;
+//   3. 建房(wantRoom=0)时才是真的新建, 且新号与已有房间不同。
+// (客户端把 6 位数字拼成 u32 交给 tT, 服务端 pickRoom 用 0 表示「建房」。)
 {
   const r = await b.request(2, enterPayload(4242, "nw-b", "", "BBB"));
   eq(r.body.u16(), 1, "加入不存在的房间被拒绝(非 0)");
+
+  const missing = await joiner.request(2, enterPayload(60000, "nw-j", "", "JJJ"));
+  eq(missing.body.u16(), 1, "60000 号不存在 -> 依然拒绝(不会被当成建房)");
+
+  const rejoin = await joiner.request(2, enterPayload(roomId, "nw-j", "", "JJJ"));
+  eq(rejoin.body.u16(), 0, "用 A 的房间号加入 -> 结果码 0");
+  rejoin.body.u32(); // nx(自己的 id), 这里不关心
+  eq(rejoin.body.u32(), roomId, "响应里的房间号 == 请求的房间号(没有新建随机房)");
+  await joiner.request(3, null); // 退出, 免得后面 A 房解散断言被多出来的人影响
 }
 
 {
@@ -967,6 +983,7 @@ let restToken = "";
 
 a.close();
 b.close();
+joiner.close();
 await new Promise((r) => setTimeout(r, 50));
 await new Promise((r) => server.close(r));
 

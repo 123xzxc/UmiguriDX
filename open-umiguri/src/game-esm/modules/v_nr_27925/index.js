@@ -445,6 +445,10 @@ export function createV_nr_27925(scope) {
               })) : v_s_29921.Fi === v_et_29729 ? scope.v_Fe_28101(async () => {
                 (await v_It_29787()) && (v_Wt_29807(), await scope.renderer.C7(scope.v_Ge_28204(20)), (await new Promise(v_t_29937 => scope.settingsStore.T0(scope.v_oe_27649.zS, v_t_29937))) === scope.v_K1_27916 && scope.v_oe_27649.Gi() && (await v_It_29787()), scope.v_nr_27925.T0());
               }) : v_s_29921.Fi === v_nt_29730 ? scope.v_Fe_28101(async () => {
+                // 「输入房间号加入」这条路必须先把已有房间退掉, 否则 v_It_29787 开头的
+                // if (v_oe_27649.Gi()) 分支会把这次「加入」劫持成「回到自己那个旧房间」
+                // —— 玩家看到的现象就是「无论输什么号都进了同一个房间(随机房)」。
+                scope.v_oe_27649.Gi() && await scope.v_oe_27649.Gx();
                 scope.v_Ae_27892.dn("menu_back"), scope.v_Ae_27892.dn("menu_enter"), v_U_29780("", v_xt_29778), await new Promise(v_t_29938 => scope.v_X1_27914.T0(async v_t_29939 => 0 !== v_t_29939 && v_It_29787(v_t_29939), v_t_29938)), scope.v_oe_27649.Gi() ? (v_Wt_29807(), (await new Promise(v_t_29940 => scope.settingsStore.T0(scope.v_oe_27649.zS, v_t_29940))) === scope.v_K1_27916 && scope.v_oe_27649.Gi() && (await v_It_29787()), scope.v_nr_27925.T0()) : (v_G_29762.r0 = "", v_G_29762.a0 = null, v_U_29780("music", v_g_29777));
               }) : v_s_29921.Fi === v_rt_29731 && scope.v_Fe_28101(async () => {
                 (await new Promise(v_t_29941 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copExitFromRoomDialog"), scope.v_G0_27772, 0, v_t_29941))) === scope.v_H0_27781 && (v_It_29787(), await new Promise(v_t_29942 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copExitedFromRoom"), scope.v_N0_27771, 5e3, v_t_29942)));
@@ -643,6 +647,7 @@ export function createV_nr_27925(scope) {
       console.log("[umg][coop] sa() -> " + (null == v_i_29999 ? "null" : "status=" + v_i_29999.status) + (void 0 === v_e_29998 ? " (建房)" : " (加入)"));
       if (null === v_i_29999 || 0 !== v_i_29999.status) return scope.v_Te_27911.K4(), v_i_29999 && v_i_29999.message && v_i_29999.message[scope.currentLang] ? await new Promise(v_t_30001 => scope.v_Te_27911.Ai("" + v_i_29999.message[scope.currentLang], scope.v_N0_27771, 0, v_t_30001)) : await new Promise(v_t_30002 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorNetworkError"), scope.v_N0_27771 | scope.v_U0_27775, 0, v_t_30002)), await scope.renderer.C7(scope.v_Ge_28204(15)), !1;
       let v_t_30000 = 0;
+      console.log("[umg][coop] 进房参数 wantRoom=" + (void 0 === v_e_29998 ? "(无, 建房)" : v_e_29998));
       return v_t_30000 = void 0 === v_e_29998 ? await scope.v_oe_27649.Fx() : await scope.v_oe_27649.Bx(v_e_29998), console.log("[umg][coop] " + (void 0 === v_e_29998 ? "建房" : "加入") + " -> " + v_t_30000 + " (0 成功 / -1 网络 / -2 版本 / -10 重复登录)"), await scope.renderer.C7(scope.v_Ge_28204(15)), scope.v_Te_27911.K4(), v_t_30000 === scope.v_Ms_28009 && (scope.sceneManager.WS(scope.v_D1_27900), scope.audioFontHub.T0()), v_t_30000 !== scope.v_Ms_28009 ? v_t_30000 === scope.v_Ds_28011 ? await new Promise(v_t_30003 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copRequireLatestVersion"), scope.v_ei_27773 | scope.v_U0_27775, 2e3, v_t_30003)) : void 0 === v_e_29998 ? await new Promise(v_t_30004 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copRoomFailedCreate"), scope.v_ei_27773 | scope.v_U0_27775, 2e3, v_t_30004)) : await new Promise(v_t_30005 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copRoomNotFound"), scope.v_ei_27773 | scope.v_U0_27775, 2e3, v_t_30005)) : scope.v_oe_27649.tx || (await new Promise(v_t_30006 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copRoomJoined"), scope.v_N0_27771, 5e3, v_t_30006))), v_t_30000 === scope.v_Ms_28009;
     }
   }

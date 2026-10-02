@@ -580,6 +580,9 @@ function handleEnter(conn, seq, body) {
   conn.nameplateRarity = nameplateRarity;
   conn.fieldWallText = fieldWallText;
 
+  // 排障: 「输入房间号却进了随机房间」先看这一行 —— wantRoom=0 表示客户端根本没把号码传上来
+  // (建房语义), 服务端只能新建; 非 0 才是真的来加入这个号。
+  trace("enter: 客户端请求的房间号 wantRoom=" + wantRoom + (wantRoom ? "" : " (0=新建房间)") + " by " + (displayName || "?"));
   // 先校验目标房间, 通过了再离开当前房间 —— 加入失败不该把人从原来的房里踢出去。
   const picked = pickRoom(conn, wantRoom);
   if (picked.error) {
