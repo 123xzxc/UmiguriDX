@@ -23,6 +23,7 @@ let onlineBtnEl = null; // 「联机」按钮(非游玩时显示)
 let navMode = false;
 let navHidden = false;
 let pauseHandler = null;
+let onlineHandler = null; // 「联机」虚拟按钮的回调, 由 main.js 接上
 
 export function setPauseButtonHandler(fn) {
   pauseHandler = fn;
@@ -55,6 +56,16 @@ export function applyNavMode() {
   if (onlineBtnEl) onlineBtnEl.style.display = navMode ? 'none' : 'flex';
 }
 
+// 虚拟键盘带(AIR 条 + 主键区)在视口里的顶部 y。没有键盘或键盘被藏起来时给视口高度。
+// 悬浮球、覆盖层用它避开键盘带 —— 那一条 pointer-events:auto, 压上去的按钮点不到。
+export function keyboardBandTop() {
+  if (!keyPanel || keyPanel.style.display === 'none') return window.innerHeight;
+  const stack = keyPanel.querySelector('.ugv-stack');
+  if (!stack) return window.innerHeight;
+  const r = stack.getBoundingClientRect();
+  return r.height > 0 ? r.top : window.innerHeight;
+}
+
 export function panelElement() {
   return keyPanel;
 }
@@ -66,6 +77,11 @@ export function isPanelBuilt() {
 export function setPanelVisible(v) {
   panelVisible = v;
   if (keyPanel) keyPanel.style.display = v ? '' : 'none';
+}
+
+// 虚拟键盘当前是否可见(悬浮球的「显示/隐藏虚拟键盘」按钮据此切换文案)
+export function isPanelVisible() {
+  return !!panelVisible;
 }
 
 export function togglePanel() {
@@ -183,6 +199,7 @@ export function ensureKeyPanel() {
 
   // 内容容器: 明确锚定到盒底(bottom = 距屏幕底边)
   const stack = document.createElement('div');
+  stack.className = 'ugv-stack';
   stack.style.cssText =
     'position:absolute;left:0;right:0;bottom:' + panelBottomInset() + 'px;' +
     'display:flex;flex-direction:column;align-items:center;pointer-events:none;';

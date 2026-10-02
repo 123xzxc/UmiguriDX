@@ -1,6 +1,6 @@
 // 虚拟按键参数 API: 供游戏内「测试菜单」调用。
 import { PANEL_DEFAULTS, EDITOR_ROWS, panelCfg, savePanelCfg } from './config.js';
-import { ensureKeyPanel, isPanelBuilt } from './panel.js';
+import { ensureKeyPanel, isPanelBuilt, keyboardBandTop } from './panel.js';
 import {
   openKeyPanelEditor,
   closeKeyPanelEditor,
@@ -48,6 +48,10 @@ export const keyPanelApi = {
   },
   isEditorOpen() {
     return isEditorOpen();
+  },
+  // 虚拟键盘带在视口里的顶部 y: 悬浮球、覆盖层等要避开它的东西都问这里
+  keyboardBandTop() {
+    return keyboardBandTop();
   },
   // 原生设置页(游戏测试菜单)进入/离开: 只显示白色参考圆 + 命中可视化
   settingsBegin() {

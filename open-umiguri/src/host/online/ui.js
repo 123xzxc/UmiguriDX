@@ -10,8 +10,9 @@
 // 面板再实现一套只会互相打架(两边各记一份房间状态)。对手实时分数同理, 游戏自己会画。
 // 战绩也不用面板上报 —— 游戏的原生记录会自动镜像进面板读的 plays 表。
 //
-// 桌面没有 AM 读卡器, 所以游戏停在「请刷卡」时右下角会浮出一个「刷卡」按钮:
-// 点一下就等于刷了一次卡。登录失败/换号后也能靠它重试, 不会永远卡在请刷卡。
+// 桌面没有 AM 读卡器, 所以宿主把「联机面板 / 刷卡 / 键盘显隐」都收进一个可拖动的悬浮球
+// (见 keypanel/floatball.js): 游戏停在「请刷卡」时点球里的「刷卡」就等于刷了一次卡。
+// 登录失败/换号后也能靠它重试, 不会永远卡在请刷卡。
 //
 // 打开方式: Cmd/Ctrl+Shift+O, 或控制台 window.umgOnline.open()。
 import {
@@ -21,6 +22,8 @@ import { openLauncher } from '../keypanel/launcher.js';
 import { session, setSession, clearSession, normalizeBase, readLS, maskCard, LS_BASE, LS_CARD } from './session.js';
 import { installNativeServer, swipeNow, waitingCard } from './native.js';
 import { diagLog } from '../core/diag.js';
+import { installFloatBall } from '../keypanel/floatball.js';
+import { togglePanel, isPanelVisible } from '../keypanel/panel.js';
 
 const TICK_MS = 1000;
 
@@ -28,7 +31,7 @@ let overlay = null;
 let bodyEl = null;
 let statusEl = null;
 let swipeBtn = null;
-let floatBtn = null;
+let ball = null;
 let open = false;
 let busy = false;
 let wasWaiting = false;
@@ -147,43 +150,35 @@ function render() {
   wasWaiting = waitingCard();
 }
 
-// ---- 悬浮「刷卡」按钮 ----
-
-// 桌面没有 AM 读卡器, 游戏停在「请刷卡」时这个按钮就是那块读卡器。
-// 只在真的读卡时露出来, 平时不挡游戏画面。
+// ---- 悬浮球: 宿主的按钮全收在这里, 还能拖出虚拟键盘带 ----
 //
-// 位置贴在**右上角**: 左下是虚拟键盘的功能键区(Test/Service/FN/联机), 下方一整条是按键与
-// AIR 条(pointer-events:auto, z-index 99999)—— 放那儿会被键盘吃掉点击, 点不动。
-// z-index 取 100010(高于虚拟键盘 99999, 低于错误横幅), 免得被谁盖住。
-function buildFloat() {
-  if (floatBtn || !document.body) return;
-  floatBtn = document.createElement('div');
-  floatBtn.textContent = '刷卡';
-  floatBtn.style.cssText =
-    'position:fixed;right:2vmin;top:6vmin;z-index:100010;display:none;' +
-    'align-items:center;justify-content:center;min-width:4.6em;padding:0.7em 1.4em;border-radius:0.6em;' +
-    'color:#fff;background:rgba(20,20,20,0.72);border:1px solid rgba(255,255,255,0.6);' +
-    'box-shadow:0 0 1em rgba(0,0,0,0.5);' + FONT +
-    'font-weight:700;font-size:clamp(15px,2.4vmin,22px);line-height:1.2;cursor:pointer;touch-action:none;' +
-    'box-sizing:border-box;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;';
-  floatBtn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    doSwipe();
+// 以前「联机」「刷卡」是直接贴在画面角落的, 一旦落进虚拟键盘带(keypanel, z-index 99999,
+// 那一条 pointer-events:auto)就被键盘吃掉点击, 玩家看到的现象就是「按钮点不动」。
+// 现在它们挂在一个可以自由拖动的球上: 拖一下挪位置(松手贴边、位置记住), 点一下弹出按钮列。
+// 桌面没有 AM 读卡器, 「刷卡」就是那块读卡器 —— 只在游戏真停在刷卡界面时才可点。
+function installBall() {
+  ball = installFloatBall({ getStatus: ballStatus });
+  ball.addButton({ id: 'online', label: '联机面板', primary: true, onTap: () => show() });
+  ball.addButton({
+    id: 'swipe',
+    label: '刷卡',
+    enabled: () => !!(nativeServer() && waitingCard()),
+    onTap: () => doSwipe()
   });
-  document.body.appendChild(floatBtn);
+  ball.addButton({
+    id: 'keyboard',
+    label: () => (isPanelVisible() ? '隐藏虚拟键盘' : '显示虚拟键盘'),
+    onTap: () => togglePanel()
+  });
 }
 
-function refreshFloat() {
-  // 游戏或别的东西重建过 DOM 时按钮可能被摘掉, 这里补一次。
-  if (!floatBtn || !floatBtn.isConnected) {
-    floatBtn = null;
-    buildFloat();
-  }
-  if (!floatBtn) return;
-  // 联机面板开着时不显示(面板里也有一个「刷卡」)。
-  const want = !open && nativeServer() && waitingCard();
-  floatBtn.style.display = want ? 'flex' : 'none';
+// 悬浮球底部的一行状态: 玩家一眼能看出「为什么刷卡点不动」。
+function ballStatus() {
+  if (!session.user) return '还没绑定卡号: 打开「联机面板」填服务端地址 + 卡号。';
+  const srv = nativeServer();
+  if (!srv) return '原生联机没接上: 面板里要同时填服务端地址与 E004 卡号。';
+  if (waitingCard()) return '游戏正停在刷卡界面 —— 点「刷卡」。';
+  return '已绑定 ' + maskCard(srv.card || '') + '; 游戏停在刷卡界面时「刷卡」才可点。';
 }
 
 // ---- 动作 ----
@@ -229,7 +224,7 @@ function doSwipe() {
 // ---- 轮询(只为了「是否在等刷卡」这一件事) ----
 function tick() {
   try {
-    refreshFloat();
+    if (ball) ball.ensure();
     const now = waitingCard();
     if (open && now !== wasWaiting) render();
     else if (open && swipeBtn) setBtnDisabled(swipeBtn, !nativeServer());
@@ -240,6 +235,7 @@ function tick() {
 function show() {
   build();
   open = true;
+  if (ball) ball.hide(true); // 面板是模态, 悬浮球先收起来
   overlay.style.display = 'flex';
   setStatus('');
   render();
@@ -248,6 +244,7 @@ function show() {
 function close() {
   open = false;
   if (overlay) overlay.style.display = 'none';
+  if (ball) ball.hide(false);
 }
 
 function toggle() {
@@ -263,7 +260,7 @@ export function installOnlineUI() {
       toggle();
     }
   });
-  buildFloat();
+  installBall();
   setInterval(tick, TICK_MS);
   window.umgOnline = {
     open: show,
