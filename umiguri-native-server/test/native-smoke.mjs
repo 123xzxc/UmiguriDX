@@ -77,7 +77,11 @@ function clientCrypt(input, encrypt) {
     S[o] = tmp;
     const ks = S[(S[a] + S[o]) % n];
     out[i] = (ks ^ input[i] ^ (211 & l)) & 255;
-    l = l + (((encrypt ? out : input)[i] + S[i]) & 255);
+    // ⚠ 必须照抄客户端的运算符优先级: 客户端是 l = l + (b + S[i]) & 255,
+    // 因为 + 比 & 结合得紧, 等价于 (l + b + S[i]) & 255 —— 整体取模。
+    // S 是普通数组, i >= 32 时 S[i] 为 undefined, (b + undefined) 是 NaN,
+    // NaN & 255 === 0, 也就是第 32 字节之后 l 恒为 0。
+    l = (l + ((encrypt ? out : input)[i] + S[i])) & 255;
   }
   return out;
 }
@@ -90,6 +94,20 @@ function clientCrypt(input, encrypt) {
     if (Buffer.compare(Buffer.from(cryptFrame(buf, true)), Buffer.from(clientCrypt(buf, true))) !== 0) mismatch++;
   }
   eq(mismatch, 0, "加密结果与客户端逐字节一致(1..300 字节, 步进 7)");
+
+  // 长帧向量(input[i] = i, 64 字节)。差异只会在第 34 字节及以后出现, 所以上面
+  // 那条循环对照如果参考实现也抄错了, 是发现不了的 —— 这条向量是硬锚点:
+  // 它由「客户端源码逐字转写」的实现生成, 且编码/解码两个方向都用得上。
+  {
+    const vec = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) vec[i] = i;
+    eq(
+      Buffer.from(cryptFrame(vec, true)).toString("hex"),
+      "fc3987a65e5a4ae11b80d614d34cc5cfcd86b2cd5d1b411cc74283da5b03a05d" +
+        "de64e997049792bfbb09b53b2380440f79ae8023143d39388a53e7c7afebfd8d",
+      "64 字节帧的密文与客户端一致(i>=32 时 l 归零的行为必须保住)"
+    );
+  }
 
   const plain = new TextEncoder().encode("联机测试 payload ~ \u0000\u00ff");
   const back = cryptFrame(cryptFrame(plain, true), false);
@@ -120,7 +138,7 @@ class Sock {
   }
 
   onMessage(raw) {
-    const frame = parseFrame(Buffer.from(cryptFrame(raw, false)));
+    const frame = parseFrame(Buffer.from(clientCrypt(raw, false)));
     if (!frame) return;
     // 115 既是请求码又是转发推送码, 靠「有没有人在等这个 op:seq」区分:
     // 自己在等的那个是响应(进 pending), 其余是服务端转发给别人的(进推送队列)。
@@ -155,7 +173,7 @@ class Sock {
   send(op, payload) {
     const w = new Writer().u32(Math.floor(Math.random() * 4294967295)).u8(op).u8(++this.seq & 255);
     if (payload) w.raw(payload.bytes());
-    this.ws.send(cryptFrame(w.bytes(), true));
+    this.ws.send(clientCrypt(w.bytes(), true));
     return this.seq;
   }
 

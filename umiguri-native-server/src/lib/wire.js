@@ -18,12 +18,17 @@ export const CRYPT_KEY = [
 // 与客户端 v_ic_28200(buf, encrypt) 逐字节等价。收发对称:
 // 发(客户端->服务端 或 服务端->客户端)用 encrypt=true, 收用 encrypt=false。
 //
-// 两个必须照抄的点:
+// 三个必须照抄的点:
 //   1. 载荷字节是 (ks ^ in) ^ (211 & l)。JS 里 & 比 ^ 结合得紧, 所以是「先算 211 & l」,
 //      而不是「先异或 211 再与 l」。写串了整条链路都解不出来。
-//   2. l 的反馈项用的是 S[i] —— 下标 i, 不是 i % 32。i >= 32 时 S[i] 是 undefined,
-//      (x + undefined) & 255 === 0, 这一段 l 就不再增长。这里是照抄原样,
-//      所以 S 必须是普通数组: 换成 Uint8Array 会读成 0 而不是 undefined, 结果不同。
+//   2. l 的反馈项用的是 S[i] —— 下标 i, 不是 i % 32。
+//   3. l 必须照客户端的写法整体取模: l = (l + (b + S[i])) & 255。
+//      客户端的 S 是普通数组, i >= 32 时 S[i] 是 undefined, (b + undefined) 是 NaN,
+//      NaN & 255 === 0 —— 也就是「第 32 字节之后 l 恒为 0」。
+//      若写成 l = l + ((b + S[i]) & 255), i < 32 时低 8 位一样(211 的 & 只看低 8 位),
+//      但 i >= 32 时 l 会保留第 31 字节的旧值, 于是从第 34 字节起整帧解错:
+//      表现是「头几个字段(含 op/seq)都对, 后面 offset 越界 / 字符串乱码」。
+//      同理 S 必须是普通数组, 不能换成 Uint8Array(会读成 0 而不是 undefined)。
 export function cryptFrame(input, encrypt) {
   const n = CRYPT_KEY.length;
   const out = new Uint8Array(input.length);
@@ -39,7 +44,7 @@ export function cryptFrame(input, encrypt) {
     S[o] = tmp;
     const ks = S[(S[a] + S[o]) % n];
     out[i] = (ks ^ input[i] ^ (211 & l)) & 255;
-    l = l + (((encrypt ? out : input)[i] + S[i]) & 255);
+    l = (l + ((encrypt ? out : input)[i] + S[i])) & 255;
   }
   return out;
 }
