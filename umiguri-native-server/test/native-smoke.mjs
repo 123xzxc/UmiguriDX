@@ -123,11 +123,17 @@ class Sock {
     const frame = parseFrame(Buffer.from(cryptFrame(raw, false)));
     if (!frame) return;
     if (frame.op >= 128) {
+      // ⚠ 同一个 Reader 只能交给一个消费者: 以前的写法是「既入队又投递给等待者」,
+      // 于是那一帧会被消费两次 —— 第二次读到的是同一个 Reader(off 已经走到底),
+      // 报 RangeError, 而且真正的「下一帧」被永远压在队列里。
+      const w = this.waiters.get(frame.op);
+      if (w && w.length) {
+        w.shift()(frame.body);
+        return;
+      }
       const list = this.pushes.get(frame.op) || [];
       list.push(frame.body);
       this.pushes.set(frame.op, list);
-      const w = this.waiters.get(frame.op);
-      if (w && w.length) w.shift()(frame.body);
       return;
     }
     const key = frame.op + ":" + frame.seq;
@@ -515,6 +521,54 @@ let guestB = 0;
   eq(rankB.u32(), userId, "榜首是 A");
   eq(rankB.u32(), 888000, "榜首分数正确");
   eq(rankB.u32(), 0, "榜首的 flags 透传");
+
+  // 136: 对局中「看对手分数」那条推送。以前服务端只发 138, 客户端那条分支
+  // (v_Ks_28025) 永远收不到, 对局画面里就看不到别人实时涨分。
+  const scoreB = await b.nextPush(136);
+  ok(scoreB.u16() >= 0, "136 带批次号 cT");
+  eq(scoreB.u16(), 2, "136 列出 2 名玩家");
+  eq(scoreB.u32(), userId, "136 第一行是 A");
+  eq(scoreB.u32(), 888000, "136 里 A 的实时分数正确");
+  const nB = scoreB.u32();
+  scoreB.u32();
+  eq(nB, guestB, "136 第二行是 B(分数 0)");
+}
+
+// 137: 对局状态上报(op=19)。服务端以前在这里引用了未定义的 PUSH_STATE,
+// 一收到就抛 ReferenceError 把连接打断 —— 对局流程根本走不下去。
+{
+  const r = await a.request(19, new Writer().u16(3).u16(0));
+  eq(r.body.u16(), 0, "上报对局状态结果码 0");
+  const stA = await a.nextPush(137);
+  eq(stA.u16(), 3, "137 广播回状态 3(A 自己)");
+  const stB = await b.nextPush(137);
+  eq(stB.u16(), 3, "137 也广播给 B");
+  // 回退: 更小的状态不应该把房间状态拉低。状态没推进 => 服务端不重复广播,
+  // 所以这里断言「没有新的 137」, 而不是等一帧。
+  const r2 = await b.request(19, new Writer().u16(1).u16(0));
+  eq(r2.body.u16(), 0, "B 上报更小状态也成功");
+  await new Promise((v) => setTimeout(v, 120));
+  eq(b.pushCount(137), 0, "状态回退不产生新的 137 广播");
+  // 推进到 4 就应该再广播一次, 且是 4(取最大)
+  const r3 = await b.request(19, new Writer().u16(4).u16(0));
+  eq(r3.body.u16(), 0, "B 上报状态 4 成功");
+  const stB2 = await b.nextPush(137);
+  eq(stB2.u16(), 4, "137 推进到 4");
+}
+
+// 中途进房的人必须补发当前对局状态, 否则他在「等状态 >= N」那步会一直等下去。
+{
+  const c = new Sock(port);
+  await c.connect();
+  const r = await c.request(2, enterPayload(roomId, "", "nw-c", "CCC"));
+  eq(r.body.u16(), 0, "C 中途进房成功");
+  r.body.u32();
+  r.body.u32();
+  await c.nextPush(130);
+  const stC = await c.nextPush(137);
+  eq(stC.u16(), 4, "C 进房立刻收到当前状态 4");
+  c.close();
+  await new Promise((v) => setTimeout(v, 50));
 }
 
 {
@@ -535,11 +589,31 @@ let guestB = 0;
   eq(p145.str(), "hello 联机", "145 带上了聊天文本");
 }
 
+// op=114 是玩家间 WebRTC 信令(头像/角色图 P2P): 服务端只负责转给同房间其他人,
+// 不能回非 0 —— 以前回 1 导致对局里永远看不到对手头像。
 {
-  const r = await a.request(114, new Writer().u32(userId).u8(10).u32(1).u8(3));
-  ok(r.body.u16() !== 0, "头像请求(op=114)明确回非 0, 客户端不会挂着重试");
-  const r2 = await a.request(99, new Writer().u32(1));
-  ok(r2.body.u16() !== 0, "未实现的操作码回非 0");
+  // YC=1(offer) 应转成 226
+  const req114 = new Writer().u32(1).u8(10).u32(7).u8(3);
+  const r = await a.request(114, req114);
+  eq(r.body.u16(), 0, "信令转发结果码 0(不是非 0)");
+  const relayB = await b.nextPush(226);
+  eq(relayB.u32(), 1, "226 里第一个 u32 是 YC(offer=1)");
+  eq(relayB.u8(), 10, "226 原样带上子类型");
+  eq(relayB.u32(), 7, "226 原样带上请求 id");
+  eq(relayB.u8(), 3, "226 原样带上角色 id");
+  await new Promise((v) => setTimeout(v, 120));
+  eq(a.pushCount(226), 0, "信令不回声给发送者自己");
+
+  // YC=2(ICE candidate) 应转成 227
+  const reqIce = new Writer().u32(2).u8(9);
+  const r2 = await a.request(114, reqIce);
+  eq(r2.body.u16(), 0, "ICE 转发结果码 0");
+  const relayIce = await b.nextPush(227);
+  eq(relayIce.u32(), 2, "227 里 YC=2");
+  eq(relayIce.u8(), 9, "227 原样带上子类型");
+
+  const r3 = await a.request(99, new Writer().u32(1));
+  ok(r3.body.u16() !== 0, "未实现的操作码回非 0");
 }
 
 {

@@ -40,6 +40,8 @@ export const PUSH_PICK = 132;        // {yx, nx, ng}     选曲(ng 原样回放)
 export const PUSH_UNPICK = 133;      // {yx, ZT}         取消选曲
 export const PUSH_PLAY = 134;        // {yx, nx, ru, te} 开局
 export const PUSH_DONE = 135;        // {yx, nx, ZT}     结束
+export const PUSH_SCORE = 136;       // {cT, lT}         对局中实时单人分数(看对手分数)
+export const PUSH_STATE = 137;       // {n1}             对局状态(1..5)
 export const PUSH_RANK = 138;        // {oT, lT}         实时排行榜
 export const PUSH_ROOM_ID = 140;     // {uT}             房间号下发
 export const PUSH_ALLREADY = 141;    // {n1}             准备状态
@@ -52,6 +54,7 @@ const ROOM_ID_MAX = 65534;
 const rooms = new Map();
 let nextGuestId = 0xf0000000;
 let feedSeq = 1;
+let rankSeq = 0; // 136 的批次号(u16 循环)
 
 function trace(...args) {
   if (config.traceSock) console.log("[native][sock]", ...args);
@@ -252,6 +255,7 @@ function dispatch(conn, frame) {
       room.yx = (room.yx % 0x7fffffff) + 1;
       room.selection = { yx: room.yx, musicId, diff, meta, nx: conn.userId };
       room.scores.clear();
+      room.state = 0;
       respond(conn, op, seq, 0);
       const w = new Writer();
       w.u32(room.selection.yx).u32(conn.userId).raw(meta);
@@ -296,13 +300,16 @@ function dispatch(conn, frame) {
     case OP_STATE: {
       // xx(flag, n) / Lx(n): n 是客户端自己的对局状态(1..5), 客户端用
       // v_Hs_28017.iP/Tx 等它 >= 某个值, 所以必须广播回去。
+      //
+      // 推送码是 137(v_Ys_28026), 载荷只有一个 u16 —— 客户端 iT 的分支读的是
+      // v_e_33881.n1, 多写一个 u32 会让后面每帧都错位。以前这里引用了从未定义的
+      // PUSH_STATE, 一收到 19 就抛 ReferenceError(整个连接被打断) —— 对局中每次
+      // 状态推进都会踩到, 是「多人玩不了」的直接原因。
       const n1 = body.u16();
-      const yx2 = body.u16();
+      body.u16(); // 客户端把曲目序号写了两遍, 这里不用(局号以 room.selection 为准)
+      member.state = n1;
       respond(conn, op, seq, 0);
-      const w = new Writer();
-      w.u32(yx2 || currentYx()).u16(n1);
-      const payload = w.bytes();
-      for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);
+      pushState(room, member, n1);
       return;
     }
 
@@ -326,6 +333,10 @@ function dispatch(conn, frame) {
       member.score = cell.score;
       member.flags = cell.flags;
       respond(conn, op, seq, 0);
+      // 136 是「对局中看对手分数」那条链路: 只带每个人的分数, 不带排名差值。
+      // 138(排行榜)带的是名次/差值, 客户端在结算/大堂用; 136 在对局过程中刷新。
+      // 两个都发, 客户端两条分支各取所需(幂等, 重复刷新不会出错)。
+      pushScore(room);
       broadcastRank(room);
       return;
     }
@@ -372,16 +383,80 @@ function dispatch(conn, frame) {
       return;
     }
 
-    case OP_AVATAR:
-      // 客户端来要头像/角色图(v_Ia_28059._C)。我们不发图, 但必须明确回一个非 0 码,
-      // 否则客户端那条 promise 会一直挂着, 并且每 5 秒重试一次。
-      respond(conn, op, seq, 1);
+    case OP_AVATAR: {
+      // 头像/角色图不是服务端发的, 是玩家间 WebRTC P2P(v_Ia_28059.WI 建 RTCPeerConnection)。
+      // 客户端把 SDP/ICE/请求都塞进 op=114 发给服务端, 服务端只负责转给同房间的其他人,
+      // 对端在 OI() 里按 YC(帧类型) 分发。所以这里**必须原样转发**, 不能回非 0 ——
+      // 以前直接回 1, 对局里就永远看不到对手的头像/角色图(P2P 握手从来没接上)。
+      //
+      // 载荷 = 客户端自己拼的一整段(u32 YC + 后续字段), 服务端不解释它的内部结构,
+      // 原封不动转发即可(与官方一致)。
+      // 整段原样转发(含开头 u32 YC): 接收端的 OI() 就是从这段里自己取 YC 的。
+      const payload = Buffer.from(body.rest());
+      respond(conn, op, seq, 0);
+      relayAvatar(room, member, payload);
       return;
+    }
 
     default:
       trace("未实现的操作码 op=" + op + "(回非 0, 避免客户端挂起)");
       respond(conn, op, seq, 1);
   }
+}
+
+// 136: 对局中实时单人分数 —— {cT: u16 批次号, lT: [{nx: u32, Sr: u32}, ...]}。
+// cT 只是给客户端原样存着(this.oC), 不参与逻辑, 但必须递增, 方便排障。
+function pushScore(room) {
+  rankSeq = (rankSeq + 1) & 0xffff;
+  const rows = [...room.members.values()];
+  const w = new Writer();
+  w.u16(rankSeq);
+  w.u16(rows.length);
+  for (const m of rows) {
+    const cell = room.scores.get(m.userId);
+    w.u32(m.userId).u32(cell ? cell.score : 0);
+  }
+  const payload = w.bytes();
+  for (const m of rows) push(m.conn, PUSH_SCORE, payload);
+}
+
+// 137: 对局状态(1..5) —— {n1: u16}。用房间全局状态而不是「谁发的」:
+// 客户端只关心「现在的进度到没到某个值」, 谁先到不重要, 取最大值最稳。
+function pushState(room, from, n1) {
+  const next = Math.max(room.state || 0, n1 | 0);
+  if (next === room.state) {
+    // 状态没推进就不重复广播: 客户端是「等它 >= N」, 重复帧除了刷屏没别的作用,
+    // 而且会把真正推进的那一帧挤到后面(测试/排障时更难看清顺序)。
+    trace("房间 #" + room.id + " 状态 " + next + " 无变化, 不重发");
+    return;
+  }
+  room.state = next;
+  const w = new Writer();
+  w.u16(room.state);
+  const payload = w.bytes();
+  for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);
+  trace("房间 #" + room.id + " 状态 -> " + room.state + " (来自 " + from.name + ")");
+}
+
+// op=114 信令中继: 客户端发上来的 P2P 载荷(structured-clone 风格的自描述数据)
+// 原样转给同房间其他人。
+//
+// 为什么要转成 226/227 再发: 客户端接收端在 v_Hs_28017.iT 里是按 *推送* 处理的 ——
+// 只有 op >= 128 才会进 iT。114 是请求码(<128), 原样回 114 会被当成 response,
+// 对面根本没人等这个响应。官方服务端就是把 114 拆成 226(需要回复)/227(不回) 再转发,
+// 这里跟官方保持一致: 载荷里 YC 为 1(offer/sdp) 时用 226(接收端会回一个 227),
+// 其余用 227。
+function relayAvatar(room, from, payload) {
+  if (!payload || payload.length < 4) return;
+  // YC(载荷第一个 u32)是帧类型: 1 = SDP offer(需要对面回 227), 其它(2=ICE, 4/10/11=
+  // 请求/应答)都走 227。官方也是这么分的 —— 只有需要「对面必须处理」的 offer 用 226。
+  const yc = payload.readUInt32LE(0);
+  const op = yc === 1 ? 226 : 227;
+  trace("114 中继: YC=" + yc + " -> op " + op + " (" + payload.length + " 字节)");
+  const w = new Writer();
+  w.raw(payload);
+  const bytes = w.bytes();
+  forEachOther(room, from, (m) => push(m.conn, op, bytes));
 }
 
 function broadcastRank(room) {
@@ -468,7 +543,7 @@ function handleEnter(conn, seq, body) {
   let room = picked.room;
   if (!room) {
     const id = randomRoomId();
-    room = { id, hostId: conn.userId, members: new Map(), yx: 0, selection: null, scores: new Map(), createdAt: Date.now() };
+    room = { id, hostId: conn.userId, members: new Map(), yx: 0, selection: null, scores: new Map(), state: 0, createdAt: Date.now() };
     rooms.set(id, room);
     console.log("[native] 新建房间 #" + id + " by " + conn.name);
   }
@@ -498,6 +573,13 @@ function handleEnter(conn, seq, body) {
   const rid = new Writer();
   rid.u16(room.id & 0xffff);
   push(conn, PUSH_ROOM_ID, rid.bytes());
+
+  // 中途进房的人补发当前对局状态(1..5), 否则他在「等状态 >= N」那一步会一直等下去。
+  if (room.state) {
+    const sw = new Writer();
+    sw.u16(room.state);
+    push(conn, PUSH_STATE, sw.bytes());
+  }
 
   // 已经选好的曲子补一份, 不然中途进房的人看不到当前曲目。
   if (room.selection) {
