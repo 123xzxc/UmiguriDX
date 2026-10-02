@@ -19,12 +19,19 @@ let navBoxEl = null;
 let navRowEl = null;
 let fnWrapEl = null;
 let pauseBtnEl = null;
+let onlineBtnEl = null; // 「联机」按钮(非游玩时显示)
 let navMode = false;
 let navHidden = false;
 let pauseHandler = null;
 
 export function setPauseButtonHandler(fn) {
   pauseHandler = fn;
+}
+
+// 「联机」虚拟按钮: 打开宿主联机/登录面板(桌面端也可以 Cmd/Ctrl+Shift+O)。
+// 由 main.js 在 installOnlineUI 之后接上 —— 面板这层不反向依赖 online 模块。
+export function setOnlineButtonHandler(fn) {
+  onlineHandler = fn;
 }
 
 // inPlay=true: 收起三键, 显示暂停按钮
@@ -44,6 +51,8 @@ export function applyNavMode() {
   if (navRowEl) navRowEl.style.display = navMode ? 'none' : 'flex';
   if (fnWrapEl && navMode) fnWrapEl.style.display = 'none';
   if (pauseBtnEl) pauseBtnEl.style.display = navMode ? 'flex' : 'none';
+  // 联机按钮与 Test/Service 同一档: 不玩的时候(标题界面/选曲)才显示
+  if (onlineBtnEl) onlineBtnEl.style.display = navMode ? 'none' : 'flex';
 }
 
 export function panelElement() {
@@ -243,6 +252,17 @@ export function ensureKeyPanel() {
   navRow.appendChild(fnBtn);
   navBox.appendChild(navRow);
   navRowEl = navRow;
+
+  // 「联机」虚拟按钮: 宽度对齐上面三键一整行, 触屏用户没有键盘快捷键也能打开联机/登录面板
+  const onlineBtn = mkFnBtn('联机');
+  barStyle(onlineBtn, ux(612), ux(46));
+  onlineBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (onlineHandler) onlineHandler();
+  });
+  navBox.appendChild(onlineBtn);
+  onlineBtnEl = onlineBtn;
 
   // 暂停按钮(游玩时替换三键): 两个竖条
   const pauseBtn = document.createElement('div');

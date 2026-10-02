@@ -4,7 +4,7 @@ import { installKeyboardListeners } from './input/keyboard.js';
 import { installProtocolInterceptors } from './core/protocol.js';
 import { installPointerHandlers } from './input/touch.js';
 import './input/pad.js';
-import { installPanelShortcut, installPanelResizeHook } from './keypanel/panel.js';
+import { installPanelShortcut, installPanelResizeHook, setOnlineButtonHandler } from './keypanel/panel.js';
 import { installKeyPanelApi } from './keypanel/api.js';
 import { installPauseMenu } from './keypanel/pausemenu.js';
 import { installUmgrElc } from './bridge/umgr-elc.js';
@@ -30,7 +30,7 @@ import { rebuildLaneMap } from './input/lanes.js';
 import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
 import { installLauncher } from './keypanel/launcher.js';
-import { installOnlineUI } from './online/ui.js';
+import { installOnlineUI, openOnlineUI } from './online/ui.js';
 import { installNativeServer } from './online/native.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
@@ -60,6 +60,7 @@ installNativeInput(); // kbd*/di8Kbd*/串口桩
 installKeyPanelApi(); // window.umgKeyPanel
 installPauseMenu(); // 游玩暂停菜单(三键替换为暂停按钮)
 installOnlineUI(); // 游戏内联机面板(Cmd/Ctrl+Shift+O): 账号/房间/对手实时分数
+setOnlineButtonHandler(() => openOnlineUI()); // 左下角「联机」虚拟按钮 -> 同一个面板
 setupWindowDragPause(); // 拖动暂停 RAF
 installDxtSoftwareDecode(); // DXT 软解
 
