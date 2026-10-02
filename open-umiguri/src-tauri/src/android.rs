@@ -24,6 +24,39 @@ pub(crate) fn java_path_of(env: &mut jni::JNIEnv, obj: jni::objects::JObject) ->
     Some(PathBuf::from(s))
 }
 
+// android.os.Build.VERSION.SDK_INT(取不到时返回 0)。
+fn android_sdk_int() -> i32 {
+    let Some(ctx) = tauri::tao::platform::android::prelude::main_android_context() else {
+        return 0;
+    };
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.java_vm.cast()) }) else {
+        return 0;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return 0;
+    };
+    let Ok(cls) = env.find_class("android/os/Build$VERSION") else {
+        return 0;
+    };
+    env.get_static_field(&cls, "SDK_INT", "I")
+        .ok()
+        .and_then(|v| v.i().ok())
+        .unwrap_or(0)
+}
+
+// 运行时包名(context.getPackageName())。绝不硬编码 identifier:
+// 一旦 tauri.conf.json 的 identifier 改动, 硬编码的包名会让
+// 「按包名直达」的 Intent 失配, 表现就是「无法授权所有文件权限」。
+fn package_name(env: &mut jni::JNIEnv, context: &jni::objects::JObject) -> Option<String> {
+    let obj = env
+        .call_method(context, "getPackageName", "()Ljava/lang/String;", &[])
+        .ok()?
+        .l()
+        .ok()?;
+    let s: String = env.get_string(&obj.into()).ok()?.into();
+    Some(s)
+}
+
 // 公共 Documents 目录(多为 /storage/emulated/0/Documents)
 pub(crate) fn env_public_documents() -> Option<PathBuf> {
     use jni::objects::{JString, JValue};
@@ -71,6 +104,12 @@ pub(crate) fn android_external_files_dir() -> Option<PathBuf> {
 // 拷进 Documents/UMIGURI 的补丁文件夹就属于这种情况: 文件能按已知路径打开,
 // 但目录列举为空 → 游戏扫描不到追加数据)。
 pub(crate) fn has_all_files_access() -> bool {
+    // API < 30 没有「所有文件访问」这一概念(那时用的是旧的分区外读写权限)。
+    // 不做这个判断的话, 老的 Android 9/10 上横幅会永远挂着, 点「去授权」还会跳到
+    // 一个不存在的设置页(ActivityNotFoundException)。
+    if android_sdk_int() < 30 {
+        return true;
+    }
     let Some(ctx) = tauri::tao::platform::android::prelude::main_android_context() else {
         return false;
     };
@@ -105,7 +144,10 @@ pub(crate) fn open_all_files_settings() -> bool {
     let Ok(uri_cls) = env.find_class("android/net/Uri") else {
         return false;
     };
-    let Ok(uri_s) = env.new_string("package:jp.inonote.umiguri") else {
+    let Some(pkg) = package_name(&mut env, &context) else {
+        return false;
+    };
+    let Ok(uri_s) = env.new_string(format!("package:{pkg}")) else {
         return false;
     };
     let Ok(uri) = env
@@ -148,11 +190,48 @@ pub(crate) fn open_all_files_settings() -> bool {
         "(I)Landroid/content/Intent;",
         &[JValue::Int(0x10000000)], // FLAG_ACTIVITY_NEW_TASK
     );
+    if env
+        .call_method(
+            &context,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)],
+        )
+        .is_ok()
+    {
+        return true;
+    }
+    // 少数 ROM/精简系统上没有「按包名直达」的那个 Activity: 先清掉挂起的
+    // ActivityNotFoundException, 再退到「所有文件访问」全局列表页(该页一定存在)。
+    let _ = env.exception_clear();
+    let Ok(action_all) = env
+        .get_static_field(
+            &settings_cls,
+            "ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION",
+            "Ljava/lang/String;",
+        )
+        .and_then(|v| v.l())
+    else {
+        return false;
+    };
+    let Ok(intent_all) = env.new_object(
+        &intent_cls,
+        "(Ljava/lang/String;)V",
+        &[JValue::Object(&action_all)],
+    ) else {
+        return false;
+    };
+    let _ = env.call_method(
+        &intent_all,
+        "addFlags",
+        "(I)Landroid/content/Intent;",
+        &[JValue::Int(0x10000000)], // FLAG_ACTIVITY_NEW_TASK
+    );
     env.call_method(
         &context,
         "startActivity",
         "(Landroid/content/Intent;)V",
-        &[JValue::Object(&intent)],
+        &[JValue::Object(&intent_all)],
     )
     .is_ok()
 }
@@ -181,7 +260,10 @@ pub(crate) fn restart_app() -> bool {
     else {
         return false;
     };
-    let Ok(pkg) = env.new_string("jp.inonote.umiguri") else {
+    let Some(pkg) = package_name(&mut env, &context) else {
+        return false;
+    };
+    let Ok(pkg) = env.new_string(pkg) else {
         return false;
     };
     let Ok(intent) = env

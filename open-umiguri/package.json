@@ -1,6 +1,6 @@
 {
   "name": "open-umiguri",
-  "version": "2.2.9",
+  "version": "2.3.0",
   "description": "UMIGURI 反混淆重构工程: 模块化宿主层(Tauri 2) + 模块化游戏本体",
   "type": "module",
   "private": true,
@@ -23,6 +23,7 @@
     "clean:android": "node tools/clean-android.mjs",
     "build:esm:dev": "npm run build:host && npm run build:game:esm",
     "android:sign": "node tools/patch-android-sign.mjs",
+    "android:perms": "node tools/patch-android-perms.mjs",
     "icon": "tauri icon src-tauri/app-icon.json",
     "ios:build": "tauri ios build --no-sign",
     "ios:dev": "tauri ios dev",

@@ -283,6 +283,11 @@ jobs:
       - name: 初始化 Android 工程
         working-directory: open-umiguri/src-tauri
         run: npx tauri android init
+      # gen/ 不入库, 「所有文件访问」等权限声明必须每次重放: 缺 MANAGE_EXTERNAL_STORAGE
+      # 时系统设置里没有本应用条目, 授权页会直接抛 ActivityNotFoundException。
+      - name: 声明 Android 权限(所有文件访问)
+        working-directory: open-umiguri
+        run: npm run android:perms
       # 生成应用图标: app-icon.json 指定 Android 自适应前景(android-fg.png, 已留安全边距),
       # 避免前景铺满整个画布导致启动器图标显得过大/被裁切。
       - name: 生成应用图标

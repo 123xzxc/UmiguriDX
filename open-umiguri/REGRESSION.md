@@ -34,6 +34,17 @@ cargo tauri dev            # 先执行 npm run build(assets + host + game)
 `src-tauri/tauri.android.conf.json` 的 resources 指向 `../dist/game_data/`。
 首次需要 `cargo tauri android init` 生成 `gen/android`。
 
+`gen/android` 不入库, 每次 `init` 之后必须重放 `npm run android:perms`, 否则「所有文件访问」
+(`MANAGE_EXTERNAL_STORAGE`) 没进 `AndroidManifest.xml`, 会连累两件事:
+
+- 系统「特殊应用权限 → 所有文件访问」列表里**没有本应用条目**, 且授权 Intent 抛
+  `ActivityNotFoundException` —— 表现为**「安卓无法授权所有文件管理权限」**;
+- 即便手工绕过, `readdir` 仍会隐藏非本应用归属的目录条目: 用户拷进 `Documents/UMIGURI`
+  的补丁数据会「文件打不开、目录列举为空」。
+
+应用侧检测到未授权会弹红色横幅(见 `src/host/platform/storage-access.js`), 点「去授权」跳设置页,
+授权返回后自动重启。API < 30 没有这个概念, `has_all_files_access()` 直接返回已授权。
+
 ## 3. 回归清单
 
 | # | 场景 | 验证点 | 关联改动 |

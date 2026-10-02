@@ -205,6 +205,9 @@ npm run check          # 产物语法校验
 cd src-tauri
 cargo tauri dev        # 桌面
 cargo tauri android build --debug --apk --target aarch64   # Android
+
+Android 首次构建前: `npx tauri android init` → `npm run android:perms`(声明「所有文件访问」)
+→ `npm run android:sign`(接入签名)。
 ```
 
 - 桌面数据目录默认 `../assets`(可用 `UMIGURI_ASSETS_DIR` 或 `UMIGURI_DATA_DIR` 覆盖)。
