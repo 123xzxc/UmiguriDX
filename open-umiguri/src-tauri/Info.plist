@@ -6,5 +6,53 @@
 	<!-- 整窗放大 -> 桌面端(含文字/按键面板)发糊。tauri build 打包版由 bundler 自动加上。 -->
 	<key>NSHighResolutionCapable</key>
 	<true/>
+
+	<!-- 联机: 游戏自带的联机客户端在 WebView 里 fetch http://<内网IP>:8101(原生协议 /1/*)。
+	     macOS 的 WKWebView 会按 ATS 拦掉明文 HTTP —— 表现是「宿主自己的登录一切正常
+	     (走 Rust, 不受 ATS 管), 游戏端却始终登录不上、成绩不上传」, 而 Windows(WebView2)
+	     不拦, 所以只有 macOS 出问题。
+	     自建服务端通常就是局域网明文地址: 允许本地网, 并给私网网段开 ATS 例外。
+	     (游戏现在优先走宿主 Rust 桥, 这一段是兜底; 换公网 http 服务端时也够用。) -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>local</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+			</dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>192.168.0.0</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>10.0.0.0</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+			<key>172.16.0.0</key>
+			<dict>
+				<key>NSExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSIncludesSubdomains</key>
+				<true/>
+			</dict>
+		</dict>
+	</dict>
 </dict>
 </plist>

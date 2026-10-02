@@ -49,13 +49,23 @@ export const umgrElc = {
     setBase(url) {
       this.base = String(url || '');
     },
-    // 统一请求入口。返回 { ok, status, data, error }:
+    // 统一请求入口(相对路径, 拼 this.base)。
+    request(method, path, body, token) {
+      return this.requestUrl(method, (this.base || '') + path, body, token);
+    },
+    // 绝对地址请求入口。返回 { ok, status, data, error }:
     //   ok=true + status=2xx  -> data 为解析后的 JSON
     //   ok=true + status>=400 -> data 为服务端错误体, error 为其中的 error 字段
     //   ok=false              -> 网络层失败(连不上/超时), error 为原因
     // 不抛异常: 联机界面需要区分「服务端拒绝」与「连不上」并给出不同提示。
-    async request(method, path, body, token) {
-      const url = (this.base || '') + path;
+    //
+    // 为什么要单独开一个「绝对地址」入口: 游戏自带的联机客户端(v_Bs_28013)有自己
+    // 的 host:port(1/... 原生协议), 与账号模块的 base 不是一个地址; 共用 base 会
+    // 互相覆盖。更要紧的是它原来在 WebView 里直连 fetch http://内网IP:端口 ——
+    // macOS(WKWebView)会按 ATS/混合内容拦掉, 表现就是「宿主登录一切正常, 游戏端
+    // 却死活登录不上、成绩不上传」。走这里(Rust fetch_json)与宿主登录同一条路,
+    // 不受 WebView 的跨源/ATS 限制。
+    async requestUrl(method, url, body, token) {
       let r;
       try {
         r = await invoke('fetch_json', {

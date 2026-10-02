@@ -274,6 +274,29 @@ export function applyGamePatches(ast) {
       nativePatched++;
     },
   });
+  // 4) 联机 HTTP 客户端 Qy: 宿主桥优先(见 src/host/bridge/umgr-elc.js online.requestUrl)。
+  //    客户端原来是 WebView 直连 fetch http://内网IP:端口 —— macOS(WKWebView) 会按
+  //    ATS/混合内容拦掉, 表现是「宿主登录正常, 游戏端却登录不上、成绩不上传」;
+  //    Windows(WebView2)不拦, 所以只有 macOS 出问题。宿主桥由 Rust 发起, 不受限制。
+  //    锚点: v_Bs_28013.prototype.Qy 的函数体(里面有 "UmgrNetworkClient" 埋点)。
+  traverse(ast, {
+    ObjectProperty(path) {
+      if (path.node.computed || !t.isIdentifier(path.node.key, { name: 'Qy' })) return;
+      const fn = path.node.value;
+      if (!t.isFunctionExpression(fn) || fn.params.length !== 3) return;
+      const bodyText = JSON.stringify(fn.body);
+      if (!bodyText.includes('UmgrNetworkClient')) return;
+      if (bodyText.includes('[umg][native]')) return; // 幂等
+      const names = fn.params.map((x) => x.name);
+      const snippet = parser.parse(NATIVE_HTTP_BODY(names[0], names[1], names[2]), {
+        sourceType: 'script',
+        allowReturnOutsideFunction: true,
+      }).program.body;
+      fn.body.body = snippet.concat(fn.body.body);
+      nativePatched++;
+    },
+  });
+
   if (nativePatched) applied.push(`原生联机指向 __umgServer ×${nativePatched}`);
 
   return applied;
@@ -309,6 +332,24 @@ return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
   globalThis.__umgSwipe = v_umgSwipe;
 });
 `;
+
+
+// 4) 联机 HTTP 客户端的宿主桥前置: 交给宿主 Rust 侧发请求(与宿主自己的登录同一条路),
+//    不受 WebView 的跨源/ATS 限制。桥不可用时(没有 umgr_elc)保持原样, 走直连 fetch。
+function NATIVE_HTTP_BODY(method, path, payload) {
+  return `
+var v_umgOnline = window.umgr_elc && window.umgr_elc.online;
+if (v_umgOnline && v_umgOnline.requestUrl) {
+  try {
+    var v_umgResp = await v_umgOnline.requestUrl(${method}, "http://" + this.Yy + ":" + this.P7 + ${path}, ${payload}, null);
+    console.log("[umg][native] " + ${method} + " " + ${path} + " -> " + (v_umgResp && v_umgResp.ok ? String(v_umgResp.data && v_umgResp.data.result || "ok") : "失败(" + ((v_umgResp && v_umgResp.error) || "未知") + ")"));
+    return v_umgResp && v_umgResp.data ? v_umgResp.data : { result: "bad" };
+  } catch (v_umgBridgeErr) {
+    console.log("[umg][native] 宿主桥异常, 回退直连: " + ((v_umgBridgeErr && v_umgBridgeErr.message) || v_umgBridgeErr));
+  }
+}
+`;
+}
 
 
 // gameCore 私有的游玩状态/控制桥(注入在模块 return 之前; 名字在该模块作用域内可见)。

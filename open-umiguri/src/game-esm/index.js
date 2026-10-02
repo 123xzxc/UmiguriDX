@@ -3589,6 +3589,21 @@ scope.v_Fs_28012 = -10;
 scope.v_Bs_28013.prototype = {
   Qy: async function (v_t_33752, v_i_33753, v_e_33754) {
     scope.v_x1_27888("UmgrNetworkClient: " + v_i_33753);
+    // 宿主桥优先: 交给宿主 Rust 侧发请求(与宿主自己的登录同一条路), 不受 WebView
+    // 的跨源/ATS 限制。macOS 上 WKWebView 会按 ATS 拦掉到 http://内网IP 的直连 ——
+    // 表现就是「宿主登录一切正常, 游戏端却始终登录不上、成绩不上传」(Windows 的
+    // WebView2 不拦, 所以只有 macOS 出问题)。桥不可用时退回下面的直连。
+    var v_umgOnline = window.umgr_elc && window.umgr_elc.online;
+    if (v_umgOnline && v_umgOnline.requestUrl) {
+      try {
+        var v_umgResp = await v_umgOnline.requestUrl(v_t_33752, "http://" + this.Yy + ":" + this.P7 + v_i_33753, v_e_33754, null);
+        // 一行一条: 刷卡登录/取档案/上传成绩到底走到哪一步, 宿主日志里直接能看
+        console.log("[umg][native] " + v_t_33752 + " " + v_i_33753 + " -> " + (v_umgResp && v_umgResp.ok ? String(v_umgResp.data && v_umgResp.data.result || "ok") : "失败(" + ((v_umgResp && v_umgResp.error) || "未知") + ")"));
+        return v_umgResp && v_umgResp.data ? v_umgResp.data : { result: "bad" };
+      } catch (v_umgBridgeErr) {
+        console.log("[umg][native] 宿主桥异常, 回退直连: " + ((v_umgBridgeErr && v_umgBridgeErr.message) || v_umgBridgeErr));
+      }
+    }
     try {
       return await (await fetch("http://" + this.Yy + ":" + this.P7 + v_i_33753, {
         method: v_t_33752,
@@ -3603,6 +3618,7 @@ scope.v_Bs_28013.prototype = {
         body: JSON.stringify(v_e_33754)
       })).json();
     } catch (v_t_33755) {
+      console.log("[umg][native] 直连失败: " + v_t_33752 + " " + v_i_33753 + " " + ((v_t_33755 && v_t_33755.message) || v_t_33755));
       return {
         result: "bad"
       };
