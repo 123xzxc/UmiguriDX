@@ -3783,7 +3783,7 @@ scope.v_Bs_28013.prototype = {
   Ly: async function () {
     var v_i_33782 = await this.Dy();
     if (scope.v_Bs_28013.By(v_i_33782)) return !1;
-    scope.handshake.On.Wp = v_i_33782.targetVersion, scope.handshake.On.zp = !1, scope.handshake.On.Kp = v_i_33782.termsAgreed, scope.handshake.rm.om = window.__umgForceProfile["name"] || v_i_33782.playerName, scope.handshake.rm.um = window.__umgForceProfile["level"] || v_i_33782.playerLevel, scope.handshake.rm.lm = window.__umgForceProfile["rating"] || v_i_33782.playerRating, scope.handshake.On.im = v_i_33782.charaId, scope.handshake.On.nI = v_i_33782.charaTransIdx, scope.handshake.On.qp = v_i_33782.nameplateId, scope.handshake.On.$p = v_i_33782.titleId, scope.handshake.On.Qp = v_i_33782.voiceId, scope.handshake.On.tm = v_i_33782.voiceLong, scope.handshake.On.q.ee = v_i_33782.lastMusicId, scope.handshake.On.q.te = v_i_33782.lastMusicDiff, scope.handshake.On.q.ie = v_i_33782.lastActivePlayLevel, scope.handshake.On.q.ne = v_i_33782.lastActiveLevelSelect, scope.handshake.On.q.HP = v_i_33782.lastActiveUltimaSelect, scope.handshake.On.q.pL = v_i_33782.musicListSort;
+    scope.handshake.On.Wp = v_i_33782.targetVersion, scope.handshake.On.zp = !1, scope.handshake.On.Kp = v_i_33782.termsAgreed, scope.handshake.rm.om = window.__umgForceProfile["name"] || v_i_33782.playerName || "ＵＭＩＧＵＲＩ", scope.handshake.rm.um = window.__umgForceProfile["level"] || v_i_33782.playerLevel, scope.handshake.rm.lm = window.__umgForceProfile["rating"] || v_i_33782.playerRating, scope.handshake.On.im = v_i_33782.charaId, scope.handshake.On.nI = v_i_33782.charaTransIdx, scope.handshake.On.qp = v_i_33782.nameplateId, scope.handshake.On.$p = v_i_33782.titleId, scope.handshake.On.Qp = v_i_33782.voiceId, scope.handshake.On.tm = v_i_33782.voiceLong, scope.handshake.On.q.ee = v_i_33782.lastMusicId, scope.handshake.On.q.te = v_i_33782.lastMusicDiff, scope.handshake.On.q.ie = v_i_33782.lastActivePlayLevel, scope.handshake.On.q.ne = v_i_33782.lastActiveLevelSelect, scope.handshake.On.q.HP = v_i_33782.lastActiveUltimaSelect, scope.handshake.On.q.pL = v_i_33782.musicListSort;
     for (let v_t_33783 = 0; v_t_33783 < 20; ++v_t_33783) scope.handshake.On.iI[v_t_33783] = v_i_33782.chatIds[v_t_33783];
     return !0;
   },
@@ -5229,9 +5229,16 @@ scope.v_Po_28121.prototype = {
     this.N_ = this.N_.filter(v_t_34483 => v_i_34482.D_ !== v_t_34483.D_ || v_i_34482.R_ !== v_t_34483.R_ || v_i_34482.P_ !== v_t_34483.P_ || v_i_34482.G_ !== v_t_34483.G_ || v_i_34482.j_ !== v_t_34483.j_);
   },
   X3: function (v_t_34484, v_i_34485, v_e_34486, v_n_34487) {
-    this.K_ = !1, this.V_ = v_t_34484, this.O_ = v_i_34485, this.J_ = v_e_34486, this.W_ = v_n_34487;
+    // ⚠ this.V_ 必须是字符串: 下面的 Z3() 第一件事就是 this.V_.length。
+    // 上游可能传来 undefined/null(聊天/称号/玩家名等文本字段一旦缺失, 或登录后
+    // 某个字符串还没就绪), 那样 Z3() 会炸 "undefined is not an object
+    // (evaluating 'this['V_']')" —— 游戏内登录/刷卡时直接崩。这里统一归一化:
+    // 空值当空串, 其它值 String() 一下(数字/对象也不会再把渲染循环带崩)。
+    this.K_ = !1, this.V_ = v_t_34484 == null ? "" : String(v_t_34484), this.O_ = v_i_34485, this.J_ = v_e_34486, this.W_ = v_n_34487;
   },
   Z3: function () {
+    // 兜底: 万一有别的路径绕过 X3 直接把 V_ 设空, 也在这里挡一下, 别让整帧渲染崩掉。
+    if (this.V_ == null) this.V_ = "";
     if (!this.K_) {
       let v_t_34491 = 0,
         v_i_34492 = 0,
