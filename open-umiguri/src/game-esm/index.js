@@ -3995,6 +3995,7 @@ scope.v_Hs_28017.prototype = {
     return v_t_33841 !== scope.v_Ms_28009 ? (this.zS = null, this.tx = !1, this.Nx = null, v_t_33841) : scope.v_Ms_28009;
   },
   Gx: async function () {
+    console.log("[umg][coop] Gx(退房) 被调用, 之前 zS=" + this.zS);
     if (!this.Gi()) return scope.v_Es_28010;
     for (this.zS = null, this.tx = !1, this.Nx = null, this.Ox = [], this.ix.clear(), this.Ix.clear(), this._x = 100, this.sP = scope.v__a_28043, this.aP = scope.v_ma_28049; this.BC.length;) this.BC.pop().aS();
     await this.LC.UC();
@@ -4063,9 +4064,14 @@ scope.v_Hs_28017.prototype = {
     }), v_t_33869;
   },
   NC: async function () {
+    console.log("[umg][coop] NC 入口 this.zS=" + this.zS + " type=" + typeof this.zS);
     if (this.LC = new scope.v_Pa_28060(), scope.v_Bs_28013.By(await this.LC.qu(this.Yy, this.P7, !1))) return this.QC();
     let v_t_33873;
-    return (v_t_33873 = this.IC ? await this.LC.tT(this.IC.qy, this.IC.Zy, this.zS || 0) : await this.LC.tT("", "", this.zS || 0)).wP ? 1 === v_t_33873.wP ? this.QC(scope.v_Ds_28011) : 16 === v_t_33873.wP ? this.QC(-11) : 17 === v_t_33873.wP ? this.QC(scope.v_Fs_28012) : this.QC() : (this.zS = v_t_33873.zS || 0, this.nx = v_t_33873.nx || 0, this.LC.vx(this.iT.bind(this)), scope.audioFontHub.B3(), scope.v_Ms_28009);
+    let v_umgWantRoom = Number(this.zS);
+    Number.isFinite(v_umgWantRoom) || (v_umgWantRoom = 0);
+    console.log("[umg][coop] NC 调用 tT 的房间号实参 = " + v_umgWantRoom + " (raw=" + this.zS + " type=" + typeof this.zS + " IC=" + !!this.IC + ")");
+    this.LC.umgWantRoom = v_umgWantRoom;
+    return (v_t_33873 = this.IC ? await this.LC.tT(this.IC.qy, this.IC.Zy, v_umgWantRoom) : await this.LC.tT("", "", v_umgWantRoom)).wP ? 1 === v_t_33873.wP ? this.QC(scope.v_Ds_28011) : 16 === v_t_33873.wP ? this.QC(-11) : 17 === v_t_33873.wP ? this.QC(scope.v_Fs_28012) : this.QC() : (this.zS = v_t_33873.zS || 0, this.nx = v_t_33873.nx || 0, this.LC.vx(this.iT.bind(this)), scope.audioFontHub.B3(), scope.v_Ms_28009);
   },
   QC: function (v_t_33874) {
     return this.LC && this.LC.aS(), this.LC = null, v_t_33874 || scope.v_Es_28010;
@@ -4756,7 +4762,11 @@ scope.v_Ia_28059.prototype = {
   },
   tT: async function (v_t_34051, v_i_34052, v_e_34053) {
     var v_n_34054 = scope.v_Lr_27953();
-    console.log("[umg][coop] tT 即将写出的房间号 = " + v_e_34053);
+    // 兜底: NC() 每次都会在 LC 上放一份归一化后的房间号; 若这里收到的是空值(某条路径漏传),
+    // 就用它。服务端把 0 当「建房」, 一旦漏传就会「加入却进了随机房」。
+    v_e_34053 = Number(v_e_34053);
+    Number.isFinite(v_e_34053) || (v_e_34053 = Number(this.umgWantRoom) || 0);
+    console.log("[umg][coop] tT 形参房间号 = " + v_e_34053 + " (LC.umgWantRoom=" + this.umgWantRoom + ")");
     let v_r_34055 = scope.handshake.On.$p;
     var v_s_34056 = scope.v_be_27857.Hp.find(v_t_34057 => v_t_34057.id === v_r_34055),
       v_e_34053 = (this.UT(2), this.GT._g(20), this.GT.hg(v_e_34053), this.GT.vg(v_t_34051), this.GT.vg(v_i_34052), this.GT.vg(scope.handshake.rm.om), this.GT._g(scope.handshake.rm.lm), this.GT._g(scope.handshake.rm.lm), this.GT._g(v_s_34056 ? v_s_34056.rarity : 0), this.GT.vg(v_s_34056 ? v_s_34056.text : "NEW COMER"), this.GT.vg(v_n_34054 ? v_n_34054.Q1.ct[v_n_34054.dC] : "？？？"), this.GT._g(v_n_34054 ? v_n_34054.Ar.Vm : scope.v_gt_27748), this.GT.vg(v_n_34054 ? v_n_34054.Ar.ct : "？？？"), await this.mP());

@@ -453,3 +453,41 @@ JS 侧的越界报错是没有字段线索的, 只能靠「服务端写的字段
 `open-umiguri/src/game-esm/modules/v_X1_27914/index.js`(面板出参日志)、
 `open-umiguri/src/game-esm/index.js`(`Bx`/`Fx`/`tT` 日志)、`umiguri-native-server/src/sock.js`(wantRoom 日志),
 宿主版本 2.9.5。**这一版要重编桌面端**(客户端改了), 只更新服务端不够。
+
+### 7.10 真机日志: 房间号在 `Bx` 之后变成 `undefined`(2026-10-03 续)
+
+2.9.5 的真机日志长这样(有用的是中间两行):
+
+```
+[umg][coop] 进房参数 wantRoom=38805
+[umg][coop] Bx(加入房间) roomId=38805 type=number      <- 到 Bx 时号码还是对的
+[umg][coop] /sock 直连 ws://192.168.31.15:8101/sock
+[umg][coop] /sock 直连成功
+[umg][coop] tT 即将写出的房间号 = undefined            <- 写帧时号码没了
+[umg][coop] 加入 -> 0 (0 成功)
+```
+
+**结论**: 7.9 修的「加入被旧房劫持」是对的(这次确实走了 `Bx`, 也没再进旧的随机房),
+但号码在 `Bx` 到 `tT` 之间丢了。服务端把 `0/空` 当「建房」语义(`pickRoom` 的 `if (!wantRoom)`),
+所以它又新建了一个随机房 —— 玩家看到的还是「加入了随机房间」。
+
+**这一版做的事**:
+
+1. **兜底(功能不再错)**: `NC()` 每次把归一化后的房间号放在连接对象上(`this.LC.umgWantRoom`),
+   `tT()` 收到空值时回退到它。`tT` 的 `this` 就是 `NC` 里那个 `LC`, 所以这条路一定拿得到值。
+   即使某条调用链漏传, 写进 `op=2` 的也不会再退化成 0。
+2. **诊断(把真凶钉住)**: 新增三行日志 ——
+   `NC 入口 this.zS=… type=…`、`NC 调用 tT 的房间号实参 = … (raw=… type=… IC=…)`、
+   `tT 形参房间号 = … (LC.umgWantRoom=…)`。
+
+**为什么之前看不出来**: `tT` 里有一条 `var v_e_34053 = (…, this.GT.hg(v_e_34053), …)` ——
+同一个名字既是形参又被 `var` 重新声明。源码里这是「先读形参、再整体重赋值」的写法, 没问题;
+但混淆后形参改名与 `var` 声明一旦不同步, `hg()` 读到的就会是**未初始化的提升变量**(`undefined`),
+而 `setUint32(offset, undefined)` 会静默写 0 —— 服务端于是当成「建房」。
+兜底那步绕开了这个坑(先归一化再用), 同时也让日志能区分「真没传」与「传了读不到」。
+
+**下一步**: 这一版如果还进随机房, 请把 `[umg][coop]` 五行(`NC 入口` / `NC 调用 tT` / `tT 形参`)一起发来;
+`LC.umgWantRoom` 有值而 `形参` 为空, 就坐实是混淆把这次读取改坏了, 那就要在构建侧处理;
+两者都有值却还建房, 就是服务端侧(看 `[native][sock] enter: 客户端请求的房间号 wantRoom=…`)。
+
+**改动**: `open-umiguri/src/game-esm/index.js`(NC 归一化 + LC 传递 + 三处日志, `tT` 兜底), 宿主版本 2.9.6。
