@@ -98,7 +98,10 @@ jobs:
         run: node tools/verify-online-bundle.mjs
 
   # ---------------- 联机版客户端: 桌面三平台 ----------------
-  # 复用 release.yml 的 tauri 流程, 只改产物命名, 避免两套构建脚本漂移。
+  # 矩阵里只放「事实」: 跑在哪个 runner、产物叫什么、要不要 --target。
+  # 产物路径必须写在 steps 里 —— matrix.include 内部引用 matrix.* 是自引用,
+  # GitHub 在解析阶段就会拒掉整个 workflow(Unrecognized named-value: matrix)。
+  # release.yml 把路径放在 steps 里, 所以一直没事。
   desktop:
     needs: server-test
     strategy:
@@ -109,30 +112,30 @@ jobs:
             os: windows
             rustTarget: ""
             bundleDir: release
-            bundle: |
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/nsis/*
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/msi/*
+            bundleGlobs: |
+              bundle/nsis/*
+              bundle/msi/*
           - runner: macos-latest
             os: macos-x86_64
             rustTarget: x86_64-apple-darwin
             bundleDir: x86_64-apple-darwin/release
-            bundle: |
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/dmg/*
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/macos/*
+            bundleGlobs: |
+              bundle/dmg/*
+              bundle/macos/*
           - runner: macos-latest
             os: macos-aarch64
             rustTarget: aarch64-apple-darwin
             bundleDir: aarch64-apple-darwin/release
-            bundle: |
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/dmg/*
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/macos/*
+            bundleGlobs: |
+              bundle/dmg/*
+              bundle/macos/*
           - runner: ubuntu-22.04
             os: linux
             rustTarget: ""
             bundleDir: release
-            bundle: |
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/deb/*
-              open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/bundle/appimage/*
+            bundleGlobs: |
+              bundle/deb/*
+              bundle/appimage/*
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
@@ -175,8 +178,10 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('UMIGURI-online {0}', github.ref_name) || '' }}
           releaseDraft: true
+      # 这里是 steps, matrix.* 合法。不能把 bundleDir 塞回 matrix.include。
       - uses: actions/upload-artifact@v5
         with:
           name: UMIGURI-online-${{ matrix.os }}
-          path: ${{ matrix.bundle }}
+          path: |
+            open-umiguri/src-tauri/target/${{ matrix.bundleDir }}/${{ matrix.bundleGlobs }}
           if-no-files-found: warn
