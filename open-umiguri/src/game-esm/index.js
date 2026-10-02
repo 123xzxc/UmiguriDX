@@ -189,6 +189,12 @@ globalThis.__umgHostLogin = async function (v_umgCard) {
   var v_umgAccount = scope.v_Xt_27648;
   if (!v_umgAccount) return { ok: false, error: "未接原生联机" };
   try {
+    // 后门挂在 bootstrap 开头, 但 v_Ns_28014 / handshake 是后面几步才建好的。
+    // 宿主拿到后门就会立刻调用, 所以这里先等依赖就绪(最多 20s)。
+    for (var v_umgT = 0; v_umgT < 200 && (!scope.v_Ns_28014 || !scope.handshake || !scope.handshake.rm); v_umgT++) {
+      await new Promise(function (v_umgR) { setTimeout(v_umgR, 100); });
+    }
+    if (!scope.v_Ns_28014 || !scope.handshake || !scope.handshake.rm) return { ok: false, error: "游戏初始化未完成" };
     var v_umgRet = await v_umgAccount.Fy(String(v_umgCard || ""));
     // v_Ms_28009 = 0 成功; -10 重复登录; -1 网络/服务端错误
     if (v_umgRet !== scope.v_Ms_28009) return { ok: false, error: "login " + v_umgRet };

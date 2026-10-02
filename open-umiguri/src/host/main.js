@@ -251,17 +251,18 @@ whenPageReady(async () => {
     diagLog('[umg][native] 注入失败: ' + ((e && e.message) || e));
   }
 
-  // 宿主直接登录: 必须早于 loadMain() —— 游戏 bootstrap 就会把玩家名写进握手,
-  // 晚了就只能按游客写死(游客态会跳过成绩上报)。失败不挡启动。
-  try {
-    const lr = await autoHostLogin(onlineCfg);
-    if (lr && lr.ok) diagLog('[umg][native] 宿主直登成功: ' + (lr.name || ''));
-    else if (lr && !lr.skipped) diagLog('[umg][native] 宿主直登失败(游戏会是游客, 成绩不上传): ' + (lr.error || '未知'));
-  } catch (e) {
-    diagLog('[umg][native] 宿主直登异常: ' + ((e && e.message) || e));
-  }
-
+  // 宿主直接登录: 必须晚于 loadMain() —— 游戏侧后门 globalThis.__umgHostLogin 是
+  // 游戏 bootstrap 执行时才挂上的(loadMain 内部 eval), 之前调只会拿到 undefined,
+  // 日志就是「游戏侧没有直登后门(补丁未生效?)」, 于是永远游客、成绩不上传。
+  // 也不能 await 它: 等待期间游戏启动会被卡住。后台跑, 失败不挡启动。
   loadMain(); // 解密并执行游戏前端(main.js.enc)
+
+  autoHostLogin(onlineCfg)
+    .then((lr) => {
+      if (lr && lr.ok) diagLog('[umg][native] 宿主直登成功: ' + (lr.name || ''));
+      else if (lr && !lr.skipped) diagLog('[umg][native] 宿主直登失败(游戏会是游客, 成绩不上传): ' + (lr.error || '未知'));
+    })
+    .catch((e) => diagLog('[umg][native] 宿主直登异常: ' + ((e && e.message) || e)));
   setTimeout(() => diagLog('[umg][app] document.title=' + document.title), 5000);
   setTimeout(() => { checkUpdate().catch(() => {}); }, 4000); // 更新检查(延迟, 不挡启动)
 

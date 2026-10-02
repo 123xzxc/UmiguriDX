@@ -215,32 +215,46 @@ export function applyGamePatches(ast) {
   //
   // 没有 window.__umgServer 时三个表达式都取原值, 行为与改动前逐字节一致。
   //
-  // 锚点:
-  //   1) bootstrap: scope.v_Xt_27648 = null  —— 联机账号客户端(云存档/资料/房间令牌)
-  //   2) v_Ls_28008.prototype.R9            —— 无 AM 读卡器时的键盘读卡桩(Ctrl+F9~F12)
-  //   3) scope.v_oe_27649 = new v_Hs_28017   —— 房间/心跳客户端(/sock), 端口写死 8101
+  // ⚠ 锚点必须在 applySymbols 的视角下成立: 这些补丁跑在**重命名之前**,
+  //   此时局部的 `v_*` 名字虽然已经是语义名(来自 game_main.deobf.js 的 renaming),
+  //   但**没有 `scope.` 前缀** —— 它们是 IIFE 内的裸标识符,
+  //   例如 `v_Xt_27648 = null`(VariableDeclarator) 而不是 `scope.v_Xt_27648 = null`。
+  //   以前的锚点写成 scope.v_* 形式, 于是这几条补丁**从来没有生效过**:
+  //   window.__umgServer 从未下发, 游戏里所有联机分支仍是死代码, 玩家只能游客,
+  //   成绩也不上传。
+  //
+  // 锚点(重命名前形态):
+  //   1) `v_Xt_27648 = null`              —— 联机账号客户端(云存档/资料/房间令牌)
+  //   2) `v_Ls_28008.prototype = {...}`   —— 无 AM 读卡器时的读卡桩(含 R9)
+  //   3) `v_oe_27649 = new v_Hs_28017`    —— 房间/心跳客户端(/sock), 端口写死 8101
   let nativePatched = 0;
 
-  // 1) 联机账号客户端: 原本恒为 null(所以游戏里所有联机分支都是死代码)
+  // 1) 联机账号客户端: 原本恒为 null(所以游戏里所有联机分支都是死代码)。
+  //
+  // 这里用 VariableDeclaration 级的 visitor: 后门要插在**整条声明语句之后**,
+  // 而不是 VariableDeclarator 之后 —— 后者会让片段变成裸语句序列。
+  // 游戏语句 2 是 `var …, v_Xt_27648 = null, v_oe_27649 = null, …` 的大声明,
+  // 所以插到声明之后、下一句之前, 位置就在 bootstrap 的同一层。
+  let hostLoginInserted = 0;
   traverse(ast, {
-    AssignmentExpression(path) {
-      const left = path.node.left;
-      if (!t.isMemberExpression(left) || left.computed) return;
-      if (!t.isIdentifier(left.object, { name: 'scope' })) return;
-      if (!t.isIdentifier(left.property, { name: 'v_Xt_27648' })) return;
-      if (!t.isNullLiteral(path.node.right)) return; // 幂等: 打过之后右侧是三元
-      path.node.right = parser.parseExpression(NATIVE_ACCOUNT);
-      if (!JSON.stringify(path.parent).includes('__umgHostLogin')) {
-        path.insertAfter(parser.parse(HOST_LOGIN_BRIDGE, { sourceType: 'script' }).program.body);
-        applied.push('宿主直登后门 __umgHostLogin');
-      }
+    VariableDeclarator(path) {
+      if (!t.isIdentifier(path.node.id, { name: 'v_Xt_27648' })) return;
+      if (!t.isNullLiteral(path.node.init)) return; // 幂等: 打过之后是三元
+      path.node.init = parser.parseExpression(NATIVE_ACCOUNT);
       nativePatched++;
+    },
+    VariableDeclaration(path) {
+      if (hostLoginInserted) return; // 只插一次
+      const hasTarget = path.node.declarations.some((d) => t.isIdentifier(d.id, { name: 'v_Xt_27648' }));
+      if (!hasTarget) return;
+      if (JSON.stringify(path.node).includes('__umgHostLogin')) return; // 幂等
+      path.insertAfter(parser.parse(HOST_LOGIN_BRIDGE, { sourceType: 'script' }).program.body);
+      hostLoginInserted = 1;
+      applied.push('宿主直登后门 __umgHostLogin');
     },
     NewExpression(path) {
       const callee = path.node.callee;
-      if (!t.isMemberExpression(callee) || callee.computed) return;
-      if (!t.isIdentifier(callee.object, { name: 'scope' })) return;
-      if (!t.isIdentifier(callee.property, { name: 'v_Hs_28017' })) return;
+      if (!t.isIdentifier(callee, { name: 'v_Hs_28017' })) return;
       if (path.node.arguments.length !== 3) return;
       if (t.isConditionalExpression(path.node.arguments[0]) && JSON.stringify(path.node.arguments[0].test).includes('__umgServer')) return; // 幂等
       // 3) 房间客户端地址(host, port)
@@ -262,10 +276,8 @@ export function applyGamePatches(ast) {
     AssignmentExpression(path) {
       const left = path.node.left;
       if (!t.isMemberExpression(left) || left.computed) return;
-      // left = scope.v_Ls_28008.prototype
-      if (!t.isMemberExpression(left.object)) return;
-      if (!t.isIdentifier(left.object.object, { name: 'scope' })) return;
-      if (!t.isIdentifier(left.object.property, { name: 'v_Ls_28008' })) return;
+      // left = v_Ls_28008.prototype (重命名前: 裸标识符, 不带 scope.)
+      if (!t.isIdentifier(left.object, { name: 'v_Ls_28008' })) return;
       if (!t.isIdentifier(left.property, { name: 'prototype' })) return;
       if (!t.isObjectExpression(path.node.right)) return;
       const r9 = path.node.right.properties.find(
@@ -292,11 +304,29 @@ export function applyGamePatches(ast) {
       if (!bodyText.includes('UmgrNetworkClient')) return;
       if (bodyText.includes('[umg][native]')) return; // 幂等
       const names = fn.params.map((x) => x.name);
-      const snippet = parser.parse(NATIVE_HTTP_BODY(names[0], names[1], names[2]), {
-        sourceType: 'script',
-        allowReturnOutsideFunction: true,
-      }).program.body;
-      fn.body.body = snippet.concat(fn.body.body);
+      // 原函数体整体内联进 async IIFE: 补丁段与原来的 await fetch 都在异步上下文里,
+      // 桥拿到数据就 return(短路), 拿不到就自然落到原逻辑(fetch 直连)。
+      // 注意 parser 默认不认顶层 await(会解析成标识符 await(...)), 所以模板里
+      // async 箭头函数本身不带 await, 由外层 t.awaitExpression 包住。
+      const origBody = fn.body.body;
+      const stmt = parser.parse(
+        NATIVE_HTTP_BODY(names[0], names[1], names[2]),
+        { sourceType: 'script', allowReturnOutsideFunction: true }
+      ).program.body[0];
+      // 解析结果 = (async () => { ... })();  —— 展开成:
+      //   var v_umgBridge = await (async () => { ...桥优先, 拿不到则原逻辑... })();
+      //   if (v_umgBridge) return v_umgBridge;
+      const call = stmt.expression;
+      const iife = call.callee;
+      if (!iife || !iife.body) throw new Error('NATIVE_HTTP_BODY 结构异常');
+      iife.body.body.push(...origBody);
+      fn.body = t.blockStatement([
+        t.variableDeclaration('var', [t.variableDeclarator(t.identifier('v_umgBridge'), t.awaitExpression(stmt.expression))]),
+        t.ifStatement(
+          t.identifier('v_umgBridge'),
+          t.blockStatement([t.returnStatement(t.identifier('v_umgBridge'))])
+        ),
+      ]);
       nativePatched++;
     },
   });
@@ -307,7 +337,7 @@ export function applyGamePatches(ast) {
 }
 
 // 1) 联机账号客户端(HTTP: /1/user/login, /1/umiguri/*)
-const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null';
+const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null';
 
 // 宿主直登: 把「刷卡登录」这件事从游戏的读卡窗口里搬出来。
 //
@@ -318,24 +348,30 @@ const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new scop
 //
 // 这里给游戏账号客户端装一个 omgLogin(cardId): 宿主在 loadMain() 之前调它, 直接完成
 // /1/user/login -> 拉档案 -> 灌进 handshake, 游戏启动握手时就已经是「已登录」状态,
-// 走的是 v_Ns_28014.cA() 里 scope.v_Xt_27648 为真的那条分支(不碰游客标志 v_r_33807)。
+// 走的是 v_Ns_28014.cA() 里 v_Xt_27648 为真的那条分支(不碰游客标志 v_r_33807)。
 // 失败不影响启动: 返回 null, 游戏照旧游客。
 const HOST_LOGIN_BRIDGE = `
 globalThis.__umgHostLogin = async function (v_umgCard) {
   var v_umgAccount = scope.v_Xt_27648;
   if (!v_umgAccount) return { ok: false, error: '未接原生联机' };
   try {
+    // 后门挂在 bootstrap 开头, 但 v_Ns_28014 / handshake 是后面几步才建好的。
+    // 宿主拿到后门就会立刻调用, 所以这里先等依赖就绪(最多 20s)。
+    for (var v_umgT = 0; v_umgT < 200 && (!v_Ns_28014 || !handshake || !handshake.rm); v_umgT++) {
+      await new Promise(function (v_umgR) { setTimeout(v_umgR, 100); });
+    }
+    if (!v_Ns_28014 || !handshake || !handshake.rm) return { ok: false, error: '游戏初始化未完成' };
     var v_umgRet = await v_umgAccount.Fy(String(v_umgCard || ''));
     // v_Ms_28009 = 0 成功; -10 重复登录; -1 网络/服务端错误
-    if (v_umgRet !== scope.v_Ms_28009) return { ok: false, error: 'login ' + v_umgRet };
+    if (v_umgRet !== v_Ms_28009) return { ok: false, error: 'login ' + v_umgRet };
     await v_umgAccount.Ly();   // getProfile -> 写进 handshake(名字/等级/称号/存档)
     await v_umgAccount.My();   // getRecords -> handshake.Mm
     await v_umgAccount.CA();   // getOptions -> handshake.On.ae
     await v_umgAccount.EA();   // getCourseRecords -> handshake.Em
     await v_umgAccount.MA();   // getCharaStates -> handshake.On.nm
-    scope.v_Ns_28014.fA();     // 清掉可能残留的游客标志
-    console.log('[umg][native] 宿主直登成功: ' + scope.handshake.rm.om);
-    return { ok: true, name: scope.handshake.rm.om };
+    v_Ns_28014.fA();     // 清掉可能残留的游客标志
+    console.log('[umg][native] 宿主直登成功: ' + handshake.rm.om);
+    return { ok: true, name: handshake.rm.om };
   } catch (v_umgErr) {
     return { ok: false, error: (v_umgErr && v_umgErr.message) || String(v_umgErr) };
   }
@@ -352,9 +388,9 @@ const NATIVE_SOCK_PORT = 'window.__umgServer && window.__umgServer.host ? window
 const NATIVE_SWIPE_BODY = `
 if (window.__umgServer && window.__umgServer.cardBytes) {
   var v_umgHostCard = window.__umgServer.cardBytes;
-  return window.__umgServer.cardBytes = null, this.US = scope.v_Ps_28006, v_umgHostCard;
+  return window.__umgServer.cardBytes = null, this.US = v_Ps_28006, v_umgHostCard;
 }
-return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
+return this.US = v_Ps_28006, new Promise(v_t_33747 => {
   var v_umgSelf = this;
   var v_umgDone = false;
   var v_umgSwipe = function (v_umgBytes) {
@@ -373,18 +409,23 @@ return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
 
 // 4) 联机 HTTP 客户端的宿主桥前置: 交给宿主 Rust 侧发请求(与宿主自己的登录同一条路),
 //    不受 WebView 的跨源/ATS 限制。桥不可用时(没有 umgr_elc)保持原样, 走直连 fetch。
+// ⚠ 必须包在 async 箭头函数里: 这段代码会被 parser.parse 成「语句序列」再插进 Qy 的
+//   函数体, 裸着写 await 会直接 SyntaxError('await' is only allowed within async
+//   functions) —— 补丁在生成阶段就炸, 产物里什么都没有。
 function NATIVE_HTTP_BODY(method, path, payload) {
   return `
-var v_umgOnline = window.umgr_elc && window.umgr_elc.online;
-if (v_umgOnline && v_umgOnline.requestUrl) {
-  try {
-    var v_umgResp = await v_umgOnline.requestUrl(${method}, "http://" + this.Yy + ":" + this.P7 + ${path}, ${payload}, null);
-    console.log("[umg][native] " + ${method} + " " + ${path} + " -> " + (v_umgResp && v_umgResp.ok ? String(v_umgResp.data && v_umgResp.data.result || "ok") : "失败(" + ((v_umgResp && v_umgResp.error) || "未知") + ")"));
-    return v_umgResp && v_umgResp.data ? v_umgResp.data : { result: "bad" };
-  } catch (v_umgBridgeErr) {
-    console.log("[umg][native] 宿主桥异常, 回退直连: " + ((v_umgBridgeErr && v_umgBridgeErr.message) || v_umgBridgeErr));
+(async () => {
+  var v_umgOnline = window.umgr_elc && window.umgr_elc.online;
+  if (v_umgOnline && v_umgOnline.requestUrl) {
+    try {
+      var v_umgResp = await v_umgOnline.requestUrl(${method}, "http://" + this.Yy + ":" + this.P7 + ${path}, ${payload}, null);
+      console.log("[umg][native] " + ${method} + " " + ${path} + " -> " + (v_umgResp && v_umgResp.ok ? String(v_umgResp.data && v_umgResp.data.result || "ok") : "失败(" + ((v_umgResp && v_umgResp.error) || "未知") + ")"));
+      return v_umgResp && v_umgResp.data ? v_umgResp.data : { result: "bad" };
+    } catch (v_umgBridgeErr) {
+      console.log("[umg][native] 宿主桥异常, 回退直连: " + ((v_umgBridgeErr && v_umgBridgeErr.message) || v_umgBridgeErr));
+    }
   }
-}
+})();
 `;
 }
 

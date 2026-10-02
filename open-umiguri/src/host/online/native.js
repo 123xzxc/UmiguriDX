@@ -147,14 +147,31 @@ export async function hostLoginNow() {
   }
 }
 
+// 等游戏侧后门注册(__umgHostLogin 是游戏 bootstrap 跑起来才挂上的, 见 loadMain 的 eval)。
+// 宿主以前是在 loadMain() 之前 await 直登, 那时游戏代码一行都还没执行 -> 必然
+// 「没有直登后门」。改成轮询等待, 拿到就登录 —— 此时游戏还停在启动流程前面,
+// 远早于 v_Ns_28014.cA() 读档案那一步, 名字仍然来得及生效。
+export async function waitHostLoginBackdoor(timeoutMs = 20000, stepMs = 100) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (typeof window.__umgHostLogin === 'function') return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((res) => setTimeout(res, stepMs));
+  }
+}
+
 // 启动时自动直登: 有卡号 + 接了原生服务端才做。
-// 由 main.js 在 loadMain() 之前 await —— 必须早于游戏 bootstrap,
-// 否则握手里的玩家名已经按游客写死了。
+// 调用点已改到 loadMain() 之后(见 main.js): 后门要等游戏 bootstrap 跑完才存在,
+// 而游戏真正读档案(v_Ns_28014.cA) 还要更晚, 所以这里等待再登录仍来得及。
 export async function autoHostLogin(sessionCfg) {
   const srv = window.__umgServer;
   const card = normalizeCard((sessionCfg && sessionCfg.cardId) || readLS(LS_CARD));
   if (!srv || !srv.host) return { ok: false, skipped: true, error: '未接原生联机' };
   if (!cardToBytes(card)) return { ok: false, skipped: true, error: '没绑定卡号' };
   srv.card = card;
+  if (typeof window.__umgHostLogin !== 'function') {
+    const ok = await waitHostLoginBackdoor();
+    if (!ok) return { ok: false, error: '游戏侧没有直登后门(补丁未生效?)' };
+  }
   return hostLoginNow();
 }

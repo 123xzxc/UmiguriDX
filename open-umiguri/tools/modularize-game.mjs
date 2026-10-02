@@ -34,7 +34,14 @@ process.stderr.write(`解析 ${srcFile} (${(code.length / 1048576).toFixed(2)} M
 let ast = parser.parse(code, { sourceType: 'script', allowReturnOutsideFunction: true, errorRecovery: true });
 {
   const { conflicts } = applySymbols(ast, loadSymbols(path.join(root, 'tools/symbols.json')));
-  if (conflicts.length) { console.error('命名冲突: ' + conflicts.join(', ')); process.exit(3); }
+  if (conflicts.length) {
+    // --force: 输入已是语义名(如 dist/game.raw.js)时, 符号表旧名 v_xx_yyyy 已不存在,
+    // 冲突检查必然失败; 此模式跳过重命名继续跑补丁, 否则 process.exit(3) 会让
+    // 补丁产物永远写不出去(这正是「联机补丁从未进产物」的根因)。
+    if (!process.argv.includes('--force')) { console.error('命名冲突: ' + conflicts.join(', ')); process.exit(3); }
+    process.stderr.write('命名冲突(已跳过重命名, 输入看起来已是语义名): ' + conflicts.length + ' 个\n');
+    ast = parser.parse(code, { sourceType: 'script', allowReturnOutsideFunction: true, errorRecovery: true });
+  }
   if (process.argv.includes('--props')) applyProps(ast, loadProps(path.join(root, 'tools/prop-symbols.json')));
   const patches = applyGamePatches(ast);
   if (patches.length) process.stderr.write(`游戏补丁: ${patches.join(' | ')}\n`);
