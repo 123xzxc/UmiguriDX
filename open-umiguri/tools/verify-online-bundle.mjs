@@ -45,6 +45,11 @@ const REQUIRED = [
   ["服务端地址键", "umg_online_base"],
   ["房间实时分数接口", "/progress"],
   ["玩家显示名字段", "displayName"],
+  // 游戏原生联机: tools/game-patches.mjs 的「原生联机」补丁只在宿主下发
+  // window.__umgServer 时才把联机客户端指向自建服务端(umiguri-native-server)。
+  // 属性名不参与混淆重命名, 所以能直接在产物里数。
+  ["原生联机开关", "__umgServer"],
+  ["官方服务端回退地址", "d.umgr-serv.inonote.jp"],
 ];
 
 let bad = 0;
@@ -65,6 +70,18 @@ for (const stale of ["/auth/register", "/auth/login"]) {
     bad++;
   } else {
     console.log("  OK   已移除旧登录接口 " + stale);
+  }
+}
+
+// 原生联机补丁至少要落在 3 处(账号客户端 / 房间客户端 host / port + 刷卡桩);
+// 少于这个数说明补丁没进产物(或被 tree-shake 掉了)。
+{
+  const n = js.split("__umgServer").length - 1;
+  if (n >= 3) {
+    console.log("  OK   原生联机补丁完整  (__umgServer x" + n + ")");
+  } else {
+    console.error("  FAIL 原生联机补丁不完整: 只在产物里找到 " + n + " 处 __umgServer(应 >= 3)");
+    bad++;
   }
 }
 

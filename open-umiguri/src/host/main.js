@@ -31,6 +31,7 @@ import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
 import { installLauncher } from './keypanel/launcher.js';
 import { installOnlineUI } from './online/ui.js';
+import { installNativeServer } from './online/native.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
 // 见 tauri#14707 / #15216。因此凡会触发 invoke 的初始化(含游戏启动)一律推迟到
@@ -222,13 +223,29 @@ whenPageReady(async () => {
   // 联机登录: 必须在 loadMain() 之前完成 —— 游戏启动时就会读握手里的玩家名,
   // 而登录结果要在此之前把服务端 displayName 写进 __umgForceProfile。
   // 用户在界面上点「跳过」或本地 token 校验通过时立即返回, 不阻塞单机启动。
+  let onlineCfg = null;
   try {
-    const onlineCfg = await installLauncher();
+    onlineCfg = await installLauncher();
     if (onlineCfg && onlineCfg.user) {
       diagLog('[umg][online] 已登录: ' + onlineCfg.user.displayName);
     }
   } catch (e) {
     diagLog('[umg][online] 登录器异常: ' + ((e && e.message) || e));
+  }
+
+  // 游戏原生联机: 把 umiguri-native-server 的地址与卡号交给游戏。
+  // tools/game-patches.mjs 的「原生联机」补丁只在 window.__umgServer 存在时才生效,
+  // 所以没登录 / 端口留空时这里什么都不做, 游戏照旧是纯单机。
+  // 必须在 loadMain() 之前 —— 游戏 bootstrap 就会读它建联机客户端。
+  try {
+    const info = installNativeServer(onlineCfg, handshake.fe);
+    if (info) {
+      diagLog(`[umg][native] 联机服务端 ${info.host}:${info.port} (卡 ${info.card.slice(0, 4)}…${info.card.slice(-4)})`);
+    } else {
+      diagLog('[umg][native] 未接原生联机(保持单机)');
+    }
+  } catch (e) {
+    diagLog('[umg][native] 注入失败: ' + ((e && e.message) || e));
   }
 
   loadMain(); // 解密并执行游戏前端(main.js.enc)

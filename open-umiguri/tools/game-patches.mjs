@@ -209,8 +209,82 @@ export function applyGamePatches(ast) {
     },
   });
 
+  // 原生联机: 宿主(启动器)在加载游戏前下发 window.__umgServer 时, 把游戏自带的
+  // 联机客户端指到自建服务端 umiguri-native-server。它实现的正是游戏本来就在说的
+  // 那套协议(/1/* JSON + /sock 加密二进制), 所以这里只需要换地址 + 接上「刷卡」。
+  //
+  // 没有 window.__umgServer 时三个表达式都取原值, 行为与改动前逐字节一致。
+  //
+  // 锚点:
+  //   1) bootstrap: scope.v_Xt_27648 = null  —— 联机账号客户端(云存档/资料/房间令牌)
+  //   2) v_Ls_28008.prototype.R9            —— 无 AM 读卡器时的键盘读卡桩(Ctrl+F9~F12)
+  //   3) scope.v_oe_27649 = new v_Hs_28017   —— 房间/心跳客户端(/sock), 端口写死 8101
+  let nativePatched = 0;
+
+  // 1) 联机账号客户端: 原本恒为 null(所以游戏里所有联机分支都是死代码)
+  traverse(ast, {
+    AssignmentExpression(path) {
+      const left = path.node.left;
+      if (!t.isMemberExpression(left) || left.computed) return;
+      if (!t.isIdentifier(left.object, { name: 'scope' })) return;
+      if (!t.isIdentifier(left.property, { name: 'v_Xt_27648' })) return;
+      if (!t.isNullLiteral(path.node.right)) return; // 幂等: 打过之后右侧是三元
+      path.node.right = parser.parseExpression(NATIVE_ACCOUNT);
+      nativePatched++;
+    },
+    NewExpression(path) {
+      const callee = path.node.callee;
+      if (!t.isMemberExpression(callee) || callee.computed) return;
+      if (!t.isIdentifier(callee.object, { name: 'scope' })) return;
+      if (!t.isIdentifier(callee.property, { name: 'v_Hs_28017' })) return;
+      if (path.node.arguments.length !== 3) return;
+      if (t.isConditionalExpression(path.node.arguments[0]) && JSON.stringify(path.node.arguments[0].test).includes('__umgServer')) return; // 幂等
+      // 3) 房间客户端地址(host, port)
+      path.node.arguments[0] = parser.parseExpression(NATIVE_SOCK_HOST);
+      path.node.arguments[1] = parser.parseExpression(NATIVE_SOCK_PORT);
+      nativePatched++;
+    },
+  });
+
+  // 2) 刷卡桩: 宿主已把卡号转成 10 字节(见 host/online/native.js), 直接当一次刷卡。
+  traverse(ast, {
+    AssignmentExpression(path) {
+      const left = path.node.left;
+      if (!t.isMemberExpression(left) || left.computed) return;
+      // left = scope.v_Ls_28008.prototype
+      if (!t.isMemberExpression(left.object)) return;
+      if (!t.isIdentifier(left.object.object, { name: 'scope' })) return;
+      if (!t.isIdentifier(left.object.property, { name: 'v_Ls_28008' })) return;
+      if (!t.isIdentifier(left.property, { name: 'prototype' })) return;
+      if (!t.isObjectExpression(path.node.right)) return;
+      const r9 = path.node.right.properties.find(
+        (pr) => t.isObjectProperty(pr) && t.isIdentifier(pr.key, { name: 'R9' }) && t.isBlockStatement(pr.value.body)
+      );
+      if (!r9) return;
+      const ret = r9.value.body.body[0];
+      if (!t.isReturnStatement(ret) || !t.isSequenceExpression(ret.argument)) return;
+      if (ret.argument.expressions.length !== 2) return;
+      const swipe = ret.argument.expressions[1];
+      if (t.isConditionalExpression(swipe) && JSON.stringify(swipe.test).includes('__umgServer')) return; // 幂等
+      ret.argument.expressions[1] = parser.parseExpression(NATIVE_SWIPE);
+      nativePatched++;
+    },
+  });
+  if (nativePatched) applied.push(`原生联机指向 __umgServer ×${nativePatched}`);
+
   return applied;
 }
+
+// 1) 联机账号客户端(HTTP: /1/user/login, /1/umiguri/*)
+const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null';
+
+// 3) 房间客户端(/sock): 官方地址 d.umgr-serv.inonote.jp:8101
+const NATIVE_SOCK_HOST = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.host : "d.umgr-serv.inonote.jp"';
+const NATIVE_SOCK_PORT = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.port || 8101 : 8101';
+
+// 2) 刷卡桩: 宿主给了卡号就直接返回那 10 个字节, 否则沿用原来的「等键盘假卡」
+const NATIVE_SWIPE = 'window.__umgServer && window.__umgServer.cardBytes ? window.__umgServer.cardBytes : new Promise(v_t_33747 => { this.Z9 = v_t_33747; })';
+
 
 // gameCore 私有的游玩状态/控制桥(注入在模块 return 之前; 名字在该模块作用域内可见)。
 const UMG_PLAY_BRIDGE = `

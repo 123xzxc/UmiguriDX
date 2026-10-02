@@ -9,6 +9,9 @@
 
 export const LS_BASE = 'umg_online_base';
 export const LS_TOKEN = 'umg_online_token';
+// 卡号也要记住: 游戏原生联机(umiguri-native-server)没有 AM 读卡器, 靠它当刷卡,
+// 见 host/online/native.js 的 installNativeServer()。
+export const LS_CARD = 'umg_online_card';
 
 export function readLS(key) {
   try {
@@ -66,6 +69,7 @@ export function maskCard(cardId) {
 export function setSession(cfg) {
   const base = setBase(cfg.base);
   writeLS(LS_TOKEN, cfg.token);
+  if (cfg.cardId) writeLS(LS_CARD, normalizeCard(cfg.cardId));
   session.token = cfg.token || null;
   session.token = cfg.token || null;
   session.user = cfg.user || null;

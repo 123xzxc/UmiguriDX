@@ -1,0 +1,491 @@
+#!/usr/bin/env node
+// 端到端冒烟测试: 用「模拟客户端」把游戏实际会发出去的字节原样打一遍。
+//
+// 覆盖:
+//   1. 帧加密与客户端实现逐字节一致
+//   2. /1/* HTTP: 登录 / 档案 / 设置 / 成绩 / 角色, 以及失败分支
+//   3. /sock: 心跳、进房、第二人加入、选曲、实时分数、聊天、离房解散
+//
+// 跑法: node test/native-smoke.mjs
+
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const dbDir = resolve(here, "../data");
+const dbPath = resolve(dbDir, "test-native.db");
+mkdirSync(dbDir, { recursive: true });
+for (const f of [dbPath, dbPath + "-wal", dbPath + "-shm"]) {
+  try {
+    rmSync(f);
+  } catch {
+    /* 第一次跑时不存在 */
+  }
+}
+process.env.UMIGURI_DB = dbPath;
+process.env.UMIGURI_LOG_LEVEL = "silent";
+
+// 环境变量必须在 import 之前设好, 所以这里用动态 import。
+const wire = await import("../src/lib/wire.js");
+const { startServer } = await import("../src/index.js");
+const { cryptFrame, parseFrame, Writer } = wire;
+
+let pass = 0;
+let fail = 0;
+const failures = [];
+
+function ok(cond, label) {
+  if (cond) {
+    pass++;
+    return true;
+  }
+  fail++;
+  failures.push(label);
+  return false;
+}
+
+function eq(actual, expected, label) {
+  return ok(actual === expected, label + " (期望 " + JSON.stringify(expected) + ", 实际 " + JSON.stringify(actual) + ")");
+}
+
+// ---- 1. 帧加密: 与客户端 helpers.js 的 v_ic_28200 逐字节对照 ----
+// 下面这段是从客户端源码直接抄下来的, 只把 scope.v_y1_27885 换成本地常量。
+// 必须和 src/lib/wire.js 的实现完全一致 —— 任何"顺手优化"都会让游戏连不上。
+const CLIENT_KEY = [
+  197, 238, 48, 6, 140, 192, 127, 129,
+  135, 38, 19, 205, 31, 140, 194, 198,
+  74, 128, 201, 166, 197, 85, 192, 237,
+  122, 48, 82, 145, 241, 247, 232, 153
+];
+
+function clientCrypt(input, encrypt) {
+  const n = CLIENT_KEY.length;
+  const out = new Uint8Array(input.byteLength);
+  const S = CLIENT_KEY.map((k) => 90 ^ k);
+  let a = 0;
+  let o = 0;
+  let l = 0;
+  for (let i = 0; i < input.length; ++i) {
+    o = (o + S[(a = (a + 1) % n)]) % n;
+    const tmp = S[a % n];
+    S[a % n] = S[o];
+    S[o] = tmp;
+    const ks = S[(S[a] + S[o]) % n];
+    out[i] = (ks ^ input[i] ^ (211 & l)) & 255;
+    l = l + (((encrypt ? out : input)[i] + S[i]) & 255);
+  }
+  return out;
+}
+
+{
+  let mismatch = 0;
+  for (let len = 1; len <= 300; len += 7) {
+    const buf = new Uint8Array(len);
+    for (let i = 0; i < len; i++) buf[i] = (i * 37 + len * 11) & 255;
+    if (Buffer.compare(Buffer.from(cryptFrame(buf, true)), Buffer.from(clientCrypt(buf, true))) !== 0) mismatch++;
+  }
+  eq(mismatch, 0, "加密结果与客户端逐字节一致(1..300 字节, 步进 7)");
+
+  const plain = new TextEncoder().encode("联机测试 payload ~ \u0000\u00ff");
+  const back = cryptFrame(cryptFrame(plain, true), false);
+  ok(Buffer.from(back).equals(Buffer.from(plain)), "加密->解密可还原");
+  ok(cryptFrame(new Uint8Array(64), true).length === 64, "64 字节帧(超过密钥长度)不报错");
+}
+
+// ---- 模拟客户端 ----
+class Sock {
+  constructor(port) {
+    this.url = "ws://127.0.0.1:" + port + "/sock";
+    this.seq = 0;
+    this.pushes = new Map();
+    this.waiters = new Map();
+    this.pending = new Map();
+  }
+
+  connect() {
+    return new Promise((res, rej) => {
+      const ws = new WebSocket(this.url);
+      ws.binaryType = "arraybuffer";
+      this.ws = ws;
+      ws.onopen = () => res();
+      ws.onerror = () => rej(new Error("websocket 连接失败"));
+      ws.onmessage = (ev) => this.onMessage(new Uint8Array(ev.data));
+      ws.onclose = () => this.onClose();
+    });
+  }
+
+  onMessage(raw) {
+    const frame = parseFrame(Buffer.from(cryptFrame(raw, false)));
+    if (!frame) return;
+    if (frame.op >= 128) {
+      const list = this.pushes.get(frame.op) || [];
+      list.push(frame.body);
+      this.pushes.set(frame.op, list);
+      const w = this.waiters.get(frame.op);
+      if (w && w.length) w.shift()(frame.body);
+      return;
+    }
+    const key = frame.op + ":" + frame.seq;
+    const p = this.pending.get(key);
+    if (p) {
+      this.pending.delete(key);
+      p(frame);
+    }
+  }
+
+  onClose() {
+    for (const p of this.pending.values()) p(null);
+    this.pending.clear();
+  }
+
+  send(op, payload) {
+    const w = new Writer().u32(Math.floor(Math.random() * 4294967295)).u8(op).u8(++this.seq & 255);
+    if (payload) w.raw(payload.bytes());
+    this.ws.send(cryptFrame(w.bytes(), true));
+    return this.seq;
+  }
+
+  request(op, payload, timeoutMs = 3000) {
+    const seq = this.send(op, payload);
+    const key = op + ":" + seq;
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(key);
+        rej(new Error("op=" + op + " 等响应超时"));
+      }, timeoutMs);
+      this.pending.set(key, (frame) => {
+        clearTimeout(timer);
+        res(frame);
+      });
+    });
+  }
+
+  nextPush(op, timeoutMs = 3000) {
+    const list = this.pushes.get(op);
+    if (list && list.length) return Promise.resolve(list.shift());
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => rej(new Error("等推送 op=" + op + " 超时")), timeoutMs);
+      const w = this.waiters.get(op) || [];
+      w.push((payload) => {
+        clearTimeout(timer);
+        res(payload);
+      });
+      this.waiters.set(op, w);
+    });
+  }
+
+  pushCount(op) {
+    const list = this.pushes.get(op);
+    return list ? list.length : 0;
+  }
+
+  close() {
+    try {
+      this.ws.close();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+// 对应客户端 v_Bs_28013.Qy(): 三个头必带, Content-Type 是 JSON,
+// 所以 WebView 会先打一次 OPTIONS 预检。
+async function api(base, path, body) {
+  const res = await fetch(base + path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-cli": "UMIGURI",
+      "X-cliver": "test",
+      "X-clitest": "false"
+    },
+    body: JSON.stringify(body)
+  });
+  return res.json();
+}
+
+function checksum(partial) {
+  let sum = 0;
+  for (const ch of partial) if (ch >= "0" && ch <= "9") sum += Number(ch);
+  return sum % 10;
+}
+
+function newCard() {
+  let digits = "";
+  for (let i = 0; i < 15; i++) digits += String(Math.floor(Math.random() * 10));
+  const head = "E004" + digits;
+  return head + String(checksum(head));
+}
+
+// 进房请求体(客户端 tT 的顺序):
+// u16 版本, u32 房间号, str nw_token, str token, str 名字,
+// u16 rating, u16 rating, u16 称号稀有度, str 称号, str 名牌, u16 名牌稀有度, str 场墙
+function enterPayload(roomId, nwToken, token, name) {
+  return new Writer()
+    .u16(20)
+    .u32(roomId)
+    .str(nwToken)
+    .str(token)
+    .str(name)
+    .u16(1000)
+    .u16(1000)
+    .u16(1)
+    .str("TITLE")
+    .str("PLATE")
+    .u16(2)
+    .str("WALL");
+}
+
+// ---- 2. HTTP ----
+const server = startServer({ port: 0, host: "127.0.0.1" });
+await new Promise((r) => server.once("listening", r));
+const port = server.address().port;
+const base = "http://127.0.0.1:" + port;
+
+{
+  const pre = await fetch(base + "/1/umiguri/getProfile", { method: "OPTIONS" });
+  eq(pre.status, 204, "OPTIONS 预检返回 204");
+  eq(pre.headers.get("access-control-allow-origin"), "*", "预检响应带 CORS 允许源");
+  await pre.text();
+}
+
+const card = newCard();
+let token = "";
+let userId = 0;
+{
+  const r = await api(base, "/1/user/login", { code: card, nw_token: "nw-test-0001" });
+  eq(r.result, "ok", "刷卡登录成功");
+  ok(typeof r.token === "string" && r.token.length > 10, "登录返回 token");
+  ok(Number.isInteger(r.user_id) && r.user_id > 0, "登录返回 user_id");
+  token = r.token;
+  userId = r.user_id;
+}
+
+{
+  const r = await api(base, "/1/user/login", { code: "1234567890", nw_token: "nw-bad" });
+  eq(r.result, "card_not_found", "非法卡号回 card_not_found");
+}
+
+{
+  const r = await api(base, "/1/umiguri/getProfile", { token: "not-a-real-token", nw_token: "x" });
+  eq(r.result, "bad", "无效 token 回 bad");
+}
+
+{
+  const r = await api(base, "/1/umiguri/getProfile", { token, nw_token: "nw-test-0001" });
+  eq(r.result, "ok", "新卡 getProfile 直接给一份默认档案");
+  eq(r.targetVersion, 1101, "默认档案 targetVersion=1101(与游戏内置常量一致)");
+  eq(r.playerLevel, 1, "默认档案 playerLevel=1");
+  eq(r.charaId, "UMIGURI/uni", "默认档案 charaId 与游戏离线默认一致");
+  ok(Array.isArray(r.chatIds) && r.chatIds.length === 20, "默认档案 chatIds 有 20 项");
+}
+
+{
+  const r = await api(base, "/1/umiguri/setProfile", {
+    token,
+    nw_token: "nw-test-0001",
+    data: { playerName: "TESTER", playerLevel: 7, titleId: "s_00000001" }
+  });
+  eq(r.result, "ok", "setProfile 成功");
+  const back = await api(base, "/1/umiguri/getProfile", { token, nw_token: "nw-test-0001" });
+  eq(back.playerName, "TESTER", "setProfile 后名字已保存");
+  eq(back.playerLevel, 7, "setProfile 后等级已保存");
+  eq(back.titleId, "s_00000001", "setProfile 后称号已保存");
+  eq(back.charaId, "UMIGURI/uni", "setProfile 没带的字段保持原值(不会被冲掉)");
+}
+
+{
+  const r = await api(base, "/1/umiguri/getOptions", { token, nw_token: "nw-test-0001" });
+  eq(r.result, "ok", "getOptions 成功");
+  eq(r.scrollSpeed, 4, "默认 scrollSpeed=4(照抄游戏内置预设, 给 0 会没法玩)");
+  eq(r.masterVolume, 100, "默认 masterVolume=100(给 0 会整机静音)");
+  const s = await api(base, "/1/umiguri/setOptions", { token, nw_token: "nw-test-0001", data: { scrollSpeed: 9 } });
+  eq(s.result, "ok", "setOptions 成功");
+  const back = await api(base, "/1/umiguri/getOptions", { token, nw_token: "nw-test-0001" });
+  eq(back.scrollSpeed, 9, "setOptions 后 scrollSpeed 已保存");
+  eq(back.mirror, 0, "setOptions 没带的字段保持原值");
+}
+
+{
+  const s = await api(base, "/1/umiguri/setRecord", {
+    token,
+    nw_token: "nw-test-0001",
+    data: { musicId: "music_001", musicDiff: 3, score: 990000, flags: 5, playCount: 2, updatedAt: 111 }
+  });
+  eq(s.result, "ok", "setRecord(单曲) 成功");
+  await api(base, "/1/umiguri/setRecord", {
+    token,
+    nw_token: "nw-test-0001",
+    data: { musicId: "music_001", musicDiff: 3, score: 100, flags: 0, playCount: 1, updatedAt: 222 }
+  });
+  const back = await api(base, "/1/umiguri/getRecords", { token, nw_token: "nw-test-0001" });
+  eq(back.result, "ok", "getRecords 成功");
+  eq(back.table.length, 1, "同一曲同一难度只留一行");
+  eq(back.table[0].score, 990000, "低分不覆盖高分");
+  eq(back.table[0].playCount, 2, "playCount 取最大值");
+  eq(back.table[0].musicDiff, 3, "成绩里的 musicDiff 保留");
+}
+
+{
+  await api(base, "/1/umiguri/setRecord", {
+    token,
+    nw_token: "nw-test-0001",
+    data: { courseId: 12, score: 2000000, flags: 1, playCount: 1, updatedAt: 333 }
+  });
+  const back = await api(base, "/1/umiguri/getCourseRecords", { token, nw_token: "nw-test-0001" });
+  eq(back.result, "ok", "getCourseRecords 成功");
+  eq(back.table.length, 1, "course 记录有 1 行");
+  eq(back.table[0].courseId, 12, "course 记录保留 courseId");
+}
+
+{
+  await api(base, "/1/umiguri/setCharaState", {
+    token,
+    nw_token: "nw-test-0001",
+    data: { charaId: "UMIGURI/uni", rank: 3, exp: 120, skillId: "skill_a", transIdx: 1 }
+  });
+  const back = await api(base, "/1/umiguri/getCharaStates", { token, nw_token: "nw-test-0001" });
+  eq(back.result, "ok", "getCharaStates 成功");
+  eq(back.table.length, 1, "角色状态有 1 行");
+  eq(back.table[0].rank, 3, "角色 rank 已保存");
+}
+
+{
+  const r = await api(base, "/1/umiguri/getProfile", { token, nw_token: "nw-test-0001" });
+  eq(r.playerName, "TESTER", "重新取档案名字仍然是面板/游戏里改过的那个");
+}
+
+// ---- 3. /sock ----
+const a = new Sock(port);
+const b = new Sock(port);
+await a.connect();
+await b.connect();
+ok(true, "两个 WebSocket 客户端都连上了");
+
+{
+  const r = await a.request(1, null);
+  eq(r.body.u16(), 0, "心跳 op=1 收到结果码 0");
+}
+
+let roomId = 0;
+{
+  const r = await a.request(2, enterPayload(0, "nw-a", token, "AAA"));
+  const code = r.body.u16();
+  const nx = r.body.u32();
+  roomId = r.body.u32();
+  eq(code, 0, "A 进房(新建)结果码 0");
+  eq(nx, userId, "A 拿到自己的 user_id");
+  ok(roomId > 0 && roomId <= 65535, "房间号落在 16 位范围内(客户端按 u16 用)");
+
+  // 推送与响应是两个独立的帧, 必须按顺序从队列里取。
+  const joinSelf = await a.nextPush(130);
+  eq(joinSelf.u32(), userId, "130 里的 nx 是自己");
+  eq(joinSelf.str(), "AAA", "130 里的名字来自进房请求");
+  eq(joinSelf.u16(), 1000, "130 里的 rating 来自进房请求(档案里是 0, 用请求值兜底)");
+  eq(joinSelf.u16(), 7, "130 里的等级取自云档案(setProfile 写进去的 7)");
+  eq(joinSelf.u16(), 1, "130 里的称号稀有度");
+  eq(joinSelf.str(), "TITLE", "130 里的称号文本");
+  eq(joinSelf.str(), "PLATE", "130 里的名牌文本");
+  eq(joinSelf.u16(), 2, "130 里的名牌稀有度");
+  eq(joinSelf.str(), "WALL", "130 里的场墙文本");
+  eq((await a.nextPush(140)).u16(), roomId, "140 推送的房间号与响应一致");
+}
+
+let guestB = 0;
+{
+  const r = await b.request(2, enterPayload(roomId, "nw-b", "", "BBB"));
+  eq(r.body.u16(), 0, "B 加入已有房间结果码 0");
+  guestB = r.body.u32();
+  ok(guestB > 0, "B 拿到一个游客号");
+  eq(r.body.u32(), roomId, "B 进的是 A 的房间");
+
+  const bFirst = await b.nextPush(130);
+  const bSecond = await b.nextPush(130);
+  eq(bFirst.u32(), userId, "B 先收到 A 的信息");
+  eq(bSecond.u32(), guestB, "B 再收到自己的信息");
+  const aSecond = await a.nextPush(130);
+  eq(aSecond.u32(), guestB, "A 收到 B 的进房推送");
+  eq(aSecond.str(), "BBB", "A 看到 B 的名字");
+}
+
+{
+  const r = await b.request(2, enterPayload(4242, "nw-b", "", "BBB"));
+  eq(r.body.u16(), 1, "加入不存在的房间被拒绝(非 0)");
+}
+
+{
+  const meta = Buffer.from([9, 8, 7, 6, 5]);
+  const req = new Writer().u16(0).u16(3).str("song_alpha").raw(meta);
+  const r = await a.request(4, req);
+  eq(r.body.u16(), 0, "选曲结果码 0");
+  const pa = await a.nextPush(132);
+  const pb = await b.nextPush(132);
+  const yxA = pa.u32();
+  eq(pa.u32(), userId, "132 的 nx 是选曲者");
+  ok(pa.rest().equals(meta), "132 原样回放曲目元数据");
+  eq(pb.u32(), yxA, "B 拿到的对局号 yx 与 A 相同");
+  eq(pb.u32(), userId, "B 看到的也是 A 在选曲");
+  ok(pb.rest().equals(meta), "B 收到的曲目元数据一致");
+}
+
+{
+  const req = new Writer().u32(1).u32(1).u32(888000).u32(0).u32(0);
+  const r = await a.request(20, req);
+  eq(r.body.u16(), 0, "上报分数结果码 0");
+  const rankB = await b.nextPush(138);
+  eq(rankB.u32(), 0, "138 开头那个 u32 是占位(客户端会先跳过)");
+  ok(rankB.u32() > 0, "138 带上了对局号");
+  eq(rankB.u32(), 2, "138 榜单里有 2 人");
+  eq(rankB.u32(), userId, "榜首是 A");
+  eq(rankB.u32(), 888000, "榜首分数正确");
+  eq(rankB.u32(), 0, "榜首的 flags 透传");
+}
+
+{
+  const req = new Writer().u32(1).u32(0).str("hello 联机");
+  const r = await b.request(25, req);
+  eq(r.body.u16(), 0, "聊天结果码 0");
+  const p144 = await a.nextPush(144);
+  eq(p144.u32(), guestB, "144(对局内聊天)的发送者是 B");
+  p144.u32();
+  p144.u32();
+  eq(p144.str(), "hello 联机", "144 带上了聊天文本");
+  const p145 = await a.nextPush(145);
+  ok(p145.u32() > 0, "145 带递增的消息序号 tL(客户端靠它排序)");
+  eq(p145.u32(), guestB, "145(大厅消息)的发送者是 B");
+  ok(p145.u32() > 0, "145 带上对局号");
+  eq(p145.u32(), 0, "145 里的聊天 id 透传(自由文本为 0)");
+  p145.f64();
+  eq(p145.str(), "hello 联机", "145 带上了聊天文本");
+}
+
+{
+  const r = await a.request(114, new Writer().u32(userId).u8(10).u32(1).u8(3));
+  ok(r.body.u16() !== 0, "头像请求(op=114)明确回非 0, 客户端不会挂着重试");
+  const r2 = await a.request(99, new Writer().u32(1));
+  ok(r2.body.u16() !== 0, "未实现的操作码回非 0");
+}
+
+{
+  const r = await a.request(3, null);
+  eq(r.body.u16(), 0, "离房结果码 0");
+  const closed = await b.nextPush(129);
+  eq(closed.u32(), roomId, "房主离开后 B 收到 129(房间解散)");
+  const r2 = await b.request(1, null);
+  eq(r2.body.u16(), 0, "房间解散后 B 仍然能心跳(连接没断)");
+}
+
+a.close();
+b.close();
+await new Promise((r) => setTimeout(r, 50));
+await new Promise((r) => server.close(r));
+
+console.log("");
+console.log("通过 " + pass + " 项, 失败 " + fail + " 项");
+if (fail) {
+  for (const f of failures) console.log("  x " + f);
+  process.exit(1);
+}
+console.log("全部通过");
+process.exit(0);

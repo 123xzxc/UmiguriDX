@@ -16,6 +16,7 @@ import {
   LS_BASE, LS_TOKEN, readLS, normalizeBase, normalizeCard, isValidCard,
   onlineBridge, api, setBase, setSession, restore,
 } from "../online/session.js";
+import { nativePort, setNativePort, DEFAULT_NATIVE_PORT } from "../online/native.js";
 
 export { normalizeCard } from "../online/session.js";
 
@@ -46,6 +47,7 @@ export function openLauncher(savedBase) {
 
   box.appendChild(mkTitle("联机登录"));
   box.appendChild(mkHint("输入卡号即可登录。卡号在网页面板注册, 无需密码。"));
+  box.appendChild(mkHint("端口 8787 是网页面板/启动器用的 REST 服务端; 8101 是游戏原生协议服务端(umiguri-native-server), 游戏内联机走它。"));
 
   box.appendChild(mkLabel("服务端地址"));
   const baseInput = mkInput("http://127.0.0.1:8787");
@@ -56,6 +58,13 @@ export function openLauncher(savedBase) {
   const cardInput = mkInput("E004 开头的 20 位卡号");
   cardInput.maxLength = 32;
   box.appendChild(cardInput);
+
+  box.appendChild(mkLabel("原生服务端端口"));
+  const nativeInput = mkInput(String(DEFAULT_NATIVE_PORT));
+  nativeInput.value = nativePort() ? String(nativePort()) : "";
+  nativeInput.maxLength = 5;
+  box.appendChild(nativeInput);
+  box.appendChild(mkHint("留空 = 不接游戏原生联机(只单机 + 宿主联机面板)。"));
 
   const state = mkHint("");
   box.appendChild(state);
@@ -90,13 +99,14 @@ export function openLauncher(savedBase) {
     setBtnDisabled(loginBtn, true);
     setState("登录中…");
     setBase(base);
+    setNativePort(nativeInput.value);
     const r = await api("POST", "/auth/card", { cardId }, false);
     setBtnDisabled(loginBtn, false);
     if (!r.ok) {
       setState(r.status === 0 ? "连不上服务端: " + (r.error || "") : (r.error || "登录失败"));
       return;
     }
-    const cfg = { base, token: r.data.token, user: r.data.user };
+    const cfg = { base, cardId, token: r.data.token, user: r.data.user };
     setSession(cfg);
     done(cfg);
   }
@@ -111,6 +121,7 @@ export function openLauncher(savedBase) {
   onTap(skipBtn, () => {
     // 只记住地址, 不写 token: 游戏内仍可登录, 且下次启动会再弹
     const base = setBase(baseInput.value);
+    setNativePort(nativeInput.value);
     done({ base, token: null, user: null, skipped: true });
   });
 

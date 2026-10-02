@@ -127,7 +127,8 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 - [x] 游戏内房间入口 —— 宿主层联机面板, 取代丢失的 `openCoop`
 - [x] 房间态与实时对手分数 —— 面板内 1s 轮询房间快照 + 上报自己的分数
 - [x] 游戏内换号/登出 —— 面板里可直接叫起启动器
-- [ ] 游戏原生联机路径(`scope.v_Xt_27648`)—— 需要补 `/1/*` HTTP 与 `/sock` 二进制协议, 见下
+- [x] 游戏原生联机路径(`scope.v_Xt_27648`)—— 新服务端 `umiguri-native-server` 实现了
+      `/1/*` HTTP 与 `/sock` 二进制协议, 客户端由宿主注入 `window.__umgServer` 打开(见第七节)
 
 ### 认证模型速查
 
@@ -156,8 +157,9 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 
 因此这份产物里游戏自身的联机路径**永远不会被走到**, 也不会去连
 `d.umgr-serv.inonote.jp:8101`(所以现在跑起来没有网络报错)。
-要让游戏原生路径活过来, 得把 `/1/*` HTTP 与 `/sock` 二进制协议都补上,
-再把 `v_Xt_27648` 指到一个实现同样接口的适配器 —— 工作量大, 单独排期。
+
+> **2026-10 更新**: 这条路已经接上了(第七节)。下面这套宿主面板仍然保留 ——
+> 它是纯 HTTP 轮询、不依赖混淆产物的内部结构, 当作备用入口与排障工具。
 
 ### 6.2 现在怎么做: 宿主层面板
 
@@ -176,3 +178,61 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 
 注意: 面板里换号后, 服务端 displayName 会立刻写进 `__umgForceProfile` 与
 `umgr_elc._.rm.om`, 但游戏的名牌板是**启动时读一次**, 所以名字要重启才刷新。
+
+## 七、游戏原生联机路径(已接上)
+
+### 7.1 服务端: `umiguri-native-server`
+
+游戏本体从来不是连我们的 REST 接口, 而是连 `d.umgr-serv.inonote.jp:8101` 那套协议。
+`umiguri-native-server` 就是按**游戏本来就在说的协议**回答它, 零第三方依赖
+(`node:sqlite`), 端口 8101, 与 `umiguri-server` **共用同一个 `data/umiguri.db`** ——
+网页面板发的卡, 游戏里直接就能刷。细节见 `umiguri-native-server/README.md`。
+
+| | umiguri-server | umiguri-native-server |
+|---|---|---|
+| 面向 | 网页面板 / 宿主联机面板 | 游戏本体 |
+| 协议 | 自家 REST(JSON + JWT) | `POST /1/*`(JSON) + `GET /sock`(加密二进制 WS) |
+| 端口 | 8787 | **8101**(游戏里写死的) |
+
+### 7.2 客户端: 三个锚点
+
+补丁在 `open-umiguri/tools/game-patches.mjs`, 并且**手写进了生成物**
+`open-umiguri/src/game-esm/index.js`(改补丁时必须两边一致, 跑
+`node tools/verify-online-bundle.mjs` 会在混淆产物里复查)。
+
+| 锚点 | 原值 | 打补丁后 |
+| --- | --- | --- |
+| bootstrap 的 `scope.v_Xt_27648 = null` | 恒 `null` | `new scope.v_Bs_28013(host, port, nwToken)` |
+| `v_Ls_28008.prototype.R9`(键盘读卡桩) | 等 `Ctrl+F9`~`Ctrl+F12` | 宿主给了卡号就直接返回那 10 字节 |
+| `new scope.v_Hs_28017("d.umgr-serv.inonote.jp", 8101, …)` | 官方地址 | 配置地址(未配置时仍是官方地址) |
+
+三者都只在宿主下发了 `window.__umgServer` 时才生效, 否则游戏行为与改动前一致。
+
+### 7.3 宿主: `window.__umgServer`
+
+`open-umiguri/src/host/online/native.js` 在 `loadMain()` 之前装配(游戏 bootstrap
+就会读它):
+
+```js
+window.__umgServer = {
+  host: "192.168.1.23",    // 启动器里填的服务端地址的主机名
+  port: 8101,              // 启动器的「原生服务端端口」, 留空 = 不接原生联机
+  card: "E004…",           // 启动器里填的卡号
+  cardBytes: Uint8Array,   // 卡号转成的 10 字节(游戏读卡器的卡格式)
+  nwToken: "…"             // 握手 fe, 装置号
+};
+```
+
+桌面没有 AM 读卡器, 所以用启动器里那张卡号当一次刷卡 —— 这就是「无密码, 有卡号就行」
+在桌面端的落地方式。游戏自带的 `Ctrl+F9`~`Ctrl+F12` 假卡仍然可用, 但那是 4 张固定卡
+(`9000000000000100`~`9000000000000103`), 不符合 `E004` + 16 位数字的规则。
+
+### 7.4 还需要真机回归的地方
+
+- 进游戏 → 刷卡登录 → 名字/称号/名牌是否与服务端一致;
+- 选曲页的联机房间: 建房 / 6 位房间号加入 / 准备 / 开局, 以及对手实时分数条;
+- 打完一局后 `/1/umiguri/setRecord` 是否把成绩存回服务端(换台机器能看到);
+- 断线(关掉服务端)时的表现: 应该只是网络错误提示, 不能卡死进不去单机。
+
+`umiguri-native-server` 侧开 `UMIGURI_SOCK_TRACE=1` / `UMIGURI_NATIVE_HTTP_TRACE=1`
+可以把每一帧操作码与每个 HTTP 请求打出来, 是排障的第一手段。

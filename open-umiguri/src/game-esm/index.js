@@ -180,7 +180,7 @@ scope.boardLanes = null;
 scope.boardAir = null;
 scope.v_D_27646 = null;
 scope.v_F_27647 = null;
-scope.v_Xt_27648 = null;
+scope.v_Xt_27648 = window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null;
 scope.v_oe_27649 = null;
 scope.v_B_27650 = new TextDecoder("utf-8");
 scope.v_N_27651 = new TextEncoder();
@@ -3548,7 +3548,9 @@ scope.v_Rs_28007.prototype = {
   hS: function () {},
   _S: function (v_t_33746) {},
   R9: async function () {
-    return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
+    // 桌面没有 AM 读卡器: 宿主(启动器)已经把卡号转成 10 字节放在 __umgServer.cardBytes,
+    // 这里直接当作一次刷卡返回, 其余行为(键盘 Ctrl+F9~F12 假卡)完全不变。
+    return this.US = scope.v_Ps_28006, window.__umgServer && window.__umgServer.cardBytes ? window.__umgServer.cardBytes : new Promise(v_t_33747 => {
       this.Z9 = v_t_33747;
     });
   },
@@ -6607,7 +6609,7 @@ if (addEventListener("resize", scope.v_m1_27881), addEventListener("unload", sco
       scope.v_Ns_28014.ue(), scope.v_Me_28078(v_e_35170);
     }]);
   }, function (v_t_35176) {
-    scope.v_oe_27649 = new scope.v_Hs_28017("d.umgr-serv.inonote.jp", 8101, scope.v_Xt_27648), scope.v_Me_28078(v_t_35176);
+    scope.v_oe_27649 = new scope.v_Hs_28017(window.__umgServer && window.__umgServer.host ? window.__umgServer.host : "d.umgr-serv.inonote.jp", window.__umgServer && window.__umgServer.host ? window.__umgServer.port || 8101 : 8101, scope.v_Xt_27648), scope.v_Me_28078(v_t_35176);
   }, function (v_t_35177) {
     v_c_35151(scope.v_Ue_28209("startupResources")), scope.v_Me_28078(v_t_35177), setTimeout(() => scope.v_Ae_27892.ue(function () {
       scope.v_Ae_27892.Mc("move_cursor", .625), scope.v_Ae_27892.Mc("menu_back", .625), scope.v_Ae_27892.Mc("change_value", .625), scope.v_Ae_27892.Mc("menu_enter", .625), scope.v_Ae_27892.Mc("play_result_bgm", .75), scope.v_Ae_27892.Mc("userbox_bgm", .75), scope.v_Me_28078(v_t_35177);

@@ -48,6 +48,19 @@ jobs:
           UMIGURI_JWT_SECRET: ci-test-secret
           UMIGURI_ADMIN_TOKEN: ci-admin-token
         run: node test/smoke.mjs
+      # 原生协议服务端: 游戏本体直接连的那一套(/1/* JSON + /sock 加密二进制),
+      # 端口 8101。它自己会临时建一个测试库, 不碰 umiguri-server 的数据。
+      - name: 语法检查(原生协议服务端)
+        working-directory: umiguri-native-server
+        run: |
+          fail=0
+          while IFS= read -r -d "" f; do
+            node --check "$f" || fail=1
+          done < <(find src test -type f \( -name "*.js" -o -name "*.mjs" \) -print0)
+          exit $fail
+      - name: 冒烟测试(原生协议: 刷卡登录 / 档案 / 成绩 / 房间 / 实时分数)
+        working-directory: umiguri-native-server
+        run: node test/native-smoke.mjs
 
   # ---------------- 服务端: 打包可部署产物 ----------------
   server-pack:

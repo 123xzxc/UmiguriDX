@@ -1,0 +1,17 @@
+{
+  "name": "umiguri-native-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "UMIGURI 原生协议服务端: 卡号登录 / 云存档 / 联机房间 (游戏内直接可用)",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node test/native-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {}
+}

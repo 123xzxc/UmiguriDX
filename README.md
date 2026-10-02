@@ -81,3 +81,16 @@ JUDGE_JUSTICE_CRITICAL (正义暴击) / JUSTICE (正义) / ATTACK (攻击) / MIS
 2. 连接 CDP `/json/list`,找到 page target(renderer)
 3. `Debugger.enable` → 收集 `scriptParsed` → `Debugger.getScriptSource` 拉取全部脚本源码
 4. 主进程 Node 后端代码因 Electron Fuse 禁用 inspector 无法通过 CDP 获取(需另行逆向 native asar 解密函数)
+
+## 联机 / 服务端
+
+上面「HTTP API」列的那 9 个 `/1/*` 接口, 就是**游戏本体真正会调的接口** —— 它们已经被
+实现出来了, 游戏因此可以走自己的原生联机路径(刷卡登录 / 云存档 / 联机房间):
+
+| 目录 | 面向 | 协议 / 端口 |
+|---|---|---|
+| `umiguri-server/` | 网页面板 / 宿主联机面板 | 自家 REST(JSON + JWT), 端口 8787 |
+| `umiguri-native-server/` | **游戏本体** | 游戏原生协议 `POST /1/*` + `GET /sock`(加密二进制), 端口 8101 |
+
+两者都零第三方依赖(`node:sqlite`), 共用同一个 `data/umiguri.db` —— 网页面板发的卡,
+游戏里直接就能刷。现状、客户端补丁的三个锚点与待回归清单见 `ONLINE.md`。
