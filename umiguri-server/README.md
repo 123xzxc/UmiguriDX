@@ -1,7 +1,7 @@
 # umiguri-server
 
 UMIGURI 联机服务端: 卡号登录、游玩记录、用户名与称号、房间联机(含实时对手分数),
-外加一个网页面板用于注册卡号与改资料。
+外加两个网页界面: 玩家面板(注册卡号/改资料)与管理面板(建号/发卡)。
 
 ## 认证模型(重要)
 
@@ -12,6 +12,7 @@ UMIGURI 联机服务端: 卡号登录、游玩记录、用户名与称号、房�
 | 游戏端 | **AIME 卡号** | 20 位、`E004` 开头。输卡号即登录, 无密码 |
 | 网页面板 `/panel` | **用户名 + TOTP** | Google 验证器等 TOTP App 的 6 位验证码 |
 | `/admin/*` | **管理员令牌** | Bearer `UMIGURI_ADMIN_TOKEN`, 用于建号/发卡 |
+| 管理面板 `/admin-panel` | **管理员令牌** | 同上, 登录后换 12 小时会话 cookie |
 
 账号由管理员创建, **不开放自助注册** —— TOTP 密钥若能自助申请, 谁都能绑上任意用户名。
 创建后管理员拿到 `otpauth://` 链接, 用户扫码即完成绑定。
@@ -37,6 +38,17 @@ npm start
 
 默认监听 `0.0.0.0:8787`, 数据库文件 `./data/umiguri.db`(自动创建)。
 
+### Windows 一键启动
+
+双击 `start-server.bat` 即可。它会:
+
+1. 首次运行时生成随机的 JWT 密钥与管理员令牌, 存到 `data\jwt-secret`、
+   `data\admin-token`, 之后复用(这两个文件在 `.gitignore` 里, 不会进仓库);
+2. 把管理员令牌打印在窗口里 —— 管理面板与建号都要用它;
+3. 启动服务端。
+
+`my-ip.bat` 用来查本机在局域网里的地址, 填进游戏启动器即可让同网段的机器连上。
+异地联机不行, 那需要内网穿透(如 Cloudflare Tunnel)或公网服务器。
 ### 环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -50,6 +62,8 @@ npm start
 | `UMIGURI_ADMIN_TOKEN` | 空(启动时随机生成并打印) | 管理员令牌 |
 | `UMIGURI_PANEL_TTL` | `604800`(7 天) | 面板会话有效期(秒) |
 | `UMIGURI_PANEL_COOKIE` | `umg_panel` | 面板会话 cookie 名 |
+| `UMIGURI_ADMIN_TTL` | `43200`(12 小时) | 管理面板会话有效期(秒) |
+| `UMIGURI_ADMIN_COOKIE` | `umg_admin` | 管理面板会话 cookie 名 |
 | `UMIGURI_PANEL_SECURE` | `0` | 置 1 给 cookie 加 `Secure`(生产 https 用) |
 | `UMIGURI_LOG_LEVEL` | `info` | `info` / `silent` |
 
@@ -60,7 +74,7 @@ node test/smoke.mjs   # 或 npm test
 ```
 
 覆盖 卡号登录 / TOTP 面板 / 发卡与吊销 / 资料 / 记录 / 排行榜 / 房间与实时分数同步
-的 53 项断言。测试每次使用干净的 `data/smoke.db`, 可重复运行。
+的 77 项断言。测试每次使用干净的 `data/smoke.db`, 可重复运行。
 
 ## 打包部署
 
@@ -74,25 +88,17 @@ node tools/pack.mjs   # 或 npm run pack
 
 ## CI
 
-`.github/workflows/online.yml` 负责联机版构建(手动触发或推 `v*` 标签):
+服务端与联机版客户端由 `.github/workflows/release.yml` 一起构建
+(手动触发或推 `v*` 标签)。服务端相关的两个 job 排在最前, 跑得快:
 
 | job | 内容 |
 | --- | --- |
-| `server-test` | 语法检查 + 53 项冒烟断言 |
-| `server-pack` | 产出可部署的 tar.gz |
-| `client-check` | 客户端混淆构建 + 契约/自由变量检查 + 联机链路校验 |
-| `desktop` | 联机版客户端(Windows / macOS x86_64+aarch64 / Linux) |
+| `server-test` | 语法检查 + 77 项冒烟断言(卡号/面板/管理面板/房间/实时分数) |
+| `server-pack` | 产出可部署的 tar.gz(依赖 `server-test` 通过) |
+| `windows` / `macos` / `linux` / `ios` / `android` | 客户端构建 |
 
-客户端产物**不预置服务端地址** —— 用户首次启动时在登录器里填, 因此一份包
+客户端产物**不预置服务端地址** —— 用户首次启动时在启动器里填, 因此一份包
 可以连任意服务器。
-
-```bash
-node test/smoke.mjs
-```
-
-覆盖 卡号登录 / TOTP 面板 / 发卡与吊销 / 资料 / 记录 / 排行榜 / 房间与实时分数同步 的 53 项断言。
-测试每次使用干净的 `data/smoke.db`, 可重复运行。
-
 ## API
 
 除 `/health`、`/auth/*`、`GET /leaderboard` 外, 全部需要
@@ -134,6 +140,31 @@ node test/smoke.mjs
 面板会话用 `HttpOnly` + `SameSite=Strict` cookie, 与游戏端 JWT 完全分开 ——
 网页会话泄露不会连带游戏端身份。
 
+### 管理面板 `/admin-panel`
+
+浏览器打开 `/admin-panel`, 粘贴管理员令牌即可登录。这是给人工操作用的网页;
+`/admin/*` 那套接口保留给脚本与 CI, 两者能力相同。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/admin-panel` | 管理面板 HTML |
+| POST | `/admin-panel/login` | `{token}` —— 管理员令牌换会话 cookie |
+| POST | `/admin-panel/logout` | 退出 |
+| GET | `/admin-panel/me` | 探活(有效则返回账号总数) |
+| GET | `/admin-panel/users` | 账号列表, 每项带自己的卡号 |
+| POST | `/admin-panel/users` | `{username}` -> `{user, totpSecret, otpauthUrl}` |
+| POST | `/admin-panel/users/:id/totp-reset` | 换一把新 TOTP 密钥 |
+| GET | `/admin-panel/users/:id/cards` | 该账号的卡号 |
+| POST | `/admin-panel/users/:id/cards` | 给该账号发卡 |
+| DELETE | `/admin-panel/cards/:cardId` | 吊销卡号 |
+
+几个设计取舍:
+
+- **不把管理员令牌直接写进 cookie**: 令牌是长期凭据且不过期, 落到浏览器里就没法单独作废。登录换取的是随机会话 token + 12 小时 TTL, 换令牌不影响已发会话。
+- **会话用 `HttpOnly` + `SameSite=Strict`**: 管理面板无跨站跳转需求, 直接堵掉 CSRF。
+- **登录失败节流**: 同一 IP 连续失败 8 次锁 5 分钟(见 `UMIGURI_ADMIN_MAX_FAILS` / `UMIGURI_ADMIN_LOCK`), 防在线爆破。可用 `X-Forwarded-For` 走反代时按真实 IP 计。
+- **密钥只显示一次**: TOTP 密钥在创建/重置的响应里返回, 之后从不再吐。页面提示管理员当场交给玩家。
+- **没有自助注册**: 这是刻意的。若允许自助申请 TOTP 密钥, 任何人都能对已存在的用户名重新申请, 等于接管账号。建号只能由管理员做。
 ### 管理接口(Bearer 管理员令牌)
 
 | 方法 | 路径 | 说明 |
@@ -147,16 +178,25 @@ node test/smoke.mjs
 
 ### 建号流程示例
 
+**推荐用网页**: 打开 `/admin-panel`, 粘贴管理员令牌登录, 在「建号」里填用户名。
+页面会显示一把 TOTP 密钥, 交给玩家在验证器 App(Google Authenticator 等)里选
+「手动输入密钥」添加。密钥只显示这一次, 之后再也拿不到。
+
+**脚本方式**(CI / 批量建号):
+
 ```bash
-# 1. 拿管理员令牌: 未设 UMIGURI_ADMIN_TOKEN 时, 启动日志里会打印
-# 2. 建号, 记下返回的 otpauthUrl
+# 管理员令牌: 启动日志里打印, 或读 data/admin-token
+ADMIN_TOKEN=$(cat data/admin-token)
+
 curl -X POST http://127.0.0.1:8787/admin/users \
   -H "content-type: application/json" \
   -H "authorization: Bearer $ADMIN_TOKEN" \
   -d '{"username":"yourname"}'
-# 3. 把 otpauthUrl 变成二维码让用户扫(或直接手输密钥)
-# 4. 用户用验证器里的 6 位码登录 /panel, 自行生成卡号
+# 返回 {user, totpSecret, otpauthUrl}
 ```
+
+拿到密钥后交给玩家绑定; 玩家登录 `/panel` 后可在面板里自行生成卡号,
+或由管理员用 `/admin-panel` 的「发卡」按钮代发。
 ### 个人资料(用户名与称号)
 
 | 方法 | 路径 | 说明 |
@@ -221,4 +261,6 @@ curl -X POST http://127.0.0.1:8787/admin/users \
 - 采用 HTTP 轮询而非 WebSocket(按需求选定), 对手分数存在一个轮询间隔的延迟
 - 尚未接入游戏客户端: 客户端侧还需补回 `openCoop` 房间入口与 `coopLobby`
   房间态逻辑(见仓库根 `ONLINE.md`)
+- 无自助注册: 建号只能由管理员做(设计取舍, 见上方「管理面板」小节的安全说明),
+  玩家拿到密钥后自行接管账号
 - 无对局结果防篡改: 当前只做区间校验, 未做服务端重放校验

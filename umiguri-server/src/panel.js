@@ -6,7 +6,7 @@
 import { randomBytes } from "node:crypto";
 import { getDb } from "./lib/db.js";
 import { config } from "./config.js";
-import { unauthorized } from "./lib/http.js";
+import { readCookie, unauthorized } from "./lib/http.js";
 import { getUserById, authenticateTotp } from "./users.js";
 
 const now = () => Date.now();
@@ -24,16 +24,7 @@ export function createPanelSession(userId) {
 // 从 Cookie 里取会话 token。面板是网页, 用 HttpOnly cookie 比 localStorage 安全
 // (XSS 拿不到), 且天然随请求发送。
 export function readPanelToken(req) {
-  const raw = req.headers["cookie"];
-  if (!raw || typeof raw !== "string") return null;
-  for (const part of raw.split(";")) {
-    const i = part.indexOf("=");
-    if (i < 0) continue;
-    if (part.slice(0, i).trim() === config.panelCookieName) {
-      return decodeURIComponent(part.slice(i + 1).trim());
-    }
-  }
-  return null;
+  return readCookie(req, config.panelCookieName);
 }
 
 export function resolvePanelSession(req) {

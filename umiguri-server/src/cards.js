@@ -59,6 +59,13 @@ export function resolveCard(cardId) {
   return toPublic(row);
 }
 
+// 按卡号查一条记录, 含已吊销的。管理面板吊销卡时需要先知道它属于谁 ——
+// resolveCard 只认未吊销的卡, 拿不到已吊销记录, 所以单独开这个。
+export function findCard(cardId) {
+  const db = getDb();
+  const s = normalizeCardId(cardId);
+  return toPublic(db.prepare("SELECT * FROM cards WHERE card_id = ?").get(s));
+}
 export function listCards(userId) {
   const db = getDb();
   const rows = db.prepare(

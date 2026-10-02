@@ -16,7 +16,7 @@ const HTML =
     "<head>" +
     "<meta charset=\"utf-8\">" +
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
-    "<title>UMIGURI 管理面板</title>" +
+    "<title>UMIGURI 玩家面板</title>" +
     "<style>" +
     "  :root { color-scheme: dark; }" +
     "  * { box-sizing: border-box; }" +
@@ -61,7 +61,7 @@ const HTML =
     "</head>" +
     "<body>" +
     "<div class=\"wrap\">" +
-    "  <h1>UMIGURI 管理面板</h1>" +
+    "  <h1>UMIGURI 玩家面板</h1>" +
     "  <div class=\"sub\">用账号 + Google 验证器登录。游戏端使用卡号登录。</div>" +
     "" +
     "  <div class=\"card\" id=\"loginCard\">" +

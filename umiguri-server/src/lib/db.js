@@ -75,6 +75,14 @@ function migrate(d) {
     );
     CREATE INDEX IF NOT EXISTS idx_panel_sessions_user ON panel_sessions(user_id);
 
+    -- 管理面板会话。与玩家面板会话分表: 玩家会话绝不能被当成管理员,
+    -- 哪怕两边的 token 生成方式一样。
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      token      TEXT    PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS plays (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

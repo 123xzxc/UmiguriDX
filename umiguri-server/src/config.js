@@ -46,6 +46,15 @@ export const config = {
   // 本地 http 调试时不能带 Secure, 否则浏览器不收 cookie。生产 https 请置 1。
   panelCookieSecure: env.UMIGURI_PANEL_SECURE === "1",
 
+  // ---- 管理面板 ----
+  // 与玩家面板分开的第三套凭据: 管理员令牌 -> 管理会话。
+  // 会话时长刻意比玩家面板短, 管理权限更大, 泄漏窗口要更小。
+  adminCookieName: env.UMIGURI_ADMIN_COOKIE || "umg_admin",
+  adminSessionTtlSeconds: int("UMIGURI_ADMIN_TTL", 60 * 60 * 12),
+  // 登录失败节流: 连续失败到上限后锁定一段时间, 防在线暴力猜令牌。
+  adminLoginMaxFails: int("UMIGURI_ADMIN_MAX_FAILS", 8),
+  adminLoginLockSeconds: int("UMIGURI_ADMIN_LOCK", 5 * 60),
+
   // 管理员令牌: 用于创建账号 / 重置验证器 / 发卡。
   // 留空时启动阶段随机生成并打印到控制台(见 server.js), 不落盘。
   adminToken: env.UMIGURI_ADMIN_TOKEN || "",

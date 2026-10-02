@@ -40,6 +40,20 @@ export async function readJson(req, limitBytes = 256 * 1024) {
   }
 }
 
+// 从 Cookie 头里取一个值。面板与管理面板各用一个 cookie 名,
+// 所以这里做成通用的, 免得两边各写一份解析。
+export function readCookie(req, name) {
+  const raw = req.headers["cookie"];
+  if (!raw || typeof raw !== "string") return null;
+  for (const part of raw.split(";")) {
+    const i = part.indexOf("=");
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() === name) {
+      return decodeURIComponent(part.slice(i + 1).trim());
+    }
+  }
+  return null;
+}
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, {

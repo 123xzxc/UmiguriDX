@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { openDb, closeDb } from "./lib/db.js";
 import { buildRouter, authResolver } from "./routes/index.js";
 import { reapIdleRooms } from "./rooms.js";
+import { reapExpiredAdminSessions } from "./admin-panel.js";
 import { randomBytes } from "node:crypto";
 
 export function createApp() {
@@ -39,12 +40,14 @@ export function startServer({ port = config.port, host = config.host } = {}) {
     }
   });
 
-  // 空闲房间回收
+  // 定时维护: 回收空闲房间 + 清过期面板会话。
+  // 过期会话不清理也能用(校验时会拒), 但会一直堆在库里。
   const timer = setInterval(() => {
     try {
       reapIdleRooms();
+      reapExpiredAdminSessions();
     } catch (e) {
-      if (config.logLevel !== "silent") console.error("[umg-server] 房间清理失败:", e);
+      if (config.logLevel !== "silent") console.error("[umg-server] 定时维护失败:", e);
     }
   }, 60 * 1000);
   timer.unref?.();

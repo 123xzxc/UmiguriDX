@@ -235,6 +235,77 @@ const leave = await call("POST", `/rooms/${code}/leave`, {}, token);
 check("房主离开并移交", leave.status === 200 && leave.body.result.dissolved === false
   && typeof leave.body.result.newHostId === "number", JSON.stringify(leave.body));
 
+console.log("== 管理面板(网页) ==");
+const adminPageRes = await fetch(BASE + "/admin-panel");
+const adminPageHtml = await adminPageRes.text();
+check("管理面板页面 200", adminPageRes.status === 200, String(adminPageRes.status));
+check("页面是 HTML", String(adminPageRes.headers.get("content-type")).includes("text/html"));
+check("页面含登录表单", adminPageHtml.includes("管理员令牌"));
+
+const meAnon = await call("GET", "/admin-panel/me");
+check("未登录读 me 401", meAnon.status === 401, String(meAnon.status));
+
+const badLogin = await call("POST", "/admin-panel/login", { token: "nope" });
+check("错误令牌登录 401", badLogin.status === 401 && badLogin.body.code === "admin_unauthorized", JSON.stringify(badLogin.body));
+
+const apLogin = await call("POST", "/admin-panel/login", { token: "smoke-admin" });
+check("正确令牌登录成功", apLogin.status === 200, JSON.stringify(apLogin.body));
+check("下发管理会话 cookie", String(apLogin.setCookie || "").includes("umg_admin="), String(apLogin.setCookie));
+const adminCookie = String(apLogin.setCookie || "").split(";")[0];
+
+const meOk = await call("GET", "/admin-panel/me", undefined, undefined, adminCookie);
+check("带会话读 me 成功", meOk.status === 200 && meOk.body.userCount >= 3, JSON.stringify(meOk.body));
+
+const users = await call("GET", "/admin-panel/users", undefined, undefined, adminCookie);
+check("列出账号", users.status === 200 && users.body.users.length >= 3, JSON.stringify(users.body).slice(0, 160));
+check("账号带卡号", users.body.users.some((u) => Array.isArray(u.cards) && u.cards.length > 0));
+check("账号带验证器状态", users.body.users.every((u) => typeof u.totpBound === "boolean"));
+check("账号带卡数", users.body.users.every((u) => typeof u.cardCount === "number"));
+
+const panelUser = await call("POST", "/admin-panel/users", { username: "panelmade" }, undefined, adminCookie);
+check("面板建号成功", panelUser.status === 200 && panelUser.body.user.username === "panelmade", JSON.stringify(panelUser.body));
+check("面板建号返回密钥", typeof panelUser.body.totpSecret === "string" && panelUser.body.totpSecret.length >= 16);
+const panelUserId = panelUser.body.user.id;
+
+const panelCode = totp(panelUser.body.totpSecret);
+check("面板建的密钥可用", /^[0-9]{6}$/.test(panelCode), panelCode);
+
+const panelReset = await call("POST", "/admin-panel/users/" + panelUserId + "/totp-reset", {}, undefined, adminCookie);
+check("面板重置验证器", panelReset.status === 200 && panelReset.body.totpSecret !== panelUser.body.totpSecret);
+
+const panelCard = await call("POST", "/admin-panel/users/" + panelUserId + "/cards", { label: "smoke" }, undefined, adminCookie);
+check("面板发卡", panelCard.status === 200 && /^E004[0-9]{16}$/.test(String(panelCard.body.card.cardId)), JSON.stringify(panelCard.body));
+
+const panelCards = await call("GET", "/admin-panel/users/" + panelUserId + "/cards", undefined, undefined, adminCookie);
+check("面板列卡", panelCards.status === 200 && panelCards.body.cards.length === 1);
+
+const panelRevoke = await call("DELETE", "/admin-panel/cards/" + panelCard.body.card.cardId, undefined, undefined, adminCookie);
+check("面板吊销卡", panelRevoke.status === 200 && typeof panelRevoke.body.card.revokedAt === "number", JSON.stringify(panelRevoke.body));
+
+const cardGone = await call("POST", "/auth/card", { cardId: panelCard.body.card.cardId });
+check("吊销后不能登录", cardGone.status === 404, String(cardGone.status));
+
+const usersNoAuth = await call("GET", "/admin-panel/users");
+check("无会话列账号 401", usersNoAuth.status === 401, String(usersNoAuth.status));
+
+// 节流用伪造的 XFF 头, 免得把 127.0.0.1 也锁掉, 影响后续用例。
+let locked = false;
+for (let i = 0; i < 10; i++) {
+  const r = await fetch(BASE + "/admin-panel/login", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-forwarded-for": "10.9.9.9" },
+    body: JSON.stringify({ token: "wrong-" + i })
+  });
+  const j = await r.json();
+  if (j.code === "admin_locked") { locked = true; break; }
+}
+check("连续失败触发节流", locked);
+
+const logout = await call("POST", "/admin-panel/logout", {}, undefined, adminCookie);
+check("退出登录清 cookie", String(logout.setCookie || "").includes("Max-Age=0"), String(logout.setCookie));
+const meAfter = await call("GET", "/admin-panel/me", undefined, undefined, adminCookie);
+check("退出后会话失效", meAfter.status === 401, String(meAfter.status));
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 server.close();
 process.exit(fail === 0 ? 0 : 1);

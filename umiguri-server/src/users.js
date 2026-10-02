@@ -59,6 +59,23 @@ export function getUserByUsername(username) {
   return toPublic(db.prepare("SELECT * FROM users WHERE username = ?").get(username));
 }
 
+// 列出全部账号, 按建号时间倒序。管理面板用。
+// 一并带出 TOTP 绑定状态与卡数 —— 管理员一眼就能看出谁还没绑验证器。
+export function listUsers() {
+  const db = getDb();
+  const rows = db.prepare(
+    "SELECT u.*, t.confirmed_at AS totp_confirmed_at, t.created_at AS totp_created_at, " +
+    "(SELECT COUNT(*) FROM cards c WHERE c.user_id = u.id AND c.revoked_at IS NULL) AS card_count " +
+    "FROM users u LEFT JOIN totp_secrets t ON t.user_id = u.id " +
+    "ORDER BY u.created_at DESC"
+  ).all();
+  return rows.map((row) => ({
+    ...toPublic(row),
+    totpBound: row.totp_confirmed_at !== null,
+    totpIssuedAt: row.totp_created_at ?? null,
+    cardCount: row.card_count
+  }));
+}
 // 取 TOTP 凭据(内部用, 含密钥原文)
 export function getTotp(userId) {
   const db = getDb();

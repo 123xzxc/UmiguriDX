@@ -3,7 +3,8 @@
 // 三套入口, 凭据各不相同:
 //   /auth/card       游戏端 —— 卡号即登录, 无密码
 //   /panel/*         网页面板 —— 用户名 + TOTP(见 panel.js), cookie 会话
-//   /admin/*         管理 —— Bearer UMIGURI_ADMIN_TOKEN, 建号/发卡/重置验证器
+//   /admin/*         管理(接口) —— Bearer UMIGURI_ADMIN_TOKEN, 供脚本/CI 调用
+//   /admin-panel/*   管理(网页) —— 管理员令牌换 cookie 会话, 供人工操作
 // 游玩记录与房间接口仍走游戏端 JWT(游戏是唯一的产生者)。
 
 import { timingSafeEqual } from "node:crypto";
@@ -11,8 +12,8 @@ import { createRouter, notFound, badRequest } from "../lib/http.js";
 import { verifyToken } from "../lib/token.js";
 import { assertUsername, assertRoomCode, assertInt } from "../lib/validate.js";
 import { assertCardId } from "../lib/card.js";
-import { createUser, getUserById, resetTotp, updateProfile } from "../users.js";
-import { issueCard, listCards, resolveCard, revokeCard } from "../cards.js";
+import { createUser, getUserById, listUsers, resetTotp, updateProfile } from "../users.js";
+import { findCard, issueCard, listCards, resolveCard, revokeCard } from "../cards.js";
 import { otpauthUrl } from "../lib/totp.js";
 import {
   clearCookieHeader, cookieHeader, destroyPanelSession, loginWithTotp,
@@ -26,6 +27,11 @@ import {
 } from "../rooms.js";
 import { issueToken } from "../lib/token.js";
 import { renderPanel } from "../panel-ui.js";
+import { ADMIN_PAGE } from "../admin-ui.js";
+import {
+  adminCookieHeader, clearAdminCookieHeader, clientIp, destroyAdminSession,
+  loginAdmin, requireAdminSession, resolveAdminSession
+} from "../admin-panel.js";
 
 // 从 Authorization 头解析并校验 JWT(游戏端)
 function authResolver(req) {
@@ -228,6 +234,87 @@ export function buildRouter() {
     return { bests: listBests(s.userId) };
   });
 
+  // ---------- 管理面板(网页) ----------
+  // 与下面的 /admin/* 是同一批能力的两种壳:
+  //   /admin/*       给脚本和 CI 用, 每次带 Bearer 令牌;
+  //   /admin-panel/* 给人用, 令牌换一次会话 cookie, 免得反复粘贴。
+  // 会话 token 与管理员令牌是两码事 —— 换会话不影响长期令牌。
+
+  r.get("/admin-panel", ({ res }) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(ADMIN_PAGE);
+    return undefined;
+  });
+
+  r.post("/admin-panel/login", ({ req, body, res }) => {
+    const session = loginAdmin(String(body.token || "").trim(), clientIp(req));
+    res.setHeader("set-cookie", adminCookieHeader(session, config.adminSessionTtlSeconds));
+    return undefined;
+  });
+
+  r.post("/admin-panel/logout", ({ req, res }) => {
+    const s = resolveAdminSession(req);
+    if (s) destroyAdminSession(s.token);
+    res.setHeader("set-cookie", clearAdminCookieHeader());
+    return undefined;
+  });
+
+  // 探活: 页面打开时先问一次, 有效就直接进主界面。
+  r.get("/admin-panel/me", ({ req }) => {
+    requireAdminSession(req);
+    return { userCount: listUsers().length };
+  });
+
+  // 账号列表带上各自的卡, 前端点「卡号」时就不用再请求一次。
+  // 账号数量在单机部署规模下很小, 一次全给比按需拉取更省事。
+  r.get("/admin-panel/users", ({ req }) => {
+    requireAdminSession(req);
+    const users = listUsers().map((u) => ({ ...u, cards: listCards(u.id) }));
+    return { users };
+  });
+
+  r.post("/admin-panel/users", ({ req, body }) => {
+    requireAdminSession(req);
+    const username = assertUsername(body.username);
+    const { user, secret } = createUser(username);
+    return {
+      user,
+      totpSecret: secret,
+      otpauthUrl: otpauthUrl({ secret, account: username, issuer: "UMIGURI" })
+    };
+  });
+
+  r.post("/admin-panel/users/:id/totp-reset", ({ req, params }) => {
+    requireAdminSession(req);
+    const id = assertInt(params.id, "id", { min: 1 });
+    const { user, secret } = resetTotp(id);
+    return {
+      user,
+      totpSecret: secret,
+      otpauthUrl: otpauthUrl({ secret, account: user.username, issuer: "UMIGURI" })
+    };
+  });
+
+  r.get("/admin-panel/users/:id/cards", ({ req, params }) => {
+    requireAdminSession(req);
+    const id = assertInt(params.id, "id", { min: 1 });
+    if (!getUserById(id)) throw notFound("用户不存在", "user_not_found");
+    return { cards: listCards(id) };
+  });
+
+  r.post("/admin-panel/users/:id/cards", ({ req, params, body }) => {
+    requireAdminSession(req);
+    const id = assertInt(params.id, "id", { min: 1 });
+    return { card: issueCard(id, { cardId: body.cardId, label: body.label }) };
+  });
+
+  // 吊销: 路径里只有卡号, 归属从库里查。已吊销的卡也允许再查一次(幂等)。
+  r.delete("/admin-panel/cards/:cardId", ({ req, params }) => {
+    requireAdminSession(req);
+    const card = findCard(params.cardId);
+    if (!card) throw notFound("卡号不存在", "card_not_found");
+    return { card: revokeCard(card.userId, card.cardId) };
+  });
   // ---------- 管理接口(Bearer 管理员令牌) ----------
   // 建账号: 返回 TOTP 密钥 + otpauth 链接, 交给用户扫码绑定。
   r.post("/admin/users", ({ req, body }) => {

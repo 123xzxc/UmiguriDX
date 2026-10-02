@@ -120,7 +120,9 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 - [x] 网页面板 `/panel`(单文件 HTML, TOTP 登录, 发卡/改资料/看记录)
 - [x] 管理接口(`/admin/*`, Bearer 管理员令牌, 建号 + TOTP 重置)
 - [x] 宿主启动器(`keypanel/launcher.js`, 游戏加载前输卡号登录)
-- [x] 服务端冒烟测试(53 项断言, 覆盖卡号/TOTP/面板/房间全链路)
+- [x] 服务端冒烟测试(77 项断言, 覆盖卡号/TOTP/面板/管理面板/房间全链路)
+- [x] 管理面板 `/admin-panel`(网页建号/重置验证器/发卡/吊销, 令牌换会话 cookie)
+- [ ] 自助注册面板(**刻意不做** —— 谁能自助申请 TOTP 密钥, 谁就能接管任意用户名)
 - [ ] 对局上报接入
 - [ ] `openCoop` 房间入口
 - [ ] `coopLobby` 房间态与实时对手分数
@@ -132,7 +134,8 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 | --- | --- | --- |
 | 游戏端 | AIME 卡号(20 位, `E004` 开头) | `POST /auth/card` -> JWT |
 | 网页面板 | 用户名 + TOTP | `POST /panel/login` -> HttpOnly cookie |
-| 管理 | Bearer 管理员令牌 | `/admin/*` |
+| 管理(接口) | Bearer 管理员令牌 | `/admin/*` (`POST /admin/users` 等) |
+| 管理(网页) | 管理员令牌换会话 cookie | `/admin-panel/login` -> HttpOnly cookie |
 
 不开放自助注册: 账号由管理员建, TOTP 密钥随建号返回(`otpauthUrl`)。
 游戏端启动器写在 `localStorage.umg_online_token`, 游戏内 account 模块读它恢复会话。
