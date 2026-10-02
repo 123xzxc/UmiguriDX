@@ -11,7 +11,7 @@
 // 拿不准的地方都写了注释; 排障时开 UMIGURI_SOCK_TRACE=1 对照客户端行为。
 
 import { config } from "./config.js";
-import { cryptFrame, buildPushFrame, buildResponseFrame, parseFrame, Writer } from "./lib/wire.js";
+import { cryptFrame, buildPushFrame, buildResponseFrame, parseFrame, Reader, Writer } from "./lib/wire.js";
 import { acceptWebSocket } from "./lib/ws.js";
 import { getProfileFor, resolveSession } from "./store.js";
 
@@ -254,15 +254,24 @@ function dispatch(conn, frame) {
     case OP_PICK: {
       body.u16(); // 客户端固定写 0
       const diff = body.u16();
-      const musicId = body.str();
-      const meta = Buffer.from(body.rest());
+      // 载荷 = 客户端 $T() 的整段输出, 从 w0(曲目 id)开始:
+      //   str w0, str lf, str C5, str y5, f64 m5, f64 S5, i32 A5, u8 难度个数,
+      //   然后每个难度一项 { u8 0, u8 序号, str b5, str k5, str T5 }。
+      //
+      // ⚠ 必须**整段**原样回放给房间里的所有人(含选曲者自己), 不能只回放 w0 之后的部分:
+      //   客户端的 qT() 是从 w0 开始读的, 少一个字符串会让后面每个字段整体前移 2 字节,
+      //   读出来的「难度个数」变成元数据里的字节(那个字节是难度序号, 通常 3/4),
+      //   于是循环越读越远 -> 抛 RangeError: Out of bounds access。
+      //   (以前就是「读掉 w0 再回放剩余」的写法, 表现是「进房后一选曲就报错」。)
+      const chart = Buffer.from(body.rest());
+      const musicId = new Reader(chart).str(); // 只用来打日志
       room.yx = (room.yx % 0x7fffffff) + 1;
-      room.selection = { yx: room.yx, musicId, diff, meta, nx: conn.userId };
+      room.selection = { yx: room.yx, musicId, diff, meta: chart, nx: conn.userId };
       room.scores.clear();
       room.state = 0;
       respond(conn, op, seq, 0);
       const w = new Writer();
-      w.u32(room.selection.yx).u32(conn.userId).raw(meta);
+      w.u32(room.selection.yx).u32(conn.userId).raw(chart);
       const payload = w.bytes();
       for (const m of room.members.values()) push(m.conn, PUSH_PICK, payload);
       console.log("[native] 房间 #" + room.id + " 选曲 " + musicId + " (难度 " + diff + ") by " + conn.name);
@@ -443,7 +452,10 @@ function pushScore(room) {
   const w = new Writer();
   w.u32(0); // 占位: 客户端先 v3() 跳过它
   w.u32(rankSeq); // cT: 批次号(客户端按 u32 读)
-  w.u32(room.selection ? room.selection.yx : room.yx); // yx: 与 138/137 对齐的前导局号
+  // ⚠ 136 没有「局号」这一项 —— 客户端的 136 分支(v_Ks_28025)读法严格是:
+  //   跳过 1 个 u32, cT(u32), 行数(u32), 然后每行 { nx: u32, Sr: u32 }。
+  //   多写一个 u32 会让「行数」被读成局号: 局号是跨局累加的, 一旦大于人数,
+  //   客户端就会按那个数字去读行 -> 直接抛 Out of bounds access。
   w.u32(rows.length);
   for (const m of rows) {
     const cell = room.scores.get(m.userId);
@@ -611,9 +623,11 @@ function handleEnter(conn, seq, body) {
   push(conn, PUSH_ROOM_ID, rid.bytes());
 
   // 中途进房的人补发当前对局状态(1..5), 否则他在「等状态 >= N」那一步会一直等下去。
+  // 载荷必须和 pushState 一样是 { yx: u32, n1: u16 } —— 客户端的 137 分支先读 u32 局号,
+  // 只写 u16 的话第一个 v3() 就直接越界(报「二进制读取越界」)。
   if (room.state) {
     const sw = new Writer();
-    sw.u16(room.state);
+    sw.u32(room.selection ? room.selection.yx : room.yx).u16(room.state);
     push(conn, PUSH_STATE, sw.bytes());
   }
 

@@ -115,6 +115,78 @@ function clientCrypt(input, encrypt) {
   ok(cryptFrame(new Uint8Array(64), true).length === 64, "64 字节帧(超过密钥长度)不报错");
 }
 
+
+// ---- 1b. 客户端读法: 服务端推送必须能被「客户端的读法」解开 ----
+// 只对着服务端自己的 Writer 断言是不够的 —— 那只证明服务端自洽。真正要防的是
+// 「服务端写的字段表」与「客户端 iT() 里读的字段表」不一致(132 少回放 w0、136 多写
+// 一个 yx 都是这么来的)。下面这两个函数是客户端 $T()/qT() 的逐行转写
+// (index.js 4813-4844), 一旦读法与服务端不同, 这里就会对不上或直接越界。
+class CliReader {
+  constructor(buf) {
+    this.s_ = Buffer.from(buf);
+    this.U2 = 0;
+    this.kg = this.s_.length;
+    this.o_ = null;
+    this.l_ = 1;
+  }
+  get remaining() {
+    return this.kg - this.U2;
+  }
+  need(n) {
+    // 浏览器里的 DataView 越界会抛 RangeError: Out of bounds access, 这里也抛,
+    // 别让 Buffer 的「静默截断」把越界读伪装成正常的空串。
+    if (this.U2 < 0 || this.U2 + n > this.kg) throw new RangeError("Out of bounds access(客户端读越界)");
+  }
+  i3(enc) {
+    this.o_ = enc;
+    this.l_ = /^utf-16/.test(enc) ? 2 : 1;
+  }
+  o3() { this.need(1); const v = this.s_.readUInt8(this.U2); this.U2 += 1; return v; }
+  u3() { this.need(2); const v = this.s_.readUInt16LE(this.U2); this.U2 += 2; return v; }
+  _3() { this.need(4); const v = this.s_.readInt32LE(this.U2); this.U2 += 4; return v; }
+  v3() { this.need(4); const v = this.s_.readUInt32LE(this.U2); this.U2 += 4; return v; }
+  b3() { this.need(8); const v = this.s_.readDoubleLE(this.U2); this.U2 += 8; return v; }
+  Ic() {
+    if (null === this.o_) return "";
+    const n = this.u3() * this.l_;
+    this.need(n);
+    this.U2 += n;
+    return this.s_.toString("utf8", this.U2 - n, this.U2);
+  }
+}
+
+// 把服务端 Reader 剩下的字节交给「客户端读法」去解(并把服务端那侧读空)。
+function cliView(r) {
+  const view = new CliReader(r.rest());
+  r.skip(r.remaining);
+  return view;
+}
+
+// 客户端 $T(writer, chart): 选曲请求体里「曲目」那一段的写法
+function writeChart(w, c) {
+  w.str(c.w0).str(c.lf).str(c.C5).str(c.y5);
+  w.f64(c.m5).f64(c.S5).i32(c.A5);
+  const list = c.meta.map((m, i) => [m, i]).filter((row) => row[0]);
+  w.u8(list.length);
+  for (const row of list) {
+    w.u8(0).u8(row[1]).str(row[0].b5).str(row[0].k5).str(row[0].T5);
+  }
+}
+
+// 客户端 qT(reader): 132 推送里「曲目」那一段的读法 —— 注意它是从 w0 开始读的
+function readChart(r) {
+  r.i3("utf-8");
+  const c = { w0: "", lf: "", C5: "", y5: "", m5: 0, S5: 0, A5: 0, meta: [null, null, null, null, null, null] };
+  c.w0 = r.Ic(), c.lf = r.Ic(), c.C5 = r.Ic(), c.y5 = r.Ic();
+  c.m5 = r.b3(), c.S5 = r.b3(), c.A5 = r._3();
+  const n = r.o3();
+  for (let i = 0; i < n; i++) {
+    r.o3();
+    const idx = r.o3();
+    c.meta[idx] = { b5: r.Ic(), k5: r.Ic(), T5: r.Ic() };
+  }
+  return c;
+}
 // ---- 模拟客户端 ----
 class Sock {
   constructor(port) {
@@ -517,18 +589,52 @@ let guestB = 0;
 }
 
 {
-  const meta = Buffer.from([9, 8, 7, 6, 5]);
-  const req = new Writer().u16(0).u16(3).str("song_alpha").raw(meta);
+  // 选曲请求体 = u16 0 + u16 难度 + $T(曲目) —— 曲目那一段必须**整段**回放到 132 里,
+  // 只回放 w0 之后的部分会让客户端的 qT() 把所有字段往前挪(以前就是这个错)。
+  const chart = {
+    w0: "music_alpha",
+    lf: "曲名",
+    C5: "作曲家",
+    y5: "pop",
+    m5: 12.5,
+    S5: 96.25,
+    A5: 7,
+    meta: [null, null, { b5: "谱面作者", k5: "3", T5: "notes.json" }, null, null, null]
+  };
+  const req = new Writer().u16(0).u16(3);
+  writeChart(req, chart);
   const r = await a.request(4, req);
   eq(r.body.u16(), 0, "选曲结果码 0");
   const pa = await a.nextPush(132);
   const pb = await b.nextPush(132);
   const yxA = pa.u32();
   eq(pa.u32(), userId, "132 的 nx 是选曲者");
-  ok(pa.rest().equals(meta), "132 原样回放曲目元数据");
+  {
+    // 用客户端的读法解一遍: 字段必须逐一还原(含中文与 f64)
+    const ca = cliView(pa);
+    const c = readChart(ca);
+    eq(c.w0, chart.w0, "132 的 w0 是曲目 id(客户端 qT 从这里开始读)");
+    eq(c.lf, chart.lf, "132 还原 lf(中文)");
+    eq(c.C5, chart.C5, "132 还原 C5(中文)");
+    eq(c.y5, chart.y5, "132 还原 y5");
+    eq(c.m5, chart.m5, "132 还原 m5");
+    eq(c.S5, chart.S5, "132 还原 S5");
+    eq(c.A5, chart.A5, "132 还原 A5");
+    eq(c.meta[2].b5, chart.meta[2].b5, "132 还原难度 2 的 b5(中文)");
+    eq(c.meta[2].k5, chart.meta[2].k5, "132 还原难度 2 的 k5");
+    eq(c.meta[2].T5, chart.meta[2].T5, "132 还原难度 2 的 T5");
+    eq(c.meta[0], null, "没被选中的难度不占位(客户端读法下就是 null)");
+    eq(ca.remaining, 0, "132 载荷正好读完, 没有多余字节");
+  }
   eq(pb.u32(), yxA, "B 拿到的对局号 yx 与 A 相同");
   eq(pb.u32(), userId, "B 看到的也是 A 在选曲");
-  ok(pb.rest().equals(meta), "B 收到的曲目元数据一致");
+  {
+    const cb = cliView(pb);
+    const c = readChart(cb);
+    eq(c.w0, chart.w0, "B 收到的 132 里 w0 一致");
+    eq(c.meta[2].T5, chart.meta[2].T5, "B 收到的 132 里谱面信息一致");
+    eq(cb.remaining, 0, "B 的 132 载荷也正好读完");
+  }
 }
 
 {
@@ -546,15 +652,33 @@ let guestB = 0;
   // 136: 对局中「看对手分数」那条推送。以前服务端只发 138, 客户端那条分支
   // (v_Ks_28025) 永远收不到, 对局画面里就看不到别人实时涨分。
   const scoreB = await b.nextPush(136);
+  const scoreRaw = Buffer.from(scoreB.rest()); // 留一份, 后面用客户端读法重读
   eq(scoreB.u32(), 0, "136 开头那个 u32 是占位(客户端会先跳过)");
   ok(scoreB.u32() > 0, "136 带批次号 cT(客户端按 u32 读)");
-  ok(scoreB.u32() > 0, "136 带上对局号 yx");
-  eq(scoreB.u32(), 2, "136 列出 2 名玩家");
+  // 客户端的 136 分支(v_Ks_28025)读法严格是: 跳过 u32, cT(u32), 行数(u32),
+  // 每行 { nx: u32, Sr: u32 } —— 这里读出来的「行数」必须正好是人数。
+  // 以前多写了一个局号 yx, 客户端会把局号当行数: 局号跨局累加, 一旦大于人数
+  // 就会按那个数字继续读行 -> RangeError: Out of bounds access。
+  eq(scoreB.u32(), 2, "136 的行数就是房间人数(客户端拿它当循环次数)");
   eq(scoreB.u32(), userId, "136 第一行是 A");
   eq(scoreB.u32(), 888000, "136 里 A 的实时分数正确");
   const nB = scoreB.u32();
   scoreB.u32();
   eq(nB, guestB, "136 第二行是 B(分数 0)");
+  eq(scoreB.remaining, 0, "136 载荷正好读完(没有客户端会误读的多余字段)");
+  {
+    // 再用「客户端的读法」把同一帧重读一遍(客户端的 136 分支: 跳过 u32 -> cT ->
+    // 行数 -> 每行 {nx, Sr}), 行数必须正好是人数、且正好读完 —— 多一个字段就会挂。
+    const r136 = new CliReader(scoreRaw);
+    r136.v3();
+    ok(r136.v3() > 0, "136 第二项是 cT(客户端读法)");
+    eq(r136.v3(), 2, "136 第三项是行数 = 人数(客户端拿它当循环次数)");
+    eq(r136.v3(), userId, "136 第一行 nx");
+    eq(r136.v3(), 888000, "136 第一行 Sr");
+    eq(r136.v3(), guestB, "136 第二行 nx");
+    eq(r136.v3(), 0, "136 第二行 Sr");
+    eq(r136.remaining, 0, "136 按客户端读法正好读完");
+  }
 }
 
 // 137: 对局状态上报(op=19)。服务端以前在这里引用了未定义的 PUSH_STATE,
@@ -625,6 +749,8 @@ let guestB = 0;
   r.body.u32();
   await c.nextPush(130);
   const stC = await c.nextPush(137);
+  // 载荷与 pushState 一致: 先 u32 局号, 再 u16 状态(客户端的 137 分支就是这么读的)
+  ok(stC.u32() > 0, "C 收到的 137 也带局号");
   eq(stC.u16(), 5, "C 进房立刻收到当前状态 5(!=2 的 0/1 值已随 115 推高)");
   c.close();
   await new Promise((v) => setTimeout(v, 50));
