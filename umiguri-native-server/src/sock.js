@@ -31,6 +31,10 @@ export const OP_PROFILE = 23;   // tR  改名牌/称号/场墙
 export const OP_CHAT = 24;      // II  快捷聊天
 export const OP_CHAT_FREE = 25; // fL  自由文本
 export const OP_AVATAR = 114;   // 客户端来要头像/角色图(见 v_Ia_28059._C)
+// 115: 玩家角度/角色数据的分块上传(客户端 v_Ia_28059.zT 里每个待同步资源一组),
+//     载荷 [u32 YC 局号][u32 hT 曲目序号][u32 分块标志] + 数据块, 服务端原样转发。
+//     ⚠ 它不是「开局」: 推进对局状态(137)的是 op=6(开局)与 op=19(状态上报)。
+export const OP_START_115 = 115;
 
 // 服务端 -> 客户端推送
 export const PUSH_ROOM_CLOSED = 129; // {ZT}             房主解散 -> 客户端直接退房
@@ -287,6 +291,29 @@ function dispatch(conn, frame) {
       return;
     }
 
+    // 115: 不是「开局」, 而是玩家角度/角色数据的分块上传通道。
+    // 客户端 v_Ia_28059.zT 对每个等待同步的资源都发一组 115, 每块载荷是:
+    //   [u32 YC 局号][u32 hT 曲目序号][u32 分块标志(1=空数据/2|1=最后一块)] + 数据
+    // 官方服务端原样转给同房间其他人(对端在大厅里要看到别人的角度/动作),
+    // 自己回一个成功码。
+    //
+    // ⚠ 这里**必须**用「原样回放」而不是先解析再转发: 115 的载荷对老客户端也
+    //   是自由格式, 服务端解释它的内部结构只会在字段变化时把整条链路弄断。
+    //
+    // 另外先前这里把 room.state 推到 5 —— 那是猜的, 并且会让房主在**还没开局**
+    // 时状态就跳到「对局中」。真正推进状态的是 op=6(134 开局)与 op=19(上报),
+    // 那两条才调 pushState。
+    case OP_START_115: {
+      const payload = Buffer.from(body.rest());
+      respond(conn, op, seq, 0);
+      const w = new Writer();
+      w.raw(payload);
+      const out = w.bytes();
+      forEachOther(room, member, (m) => push(m.conn, OP_START_115, out));
+      trace("房间 #" + room.id + " " + conn.name + " 上传角度数据 " + payload.length + " 字节, 已转发");
+      return;
+    }
+
     case OP_FINISH: {
       const yx = currentYx();
       respond(conn, op, seq, 0);
@@ -404,14 +431,20 @@ function dispatch(conn, frame) {
   }
 }
 
-// 136: 对局中实时单人分数 —— {cT: u16 批次号, lT: [{nx: u32, Sr: u32}, ...]}。
-// cT 只是给客户端原样存着(this.oC), 不参与逻辑, 但必须递增, 方便排障。
+// 136: 对局中实时单人分数。客户端 iT 的读法(v_Ks_28025 分支)是:
+//   v3()  跳过 1 个 u32(服务端版本号)
+//   v3()  cT  批次号(u32 —— 以前这里写的是 u16, 会让后面每个字段都错位)
+//   v3()  yx  对局号
+//   v3()  行数, 然后每行 {nx: u32, Sr: u32}
+// cT 只给客户端原样存着(this.oC), 不参与逻辑, 但必须递增, 方便排障。
 function pushScore(room) {
   rankSeq = (rankSeq + 1) & 0xffff;
   const rows = [...room.members.values()];
   const w = new Writer();
-  w.u16(rankSeq);
-  w.u16(rows.length);
+  w.u32(0); // 占位: 客户端先 v3() 跳过它
+  w.u32(rankSeq); // cT: 批次号(客户端按 u32 读)
+  w.u32(room.selection ? room.selection.yx : room.yx); // yx: 与 138/137 对齐的前导局号
+  w.u32(rows.length);
   for (const m of rows) {
     const cell = room.scores.get(m.userId);
     w.u32(m.userId).u32(cell ? cell.score : 0);
@@ -420,7 +453,7 @@ function pushScore(room) {
   for (const m of rows) push(m.conn, PUSH_SCORE, payload);
 }
 
-// 137: 对局状态(1..5) —— {n1: u16}。用房间全局状态而不是「谁发的」:
+// 137: 对局状态(1..5) —— {yx: u32, n1: u16}。用房间全局状态而不是「谁发的」:
 // 客户端只关心「现在的进度到没到某个值」, 谁先到不重要, 取最大值最稳。
 function pushState(room, from, n1) {
   const next = Math.max(room.state || 0, n1 | 0);
@@ -432,6 +465,9 @@ function pushState(room, from, n1) {
   }
   room.state = next;
   const w = new Writer();
+  // 客户端 iT 的 137 分支先 v3() 读一个 u32 局号, 再读 u16 状态 ——
+  // 少写这个 u32 会让状态错位成高半字, 表现为「联机状态永远对不上」。
+  w.u32(room.selection ? room.selection.yx : room.yx);
   w.u16(room.state);
   const payload = w.bytes();
   for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);

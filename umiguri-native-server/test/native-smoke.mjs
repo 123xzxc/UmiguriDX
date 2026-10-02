@@ -122,7 +122,10 @@ class Sock {
   onMessage(raw) {
     const frame = parseFrame(Buffer.from(cryptFrame(raw, false)));
     if (!frame) return;
-    if (frame.op >= 128) {
+    // 115 既是请求码又是转发推送码, 靠「有没有人在等这个 op:seq」区分:
+    // 自己在等的那个是响应(进 pending), 其余是服务端转发给别人的(进推送队列)。
+    const isResponse = !!this.pending.get(frame.op + ":" + frame.seq);
+    if (frame.op >= 128 || (115 === frame.op && !isResponse)) {
       // ⚠ 同一个 Reader 只能交给一个消费者: 以前的写法是「既入队又投递给等待者」,
       // 于是那一帧会被消费两次 —— 第二次读到的是同一个 Reader(off 已经走到底),
       // 报 RangeError, 而且真正的「下一帧」被永远压在队列里。
@@ -525,8 +528,10 @@ let guestB = 0;
   // 136: 对局中「看对手分数」那条推送。以前服务端只发 138, 客户端那条分支
   // (v_Ks_28025) 永远收不到, 对局画面里就看不到别人实时涨分。
   const scoreB = await b.nextPush(136);
-  ok(scoreB.u16() >= 0, "136 带批次号 cT");
-  eq(scoreB.u16(), 2, "136 列出 2 名玩家");
+  eq(scoreB.u32(), 0, "136 开头那个 u32 是占位(客户端会先跳过)");
+  ok(scoreB.u32() > 0, "136 带批次号 cT(客户端按 u32 读)");
+  ok(scoreB.u32() > 0, "136 带上对局号 yx");
+  eq(scoreB.u32(), 2, "136 列出 2 名玩家");
   eq(scoreB.u32(), userId, "136 第一行是 A");
   eq(scoreB.u32(), 888000, "136 里 A 的实时分数正确");
   const nB = scoreB.u32();
@@ -540,8 +545,10 @@ let guestB = 0;
   const r = await a.request(19, new Writer().u16(3).u16(0));
   eq(r.body.u16(), 0, "上报对局状态结果码 0");
   const stA = await a.nextPush(137);
+  ok(stA.u32() > 0, "137 带上对局号 yx(客户端先读它)");
   eq(stA.u16(), 3, "137 广播回状态 3(A 自己)");
   const stB = await b.nextPush(137);
+  ok(stB.u32() > 0, "137 也带对局号");
   eq(stB.u16(), 3, "137 也广播给 B");
   // 回退: 更小的状态不应该把房间状态拉低。状态没推进 => 服务端不重复广播,
   // 所以这里断言「没有新的 137」, 而不是等一帧。
@@ -553,7 +560,41 @@ let guestB = 0;
   const r3 = await b.request(19, new Writer().u16(4).u16(0));
   eq(r3.body.u16(), 0, "B 上报状态 4 成功");
   const stB2 = await b.nextPush(137);
+  ok(stB2.u32() > 0, "137 推进到 4 时同样带对局号");
   eq(stB2.u16(), 4, "137 推进到 4");
+}
+
+// op=115 是房主「角度/角色数据通道」的分块上传 —— 客户端 v_Ia_28059.zT 里
+// 每一块都带 [u32 YC 局号][u32 hT 曲目序号][u32 分块标志], 最后一块收尾。
+// 客户端(以及所有等待方)下一步要 await 137 状态 >= 4/5, 而 137 只有服务端
+// pushState 会发 —— 以前 115 落到 default 回非 0, 房主打完第一局就卡在「等待
+// 对手」, 只好退房; 退房会解散房间, 所有人一起掉线。
+// 所以 115 只负责「回 0 + 把上行的角度数据转给同房间其他人」, 真正推进状态的
+// 是开局(134 / op=6)与状态上报(19), 那两条走 pushState。
+{
+  const wx115 = new Writer().u32(1).u32(0).u32(1).raw(Buffer.from([0xde, 0xad, 0xbe, 0xef]));
+  const r115 = await a.request(115, wx115);
+  eq(r115.body.u16(), 0, "115(角色数据块)结果码 0");
+  // B 应当收到转发的 115(与官方一致: 大厅里其他人的角度数据也要同步)。
+  const relay115 = await b.nextPush(115);
+  eq(relay115.u32(), 1, "转发的 115 带上了原样回放的局号");
+  eq(relay115.u32(), 0, "转发的 115 带上了原样回放的曲目序号");
+  eq(relay115.u32(), 1, "转发的 115 带上了原样回放的分块标志");
+  ok(relay115.rest().equals(Buffer.from([0xde, 0xad, 0xbe, 0xef])), "转发的 115 原样带回数据块");
+
+  // 开局推进靠 op=6(134)/op=19: 这里补一次 op=19 到 5, 后面的「中途进房」
+  // 用例期望的当前状态就是 5。
+  // 先排空前面 (3→4 那一步) 压下的旧帧, 再看「推进到 5」的新帧。
+  a.pushes.set(137, []);
+  b.pushes.set(137, []);
+  const r19 = await a.request(19, new Writer().u16(5).u16(0));
+  eq(r19.body.u16(), 0, "上报状态 5 结果码 0");
+  const st5a = await a.nextPush(137);
+  ok(st5a.u32() > 0, "137 带对局号");
+  eq(st5a.u16(), 5, "137 把房间状态推到 5");
+  const st5b = await b.nextPush(137);
+  ok(st5b.u32() > 0, "137 也带对局号");
+  eq(st5b.u16(), 5, "137 的状态也广播给其他玩家");
 }
 
 // 中途进房的人必须补发当前对局状态, 否则他在「等状态 >= N」那步会一直等下去。
@@ -566,7 +607,7 @@ let guestB = 0;
   r.body.u32();
   await c.nextPush(130);
   const stC = await c.nextPush(137);
-  eq(stC.u16(), 4, "C 进房立刻收到当前状态 4");
+  eq(stC.u16(), 5, "C 进房立刻收到当前状态 5(!=2 的 0/1 值已随 115 推高)");
   c.close();
   await new Promise((v) => setTimeout(v, 50));
 }
