@@ -18,7 +18,8 @@ import {
   mkOverlay, mkBox, mkTitle, mkLabel, mkInput, mkBtn, mkRow, mkHint, mkCol, onTap, setBtnDisabled,
 } from '../keypanel/uikit.js';
 import { openLauncher } from '../keypanel/launcher.js';
-import { session, api, setSession, clearSession, normalizeBase, readLS } from './session.js';
+import { session, api, setSession, clearSession, normalizeBase, readLS, maskCard } from './session.js';
+import { installNativeServer } from './native.js';
 import { diagLog } from '../core/diag.js';
 
 const POLL_MS = 1000;
@@ -65,6 +66,18 @@ function applyRoom(next) {
 
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || '';
+}
+
+// 重新把「原生联机」信息下发给游戏(window.__umgServer)。
+// 游戏侧刷卡读的就是它, 而且卡是一次性的(cardBytes 读完即清空) —— 登录/换卡后
+// 必须重下发, 否则游戏里还拿着旧卡、甚至根本没卡, 表现就是「已经登录了,
+// 游戏内却仍然提示刷卡」。
+function pushNativeServer(cfg) {
+  const hs = (window.umgr_elc && window.umgr_elc._) || null;
+  const info = installNativeServer(cfg || {}, (hs && hs.fe) || '');
+  if (info) log('原生联机 -> ' + info.host + ':' + info.port + ' 卡 ' + maskCard(info.card));
+  else log('原生联机未启用(要已登录 + 服务端地址 + 20 位 E004 卡号)');
+  return info;
 }
 
 function mkSection(title) {
@@ -207,7 +220,10 @@ async function doLogin() {
   try {
     const prev = session.user;
     const cfg = await openLauncher(normalizeBase(session.base || readLS('umg_online_base')));
-    if (cfg && cfg.user) setSession(cfg);
+    if (cfg && cfg.user) {
+      setSession(cfg);
+      pushNativeServer(cfg);
+    }
     if (cfg && cfg.user && (!prev || prev.id !== cfg.user.id)) {
       room = null;
       version = 0;
@@ -222,6 +238,7 @@ async function doLogin() {
 async function doLogout() {
   if (room) await doLeave();
   clearSession();
+  pushNativeServer(null); // 登出后撤掉, 免得游戏继续用旧卡/旧服
   setStatus('已登出');
   render();
 }
