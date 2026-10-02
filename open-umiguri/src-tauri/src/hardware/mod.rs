@@ -256,6 +256,20 @@ fn install(
     conn: serial::Connection,
     kind: Kind,
 ) -> Result<(), String> {
+    // 连上就先把灯点亮。
+    //
+    // 为什么要有这一步: 手台的点亮是固件真正就绪的标志, 而它需要主机先说话 —— 玩家反馈
+    // 「灯亮了才可以连接手台」, 说的就是这个。以前只有游戏的 LED 服务端推 SetLED 时才会
+    // 点亮, 于是「连上」和「灯亮」互相等: 灯不亮以为没连上, 没连上就不点灯。
+    // 握手是 1152 字节(96 字节 RGB 在载荷里经 0xFD 转义后翻倍), 写超时可能不够,
+    // 所以忽略错误 —— 灯没亮起来也不该让手台整体不可用。
+    let primed = match kind {
+        Kind::Affine => {
+            let _ = conn.write_air_led_affine([0xFF, 0xFF, 0xFF]); // AIR(侧)灯常亮
+            conn.write_led_affine(&[0xFFu8; 96]).is_ok() // 32 格白灯
+        }
+        Kind::Chu2Board => conn.write_led(&[0xFFu8; 96]).is_ok(),
+    };
     *st.conn.lock().unwrap() = Some(conn);
     *st.kind.lock().unwrap() = kind;
     *st.port.lock().unwrap() = Some(name);
@@ -265,14 +279,20 @@ fn install(
     let app2 = app.clone();
     let handle = thread::Builder::new()
         .name("umg-hw-input".into())
-        .spawn(move || input_loop(app2, conn2, running, kind))
+        .spawn(move || input_loop(app2, conn2, running, kind, primed))
         .map_err(|e| e.to_string())?;
     *st.input_thread.lock().unwrap() = Some(handle);
     Ok(())
 }
 
 /// 输入轮询: 按协议读输入 → 映射成 38 个档位 → 有变化才通知 JS。
-fn input_loop(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>, kind: Kind) {
+fn input_loop(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>, kind: Kind, primed: bool) {
+    // 握手的灯光帧是 1152 字节, 串口那点发送缓冲装不下, 写返回时大概还有大半在途。
+    // 立刻开始读会跟它抢锁, 所以先等一小会儿, 让帧发完 —— 这也顺便让读者不会读到
+    // 设备对握手的回包而把刚建立的解码器弄乱。
+    if primed {
+        thread::sleep(Duration::from_millis(60));
+    }
     match kind {
         Kind::Chu2Board => input_loop_poll(app, conn, running),
         Kind::Affine => input_loop_stream(app, conn, running),

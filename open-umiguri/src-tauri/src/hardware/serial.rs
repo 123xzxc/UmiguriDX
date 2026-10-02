@@ -10,7 +10,6 @@
 //! Android/iOS 无串口 API(serialport 在移动端不可用), 因此本模块在移动端为桩实现。
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 
 use crate::hardware::Kind;
@@ -77,6 +76,12 @@ const AFFINE_PROBE_WINDOW: Duration = Duration::from_secs(8);
 /// 探测期间补发开扫描的间隔。设备刚上电/DTR 刚拉高时可能还在初始化, 或者会丢掉第一次
 /// AUTO_SCAN_START, 所以要反复喊醒它 —— 但别太密, 免得设备忙着回命令顾不上推帧。
 const AFFINE_PROBE_NUDGE: Duration = Duration::from_secs(1);
+
+/// 开扫描之后, 多少没收到帧就往诊断日志里记一笔(一次探测最多记一条)。
+///
+/// 只有一个探测窗口看不出「设备根本不说话」和「设备说了、只是慢」: 前者要查线/驱动/固件,
+/// 后者等着就好。给个中间点, 日志里就能分清。
+const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
     use super::RxTrace;
     use std::time::Duration;
     use anyhow::{Context, Result};
@@ -248,6 +253,10 @@ const AFFINE_PROBE_NUDGE: Duration = Duration::from_secs(1);
             self.write_cmd(&[crate::hardware::protocol::CMD_API_LEVEL])?;
             let mut b = [0u8; 1];
             let n = self.read_exact(&mut b, Duration::from_millis(200))?;
+            // 收到字节才算设备真的开口了: 记进去, 连不上时日志里就能看到它到底回了什么。
+            if n > 0 {
+                self.note_rx(&b[..n]);
+            }
             Ok(n > 0 && b[0] == crate::hardware::protocol::API_LEVEL)
         }
 
@@ -314,20 +323,51 @@ const AFFINE_PROBE_NUDGE: Duration = Duration::from_secs(1);
             let deadline = Instant::now() + AFFINE_PROBE_WINDOW;
             let mut next_nudge = Instant::now();
             self.affine_start_scan()?;
+            let started = Instant::now();
+            // 诊断用: 设备到底有没有开口。连不上时这是唯一能分清「没插好/驱动不对」
+            // 和「说了但协议不对」的证据, 玩家贴日志时也就能一眼看懂。
+            let mut saw_any = false;
+            let mut saw_frame = false;
+            let mut quiet_logged = false;
             while Instant::now() < deadline {
                 if Instant::now() >= next_nudge {
                     let _ = self.affine_start_scan();
                     next_nudge = Instant::now() + AFFINE_PROBE_NUDGE;
                 }
+                // 补发命令也要时间(8 秒窗口里要发 8 次), 所以补发后再查一次超时,
+                // 免得设备一直不回时把窗口拖成 16 秒。
+                if Instant::now() >= deadline {
+                    break;
+                }
                 let Some(b) = self.read_byte(Duration::from_millis(20))? else {
+                    if saw_any && !quiet_logged && started.elapsed() >= AFFINE_QUIET_LOG_AFTER {
+                        quiet_logged = true;
+                        let rx = self.rx();
+                        eprintln!("[umg][hw] Affine 探测: 收到过字节, 但一直没拆出 AUTO_SCAN 帧(原始字节: {rx})");
+                    }
                     continue;
                 };
+                saw_any = true;
                 if let Some(frame) = dec.push(b) {
+                    saw_frame = true;
                     // 0x01 = 触摸(可能带天键), 0x05 = 单独上报的天键: 都是官方滑块帧协议。
                     if frame.cmd == affine::CMD_AUTO_SCAN || frame.cmd == affine::CMD_AUTO_AIR {
                         return Ok(true);
                     }
                 }
+            }
+            // 窗口走完还是没认出: 区分「设备一个字节都没说」(线/驱动/固件) 与
+            // 「说了、但拆不出 AUTO_SCAN 帧」(协议/固件版本不对) —— 要查的地方完全不同。
+            if saw_frame {
+                let rx = self.rx();
+                eprintln!("[umg][hw] Affine 探测: 拆出了帧, 但没有 AUTO_SCAN(0x01/0x05)(原始字节: {rx})");
+            } else if saw_any {
+                let rx = self.rx();
+                let n = rx.total;
+                eprintln!("[umg][hw] Affine 探测: 收到 {n} 个字节, 但没拆出完整帧(原始字节: {rx})");
+            } else {
+                let secs = AFFINE_PROBE_WINDOW.as_secs();
+                eprintln!("[umg][hw] Affine 探测: {secs}s 内一个字节都没收到 —— 查线材/驱动/供电(见 README「手台」)");
             }
             Ok(false)
         }
