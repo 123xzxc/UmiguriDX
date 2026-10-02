@@ -6456,7 +6456,15 @@ scope.Framebuffer.prototype = {
     // 字体是文字能否显示的前提: 读不到或表解析失败都会让整个界面没有字。这里必打日志
     // (不像 lp 的读不到会限流), 便于一眼区分「资源没读到」与「读到了但解析失败」。
     console.log("[umg][font] Debug.rgf " + (v_e_35049 ? "len=" + v_e_35049.byteLength : "读不到"));
-    v_e_35049 ? (this.Ph.i5 = await scope.v_Mo_28124.A3(v_e_35049), (v_e_35049 = new scope.v_Fo_28127()).W3(this.Dh), v_e_35049.O3(this.Vh.D_), v_e_35049.J3(this.Vh.$h), (v_i_35048 = new scope.v_Do_28126()).R_ = 0, v_i_35048.P_ = 127, v_i_35048.D_ = this.Ph.i5, v_i_35048.G_ = 1, v_i_35048.j_ = 1, v_e_35049.K3(v_i_35048), this.Ph.n5 = v_e_35049, v_t_35047(!0)) : v_t_35047(!1);
+    // 字体表解析失败时, this.Ph.i5 会是 null(见 A3 的 null/坏数据守卫), 而下面仍会把它塞进
+    // v_Do_28126.D_ 并挂到 this.Ph.n5。Ph.rr 的绘制循环里会 this.Ph.n5.X3(...) -> X3 里
+    // this.V_.length, this.V_ 是 null -> "undefined is not an object (evaluating 'this['V_']')"。
+    // 以前没暴露是因为 A3(null) 会先抛 Out of bounds 把这条链打断; A3 加了守卫后异常反而
+    // 后移到绘制阶段, 表现成「一刷卡/进主界面就崩」。表和字形表都不可用时干脆不挂字体轨
+    // (渲染循环有 `scope.v_k_27573 && this.Ph.n5` 保护, 只丢调试文字, 不影响正常界面)。
+    var v_umgFont = await scope.v_Mo_28124.A3(v_e_35049);
+    if (this.Ph.i5 = v_umgFont, v_umgFont && v_umgFont.h_ && v_umgFont.h_.size) (v_e_35049 = new scope.v_Fo_28127()).W3(this.Dh), v_e_35049.O3(this.Vh.D_), v_e_35049.J3(this.Vh.$h), (v_i_35048 = new scope.v_Do_28126()).R_ = 0, v_i_35048.P_ = 127, v_i_35048.D_ = v_umgFont, v_i_35048.G_ = 1, v_i_35048.j_ = 1, v_e_35049.K3(v_i_35048), this.Ph.n5 = v_e_35049;else if (v_umgFont) console.log("[umg][font] 字形表为空(纹理表 " + v_umgFont.Mf.length + " 张), 跳过字体轨");
+    v_t_35047(!1);
   }
 }, scope.Renderer.prototype = {
   nt: function (v_t_35050, v_i_35051) {
