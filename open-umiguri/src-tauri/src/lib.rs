@@ -7,6 +7,7 @@ mod hardware;
 mod handshake;
 mod paths;
 mod protocol;
+mod relay;
 mod stats;
 
 use std::sync::{Arc, Mutex};
@@ -183,6 +184,17 @@ async fn fetch_json(
     .map_err(|e| e.to_string())
 }
 
+// 联机会话的本地 TCP 中继: 游戏侧直连 ws://<服务端>:8101/sock 在 macOS 的 WKWebView 里
+// 会被 ATS/混合内容拦掉(见 relay.rs 的注释), 于是宿主在 127.0.0.1 上开一个透传端口,
+// 游戏连 loopback(不被拦), 由 Rust 转发到真正的服务端。返回本地端口。
+#[tauri::command]
+fn sock_relay(relay_pool: tauri::State<'_, relay::RelayPool>, host: String, port: u16) -> Result<u16, String> {
+    if host.is_empty() || port == 0 {
+        return Err("缺少 host/port".into());
+    }
+    relay_pool.start(&host, port).map_err(|e| e.to_string())
+}
+
 // 重启应用(授权后需要完整重扫追加数据)
 #[tauri::command]
 fn restart_app_cmd() -> bool {
@@ -201,6 +213,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(hardware::HardwareState::default())
+        .manage(relay::RelayPool::default())
         .setup(|app| {
             // 桌面: release 把存档放「文档/UMIGURI」、资源读打包目录;
             // debug 用仓库内的 dist/userdata 与 assets/。Android 的可写层由
@@ -415,6 +428,7 @@ pub fn run() {
             open_url,
             fetch_text,
             fetch_json,
+            sock_relay,
             window_fullscreen,
             toggle_devtools,
             hw_init,

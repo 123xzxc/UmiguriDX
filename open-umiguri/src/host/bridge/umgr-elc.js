@@ -99,6 +99,23 @@ export const umgrElc = {
     post(path, body, token) { return this.request('POST', path, body, token); },
     patch(path, body, token) { return this.request('PATCH', path, body, token); },
     delete(path, token) { return this.request('DELETE', path, null, token); },
+
+    // /sock(游戏自带联机客户端的房间 WebSocket)的本地 TCP 中继。
+    //
+    // 为什么需要: macOS 的 WKWebView 会拦掉从 tauri:// 页面发起的明文 ws://(与 /1/* 的
+    // http 同一条命, 见上面 requestUrl 的注释), 而 loopback(127.0.0.1)属于
+    // "potentially trustworthy", 不会被拦 —— 游戏自带的 LED 客户端连 ws://localhost:8090
+    // 一直是通的(实机验证过)。所以宿主在 127.0.0.1 上开一个字节透传端口(Rust 侧
+    // relay.rs), 游戏连 loopback, 由宿主转发到真正的服务端。
+    // 返回本地端口; 失败返回 0(游戏侧据此退回直连, 不会因为中继没起来就连不上)。
+    async sockRelay(host, port) {
+      try {
+        const local = await invoke('sock_relay', { host: String(host || ''), port: Number(port) || 0 });
+        return typeof local === 'number' && local > 0 ? local : 0;
+      } catch (e) {
+        return 0;
+      }
+    },
   },
   si: {
     Vu: async () => ({}),
@@ -121,7 +138,13 @@ export const umgrElc = {
     d4: async () => {},
     a4: async () => {},
     t2: async () => false,
-    sa: async () => null,
+    // sa: 联机房间入口前的「服务端可用性检查」。游戏侧 v_nr_27925 的 v_It_29787
+    // (建房/进房入口)在连 /sock 之前 await 它, 判据是
+    //   null === result || 0 !== result.status  ->  弹 errorNetworkError 并 return
+    // —— 命中就**永远走不到** Fx()/Bx()(建房/进房)那一步, 日志里连一条联机记录都不会有。
+    // 这里原来恒返回 null, 就是「游戏内 CO-OP 一点就提示网络错误、且左上角和控制台没有
+    // 任何 CO-OP 相关输出」的根因。官方宿主的语义是「检查通过」(status 0)。
+    sa: async () => ({ status: 0 }),
   },
   g4: {
     x4: async (cb) => {

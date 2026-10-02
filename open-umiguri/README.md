@@ -97,6 +97,7 @@ open-umiguri/
 | `bundle.rs` | 子树批量读取(`fs_bundle_tree`)与子树签名(曲库缓存失效判断) |
 | `archive.rs` | 归档: 解包目录按需合成字节(dev) + 打包态 `.una/.arc` **文件**内条目读取(release/Android) |
 | `protocol.rs` | URI 解析、MIME 推断 |
+| `relay.rs` | 联机 `/sock` 的本地 TCP 中继(绕开 macOS WKWebView 对明文 `ws://` 的拦截, 见 `ONLINE.md` 7.6) |
 | `handshake.rs` | `handshake` / `diag` |
 | `android.rs` | Android 数据根、APK Asset 只读、权限、重启 |
 | `hardware/*` | 手台与灯光: `serial.rs`(串口 + 协议识别)、`protocol.rs`(chu2board 0xB0/0xAF/0xB1/0xB2)、`affine.rs`(Affine_IO / 官方滑块板帧协议)、`mapping.rs`(档位↔灯光映射)、`led_server.rs`(UMIGURI LED WebSocket 服务端) |

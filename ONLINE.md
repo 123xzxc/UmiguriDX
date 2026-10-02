@@ -306,3 +306,41 @@ window.__umgServer = {
 
 `umiguri-native-server` 侧开 `UMIGURI_SOCK_TRACE=1` / `UMIGURI_NATIVE_HTTP_TRACE=1`
 可以把每一帧操作码与每个 HTTP 请求打出来, 是排障的第一手段。
+
+### 7.6 「CO-OP 一点就报网络错误」的两个坑(2026-10-03 修)
+
+**坑一: 宿主桥的 `si.sa` 是个恒返回 `null` 的桩。**
+
+游戏侧 `modules/v_nr_27925` 的 `v_It_29787`(建房/进房入口)在连 `/sock` **之前**有一道门槛:
+
+```js
+let v_i_29999 = await scope.systemMisc.sa();
+if (null === v_i_29999 || 0 !== v_i_29999.status) return ...弹 errorNetworkError...;
+```
+
+而 `si` 这一组桥桩里, 只有 `sa` 返回 `null`(`host/bridge/umgr-elc.js`), 于是判据恒命中:
+**一点 CO-OP 就弹「网络错误」, `Fx()`/`Bx()` 根本不会执行**, 日志里连一条联机记录都没有 ——
+看起来像「联机代码没跑」, 实际是卡在第一行。改成 `{ status: 0 }`(官方宿主的语义是「检查通过」)。
+
+排障时 Co-op 入口现在会打一行 `[umg][coop] sa() -> status=0 (建房)` 与
+`[umg][coop] 建房 -> 0 (0 成功 / -1 网络 / -2 版本 / -10 重复登录)`。
+
+**坑二: macOS 的 WKWebView 拦掉明文 `ws://`。**
+
+`/1/*` 的 http 早就改走宿主 Rust 桥了(见 7.2), 但 `/sock` 是 WebSocket, 走的是 WebView 自己
+的 `new WebSocket("ws://<服务端>:8101/sock")` —— macOS 上同样被拦(和当初 http 一条命), 现象是
+「宿主登录一切正常, 一进房间就报错」。loopback 属于 "potentially trustworthy" 不会被拦
+(游戏自带的 LED 客户端连 `ws://localhost:8090` 一直是通的, 实机验证过), 所以:
+
+- Rust 侧 `src-tauri/src/relay.rs`: 在 `127.0.0.1:0` 上开一条**纯 TCP 透传**(不解析
+  WebSocket, 握手/帧/心跳端到端原样走), 由命令 `sock_relay(host, port)` 返回本地端口,
+  同一目标复用同一条中继;
+- 游戏侧 `v_Pa_28060.qu`: **先直连, 直连失败(4s 内没 open)才问宿主拿中继端口**再连
+  `ws://127.0.0.1:<port>/sock`。Windows(WebView2)直连正常, 依然走原路, 行为不变。
+
+日志: `[umg][coop] /sock 直连 <url>` → `直连成功` / `直连失败, 改走宿主中继 <url>` →
+`中继连接成功`。服务端那边则能看到 `[umg][relay] /sock 中继 127.0.0.1:<port> -> <host>:<port>`
+(宿主 stderr)。
+
+上面这条链路修完, 7.5 的「建房 / 6 位房间号加入 / 准备 / 开局 / 对手实时分数」才算真的能跑。
+

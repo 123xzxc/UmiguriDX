@@ -4508,11 +4508,50 @@ scope.v_Ia_28059.prototype = {
   }
 }, scope.v_Pa_28060.prototype = {
   qu: async function (v_t_34010, v_i_34011, v_e_34012) {
-    let v_n_34013 = new WebSocket((v_e_34012 ? "wss" : "ws") + "://" + v_t_34010 + ":" + v_i_34011 + "/sock");
-    v_n_34013.binaryType = "arraybuffer";
-    v_e_34012 = await new Promise(v_t_34014 => {
-      v_n_34013.onopen = () => v_t_34014(!0), v_n_34013.onerror = () => v_t_34014(!1);
-    });
+    // /sock 连接。顺序永远是「先直连, 失败了再改走宿主中继」:
+    //   Windows(WebView2)直连一直正常, 保持原路;
+    //   macOS 的 WKWebView 会拦掉从 tauri:// 页面发起的明文 ws://(和 /1/* 的 http 一样),
+    //   拦掉时改走宿主在 127.0.0.1 上开的 TCP 中继(loopback 不被拦, 见 host/bridge/
+    //   umgr-elc.js 的 online.sockRelay 与 src-tauri/src/relay.rs)。
+    let v_n_34013 = await async function () {
+      let v_umgAttempt = async v_umgUrl => {
+        let v_umgWs = null;
+        try {
+          v_umgWs = new WebSocket(v_umgUrl);
+        } catch (v_umgErr) {
+          return null;
+        }
+        v_umgWs.binaryType = "arraybuffer";
+        return await new Promise(v_umgRes => {
+          var v_umgTimer = 0;
+          let v_umgDone = !1;
+          let v_umgFinish = v_umgOk => {
+            v_umgDone ? 0 : (v_umgDone = !0, clearTimeout(v_umgTimer), v_umgWs.onopen = void 0, v_umgWs.onerror = void 0, v_umgOk ? v_umgRes(v_umgWs) : (v_umgWs.onclose = void 0, v_umgWs.close(), v_umgRes(null)));
+          };
+          v_umgTimer = setTimeout(() => v_umgFinish(!1), 4e3), v_umgWs.onopen = () => v_umgFinish(!0), v_umgWs.onerror = () => v_umgFinish(!1);
+        });
+      };
+      let v_umgScheme = v_e_34012 ? "wss" : "ws",
+        v_umgDirect = v_umgScheme + "://" + v_t_34010 + ":" + v_i_34011 + "/sock";
+      console.log("[umg][coop] /sock 直连 " + v_umgDirect);
+      let v_umgWs = await v_umgAttempt(v_umgDirect);
+      if (v_umgWs) return console.log("[umg][coop] /sock 直连成功"), v_umgWs;
+      let v_umgBridge = window.umgr_elc && window.umgr_elc.online;
+      if (!v_umgBridge || !v_umgBridge.sockRelay) return console.log("[umg][coop] /sock 直连失败, 宿主没有中继接口"), null;
+      let v_umgLocal = 0;
+      try {
+        v_umgLocal = await v_umgBridge.sockRelay(v_t_34010, v_i_34011);
+      } catch (v_umgErr2) {
+        v_umgLocal = 0;
+      }
+      if (!v_umgLocal) return console.log("[umg][coop] /sock 直连失败, 宿主中继端口没拿到"), null;
+      let v_umgRelay = v_umgScheme + "://127.0.0.1:" + v_umgLocal + "/sock";
+      console.log("[umg][coop] /sock 直连失败, 改走宿主中继 " + v_umgRelay);
+      v_umgWs = await v_umgAttempt(v_umgRelay);
+      return console.log(v_umgWs ? "[umg][coop] /sock 中继连接成功" : "[umg][coop] /sock 中继也失败了"), v_umgWs;
+    }();
+    v_e_34012 = !!v_n_34013;
+    if (!v_e_34012) return scope.v_Es_28010;
     return v_n_34013.onopen = void 0, v_n_34013.onerror = void 0, v_e_34012 ? (v_n_34013.onmessage = v_t_34015 => {
       var v_i_34016 = performance.now(),
         v_e_34017 = new scope.v_Po_28121(scope.v_ic_28200(new Uint8Array(v_t_34015.data), !1));
