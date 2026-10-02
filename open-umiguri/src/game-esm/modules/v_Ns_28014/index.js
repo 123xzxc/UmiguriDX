@@ -2,37 +2,42 @@
 // 由 tools/modularize-game.mjs 生成: 原游戏 IIFE 内的模块 IIFE。
 // 依赖通过 scope 注入(见 runtime/scope.js)。
 
-// 本局判定数(JUSTICE CRITICAL / JUSTICE / ATTACK / MISS)。
-// 游戏内计分统计在 gameCore 私有的 v_U_30262.Ta 上, 这里读 gameCore 暴露的实时快照
-// (scope.gameCore.judgeStats); 取不到就返回 null, 让服务端按 0 处理 ——
-// 宁可少显示, 也不要因为取不到数就中断成绩上传。
-scope.__umgJudgeOf = function () {
-  try {
-    var gc = scope.gameCore;
-    var st = gc && gc.judgeStats ? gc.judgeStats() : null;
-    if (!st || !st.tr) return null;
-    return {
-      // JUSTICE CRITICAL / JUSTICE / ATTACK / MISS(结算面板左侧四个数)。
-      justiceCritical: st.tr.Lr | 0,
-      justice: st.tr.Er | 0,
-      attack: st.tr.Fr | 0,
-      miss: st.tr.Br | 0,
-      // LATE / FAST(面板右下角, Ta.Jr.Wr = FAST, Ta.Jr.Kr = LATE)。
-      late: st.jr ? st.jr.Kr | 0 : 0,
-      fast: st.jr ? st.jr.Wr | 0 : 0,
-      maxCombo: st.kr | 0,
-      noteCount: st.mr | 0,
-      // TAP / HOLD / SLIDE / AIR / FLICK(面板右侧, 与结算同源: Ta.Mr)。
-      // 每一项都带: 已命中数 hits、总物量 total、判定(C/JC/A/MISS)细分。
-      lanes: st.lanes || null
-    };
-  } catch (v_e_33835) {
-    return null;
-  }
-};
-
 export function createV_Ns_28014(scope) {
   let v_r_33807 = !1;
+
+  // 本局判定数(JUSTICE CRITICAL / JUSTICE / ATTACK / MISS、FAST/LATE、各曲种命中)。
+  // 游戏内计分统计在 gameCore 私有的 v_U_30262.Ta 上, 这里读 gameCore 暴露的实时
+  // 快照(scope.gameCore.judgeStats); 取不到就返回 null, 让服务端按 0 处理 ——
+  // 宁可少显示, 也不要因为取不到数就中断成绩上传。
+  //
+  // ⚠ 必须定义在工厂函数**内部**: 放模块顶层的话, scope 是模块作用域的裸名字,
+  //   而模块代码会被 esbuild 包进一个 IIFE(浏览器里 eval 载入)。自由变量在
+  //   直接 eval 下能侥幸命中全局, 但混淆器只重命名它认识的那个 scope(工厂参数),
+  //   顶层的裸 scope 会被原样留下 -> 运行时 "Can't find variable: scope"。
+  scope.__umgJudgeOf = function () {
+    try {
+      var gc = scope.gameCore;
+      var st = gc && gc.judgeStats ? gc.judgeStats() : null;
+      if (!st || !st.tr) return null;
+      return {
+        // JUSTICE CRITICAL / JUSTICE / ATTACK / MISS(结算面板左侧四个数)。
+        justiceCritical: st.tr.Lr | 0,
+        justice: st.tr.Er | 0,
+        attack: st.tr.Fr | 0,
+        miss: st.tr.Br | 0,
+        // LATE / FAST(面板右下角, Ta.Jr.Wr = FAST, Ta.Jr.Kr = LATE)。
+        late: st.jr ? st.jr.Kr | 0 : 0,
+        fast: st.jr ? st.jr.Wr | 0 : 0,
+        maxCombo: st.kr | 0,
+        noteCount: st.mr | 0,
+        // TAP / HOLD / SLIDE / AIR / FLICK(面板右侧, 与结算同源: Ta.Mr)。
+        // 每一项都带: 已命中数 hits、总物量 total、判定(C/JC/A/MISS)细分。
+        lanes: st.lanes || null
+      };
+    } catch (v_e_33835) {
+      return null;
+    }
+  };
   return {
     ue: function () {
       v_r_33807 = !1, scope.recordsStore.ue();

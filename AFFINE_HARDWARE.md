@@ -122,6 +122,25 @@ FF 01 21 <32 字节压力> <1 字节天键> E0 00
 | `mapping.rs` | 通道 ↔ 档位映射、灯光 96 字节组装、`LedOrder` |
 | `led_server.rs` | UMIGURI 的 LED WebSocket 服务端 → 手台灯光帧(另含 AIR 灯去重) |
 
+### 4.1b Android(USB Host)
+
+Android 没有 `/dev/*` 串口, 手台要走 **USB Host + bulkTransfer**。这条通道在官方
+Tauri 工程里是默认缺的, 需要自己接:
+
+| 步骤 | 要点 |
+|---|---|
+| 权限 | `AndroidManifest.xml` 必须有 `<uses-feature android:name="android.hardware.usb.host" />`。缺它时系统**不会弹 USB 授权框**, `UsbManager.openDevice()` 直接返回 `null`。 |
+| 枚举 | `UsbManager.getDeviceList()`, 按 `getInterfaceClass()==0x0A`(CDC Data) 优先认手台, 排掉 HUB(0x09)/大容量存储(0x08)。 |
+| 打开 | `openDevice()` 返回 null ⇒ 没授权(提示用户勾「一律允许」) 或被内核驱动占用。 |
+| 端点 | 找该接口下的 **BULK** 端点(type==2), `getDirection()==0` 是 OUT, `==128` 是 IN。 |
+| 声明 | `claimInterface(iface, true)`; 失败说明内核 USB 串口驱动占着, 要换 OTG 线/口。 |
+| DTR | CDC `controlTransfer(0x21, 0x22, 1, ifaceId, null, 0, 200)` 补发 DTR —— 和桌面端拉 DTR 等价, 少了它固件不开口。 |
+| 线程 | **JNIEnv 不能跨线程保存**: 每次收发都 `vm.attach_current_thread()` 重新拿。 |
+| 读法 | 固定开一个长度足够的 buffer(如 64B) bulk 读, 只把**第一个字节**交给流式 `Decoder`, 其余仍记进原始字节环形缓冲做诊断。 |
+
+其余协议部分(组帧/转义/拆帧/命令/灯光)与桌面**完全共用** `affine.rs`, 不重复实现。
+UmiguriDX 里落在 `serial.rs` 的 `mod imp { #[cfg(target_os = "android")] ... }`。
+
 ### 4.2 时序
 
 ```text
@@ -215,6 +234,8 @@ gcc .\test.c .\serialslider.c -o chuni_test.exe -lsetupapi
 | 红蓝颜色反了 | 灯色字节序 B/R/G(§4.4) |
 | 手离开时认为按着 | 把压力 `== 0` 当「没按」了, 实测空闲是 `0xFE` |
 | 只有触摸没有天键 | 只处理了 `AUTO_SCAN(size=33)`, 没处理单独的 `0x05` |
+| Android 上 openDevice 返回 null | 没声明 `android.hardware.usb.host`, 或用户没勾「一律允许」|
+| Android 上设备在但读不到 | 忘了 claimInterface / 忘了补发 DTR / 枚举到的是 HUB 而非手台 |
 
 ## 7. 需要固件作者确认的点
 

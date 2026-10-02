@@ -57,6 +57,17 @@ if (missing.length) {
   changed = true;
 }
 
+// 1.5) USB Host: 手台走 USB-OTG, 必须声明 uses-feature。缺它时 Android 不会弹
+//      USB 权限框, openDevice() 直接返回 null —— 玩家看到的是「安卓无法使用手台」。
+const usbFeature = '<uses-feature android:name="android.hardware.usb.host" />';
+if (!xml.includes('android.hardware.usb.host')) {
+  const mf = xml.match(/<manifest\b[^>]*>/);
+  if (mf) {
+    xml = xml.slice(0, mf.index + mf[0].length) + eol + '    ' + usbFeature + eol + xml.slice(mf.index + mf[0].length);
+    changed = true;
+  }
+}
+
 // 2) <application android:requestLegacyExternalStorage="true">: API 29 上维持旧的
 //    分区存储行为(API 30+ 无影响, 但对 29 是必需的)。
 if (!xml.includes('requestLegacyExternalStorage') && /<application\s/.test(xml)) {
@@ -72,6 +83,10 @@ if (changed) {
 }
 
 // 复核: 逐项确认都写进去了(改动幂等, 可反复跑)。
+if (!xml.includes('android.hardware.usb.host')) {
+  console.error('patch-android-perms: 缺少 android.hardware.usb.host !');
+  process.exit(1);
+}
 for (const [name] of perms) {
   if (!xml.includes('android:name="android.permission.' + name + '"')) {
     console.error('patch-android-perms: 缺少 ' + name + ' !');

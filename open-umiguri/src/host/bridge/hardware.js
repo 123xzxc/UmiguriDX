@@ -13,7 +13,7 @@ import { tryInvoke } from '../core/invoke.js';
 import { diagLog } from '../core/diag.js';
 import { handshake } from './handshake.js';
 
-const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
 let lastLanes = '';
 
@@ -64,7 +64,9 @@ export async function setupHardware(cfg) {
   installHardwareApi();
   const hw = (cfg && cfg.hardware) || {};
   const ledPort = (cfg && cfg.ledPort) || handshake.R || 8090;
-  const autoConnect = hw.autoConnect === undefined ? !IS_MOBILE : !!hw.autoConnect;
+  // 移动端默认也自动探测: Android 走 USB Host bulk(见 serial.rs 的 android imp),
+  // 手台插上 OTG 就能连; iOS 没有串口/USB Host 通道, 保持不自动连以免白等 8s 探测。
+  const autoConnect = hw.autoConnect === undefined ? !IS_IOS : !!hw.autoConnect;
   // protocol: 'chu2board' | 'affine' | 空 = 自动识别(见 src-tauri/src/hardware/serial.rs)
   const protocol = hw.protocol || null;
   const ok = await tryInvoke(

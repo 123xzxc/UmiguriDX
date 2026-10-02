@@ -121,8 +121,11 @@ open-umiguri/
 }
 ```
 
-- `autoConnect`: 启动时自动探测并连接(桌面默认开,移动端默认关)。
-- `port`: 固定串口名(Windows `COM3`、macOS `/dev/cu.usbmodem*`);留空则遍历所有串口自动探测。
+- `autoConnect`: 启动时自动探测并连接(桌面与 **Android** 默认开;iOS 没有串口/USB Host 通道,默认关)。
+- Android 走 **USB Host + bulkTransfer**(不是 `/dev/*` 串口):插上 OTG 后系统弹「允许访问该 USB 设备」,
+  勾「一律允许」即可;`AndroidManifest.xml` 由 `npm run android:perms` 补上 `android.hardware.usb.host`
+  (缺它系统不会弹框,`openDevice()` 直接返回 null)。协议解析与桌面共用 `affine.rs`,不重复实现。
+- `port`: 固定串口名(Windows `COM3`、macOS `/dev/cu.usbmodem*`、Android `usb:vid:pid#deviceId`);留空则遍历自动探测。
 - `protocol`: `auto`(默认)/ `chu2board` / `affine`,探测不到时可强制指定。
 - `ledOrder`: 灯光字节序 `rgb|bgr|grb|brg|gbr|rbg`(默认 `brg`,即 3 字节按 设备 B,R,G 解释)。
 
