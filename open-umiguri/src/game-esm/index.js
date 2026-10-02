@@ -4118,7 +4118,7 @@ scope.v_Hs_28017.prototype = {
     } else if (v_i_33880 === scope.v_aa_28037) v_e_33881.nx !== scope.v_oe_27649.sx() && this.iR(v_e_33881.nx);else if (v_i_33880 === scope.v_Vs_28021) {
       v_t_33882 = new scope.v_Gs_28015();
       v_t_33882.nx = v_e_33881.nx, v_t_33882.yx = v_e_33881.yx, v_t_33882.ng = v_e_33881.ng, v_t_33882.Jx = "cjkt:" + v_t_33882.yx, v_t_33882.Mx = v_e_33881.nx === scope.v_oe_27649.sx(), this.Ix.set(v_t_33882.yx, v_t_33882), v_e_33881.nx === scope.v_oe_27649.sx() ? (this.Px = v_e_33881.yx, this.jC(), this.nT(v_t_33882.nx)) : (scope.renderer.Yt.Zt[v_t_33882.Jx] = scope.renderer.Yt.Mf["textures\\txDummyJacket.dds"], this.eR(v_t_33882.yx));
-    } else if (v_i_33880 === scope.v_Xs_28023) this.GC !== v_e_33881.yx && (this.nT(v_e_33881.nx), this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te), v_e_33881.nx === scope.v_oe_27649.sx()) && (this.Px = v_e_33881.yx);else if (v_i_33880 === scope.v_zs_28024) this.GC !== v_e_33881.yx && this.sT(v_e_33881.nx);else if (v_i_33880 === scope.v_Zs_28028) this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te);else if (v_i_33880 === scope.v_Ys_28026) this.sP = v_e_33881.n1, console.log("[umg][coop] 137 收到: 房状态 sP=" + this.sP + " (本地 137 等待值 DC=" + this.DC + ")"), this.DC === v_e_33881.n1 && (console.log("[umg][coop] 137 唤醒了等 " + v_e_33881.n1 + " 的人"), v_e_33881.n1 === scope.v_ha_28044 && this.aT(), this.FC) && (this.FC(!0), this.FC = void 0);else if (v_i_33880 === scope.v_Qs_28030) this.aP = v_e_33881.n1, this.nP === v_e_33881.n1 && this.rP && (this.rP(!0), this.rP = void 0);else if (v_i_33880 === scope.v_qs_28027) {
+    } else if (v_i_33880 === scope.v_Xs_28023) this.GC !== v_e_33881.yx && (this.nT(v_e_33881.nx), this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te), v_e_33881.nx === scope.v_oe_27649.sx()) && (this.Px = v_e_33881.yx);else if (v_i_33880 === scope.v_zs_28024) this.GC !== v_e_33881.yx && this.sT(v_e_33881.nx);else if (v_i_33880 === scope.v_Zs_28028) this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te);else if (v_i_33880 === scope.v_Ys_28026) this.sP = v_e_33881.n1, console.log("[umg][coop] 137 收到: 房状态 sP=" + this.sP + " (本地 137 等待值 DC=" + this.DC + ")"), this.DC === v_e_33881.n1 && (console.log("[umg][coop] 137 唤醒了等 " + v_e_33881.n1 + " 的人"), v_e_33881.n1 === scope.v_ha_28044 && this.aT(), this.FC) && (this.FC(!0), this.FC = void 0);else if (v_i_33880 === scope.v_Qs_28030) this.aP = v_e_33881.n1, console.log("[umg][coop] 141 收到: 准备 aP=" + this.aP + " (本地 iP 等待值 nP=" + this.nP + ")"), this.nP === v_e_33881.n1 && this.rP && (console.log("[umg][coop] 141 唤醒了等 " + v_e_33881.n1 + " 的 iP"), this.rP(!0), this.rP = void 0);else if (v_i_33880 === scope.v_qs_28027) {
       this.aC = v_e_33881.oT;
       for (var v_n_33883 of v_e_33881.lT) {
         var v_r_33884 = this.tC(v_n_33883.nx);
@@ -4764,7 +4764,7 @@ scope.v_Ia_28059.prototype = {
         uT: v_s_34037
       })) : v_t_34032 === scope.v_na_28034 || v_t_34032 === scope.v_ra_28035 ? this.EC(v_t_34032, {
         fT: v_i_34033
-      }) : v_t_34032 === scope.v_Qs_28030 ? (v_r_34036 = v_i_34033.u3(), this.EC(v_t_34032, {
+      }) : v_t_34032 === scope.v_Qs_28030 ? (v_r_34036 = v_i_34033.u3(), console.log("[umg][coop] 网络层收到 141 准备状态 n=" + v_r_34036), this.EC(v_t_34032, {
         n1: v_r_34036
       })) : v_t_34032 === scope.v_ta_28031 ? (v_e_34034 = new scope.v_Us_28016(), v_i_34033.i3("utf-8"), v_e_34034.nx = v_i_34033.v3(), v_e_34034.TC = v_i_34033.Ic(), v_e_34034.MC = v_i_34033.u3(), v_e_34034.RC = v_i_34033.Ic(), this.EC(v_t_34032, {
         Hx: v_e_34034

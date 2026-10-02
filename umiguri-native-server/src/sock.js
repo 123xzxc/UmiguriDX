@@ -182,6 +182,9 @@ function respond(conn, op, seq, code, payload) {
 
 function push(conn, op, payload) {
   feedSeq = (feedSeq + 1) & 0xffffffff;
+  // 发包也打一条 trace: 排障时「收包有、发包没有」和「根本没发」是两种完全不同的
+  // 故障(前者看客户端解码, 后者看服务端分支)。以前只有入站 trace, 定位要猜。
+  trace(conn.remote + " -> op=" + op + " seq=" + feedSeq + " 载荷 " + (payload ? payload.length : 0) + " 字节");
   conn.ws.send(cryptFrame(buildPushFrame(op, feedSeq, payload), true));
 }
 

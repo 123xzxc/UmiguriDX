@@ -11,7 +11,7 @@
 
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dbDir = resolve(here, "../data");
@@ -1127,6 +1127,39 @@ await new Promise((r) => setTimeout(r, 50));
 await new Promise((r) => server.close(r));
 
 console.log("");
+// ============================================================================
+// 客户端分支完整性静态回归(不需要跑游戏):
+//   v_Hs_28017.iT 是 /sock 推送的总入口, 每条推送码都必须有分支, 否则那一帧会被
+//   最后的 else 静默丢掉。真机上「iP(1) 等待中 aP=0」就是 141 这一支缺失造成的 ——
+//   服务端发了 141, 客户端收到了, 但没人处理, aP 永远是 0, iP 挂的 Promise 永不 resolve。
+//   以后再加/删推送码时, 这份表会直接报出来。
+{
+  const src = readFileSync(new URL("../../open-umiguri/src/game-esm/index.js", import.meta.url), "utf8");
+  const iT = src.slice(src.indexOf("  iT: function (v_i_33880, v_e_33881) {"), src.indexOf("  ZC: function (v_t_33904) {"));
+  ok(iT.length > 500, "取到了 v_Hs_28017.iT 函数体");
+  // 每条推送码 -> 它必须写的那块状态。
+  const required = [
+    ["130", "v_js_28019", "加入房间(PUSH_JOIN)"],
+    ["132", "v_Vs_28021", "选曲(PUSH_PICK)"],
+    ["134", "v_Xs_28023", "开局(PUSH_PLAY)"],
+    ["135", "v_zs_28024", "结束(PUSH_DONE)"],
+    ["136", "v_Ks_28025", "实时分数(PUSH_SCORE)"],
+    ["137", "v_Ys_28026", "对局状态(PUSH_STATE) -> sP, 服务 Tx()"],
+    ["138", "v_qs_28027", "排行榜(PUSH_RANK)"],
+    ["141", "v_Qs_28030", "准备(PUSH_ALLREADY) -> aP, 服务 iP()"],
+    ["143", "v_ta_28031", "资料(PUSH_PROFILE)"],
+    // 144(对局内聊天)不在这一层: 它由 gameCore 的 v_Gi_30328 处理, 见 7.11 (2)。
+    ["226", "v_na_28034", "信令(WebRTC SDP/ICE)"],
+    ["227", "v_ra_28035", "资源数据块"],
+  ];
+  for (const [code, sym, what] of required) {
+    ok(iT.includes(sym), "客户端 iT 有 " + code + " 分支 (" + what + ")");
+  }
+  // 141 必须真的写 aP 并唤醒 rP —— 这两个字段是 iP() 的全部依赖。
+  ok(/v_Qs_28030\)[^]*?this\.aP = /.test(iT) || /v_Qs_28030[^;]*this\.aP = /.test(iT), "141 分支把状态写进 this.aP");
+  ok(/v_Qs_28030[^]*?this\.nP === [^]*?this\.rP/.test(iT), "141 分支会唤醒 iP 挂的 rP");
+}
+
 console.log("通过 " + pass + " 项, 失败 " + fail + " 项");
 if (fail) {
   for (const f of failures) console.log("  x " + f);
@@ -1134,3 +1167,4 @@ if (fail) {
 }
 console.log("全部通过");
 process.exit(0);
+
