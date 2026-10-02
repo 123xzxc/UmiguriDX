@@ -32,6 +32,30 @@ mod imp {
         }
     }
 
+    /// macOS 上同一台设备会同时出现 `/dev/tty.X` 与 `/dev/cu.X`(同一个口的两个名字):
+    /// 只留一个, 且优先 `cu` —— `tty.*` 在载波(DCD)为低时会挡住打开/读取, 是 macOS 上
+    /// 「Windows 能连、macOS 连不上」的常见坑。Windows 的 COM 名不含这些前缀, 不受影响。
+    pub fn dedupe_callout(ports: Vec<String>) -> Vec<String> {
+        let cu: std::collections::HashSet<String> = ports
+            .iter()
+            .filter_map(|p| p.strip_prefix("/dev/cu.").map(str::to_string))
+            .collect();
+        ports
+            .into_iter()
+            .filter(|p| match p.strip_prefix("/dev/tty.") {
+                Some(tail) => !cu.contains(tail),
+                None => true,
+            })
+            .collect()
+    }
+
+    /// 连接前的端口整理: 去掉 tty/cu 重复项, 再按「USB 优先」排序。
+    pub fn prepare_for_connect() -> Vec<String> {
+        let mut ports = dedupe_callout(list_ports());
+        sort_for_connect(&mut ports);
+        ports
+    }
+
     /// 连接前排序: USB 串口(手台常见)优先, 蓝牙/调试口最后, 避免逐个握手浪费时间。
     pub fn sort_for_connect(ports: &mut [String]) {
         ports.sort_by_key(|p| {
@@ -60,10 +84,20 @@ mod imp {
 
     impl Connection {
         pub fn open(name: &str) -> Result<Self> {
-            let port = serialport::new(name, BAUD_RATE)
+            #[allow(unused_mut)]
+            let mut port = serialport::new(name, BAUD_RATE)
                 .timeout(Duration::from_millis(5))
                 .open()
                 .with_context(|| format!("打开串口失败: {name}"))?;
+            // 手台固件要 DTR 拉高才会说话: Affine 的参考实现(serialslider.c 的 open_port)里
+            // 就有一句 EscapeCommFunction(SETDTR)。Windows 的 USB 串口驱动默认就把 DTR 拉高
+            // (所以那边一直能连), macOS/Linux 不会 —— 少这一下, 手台一声不吭, 表现就是
+            // 「API 版本不符, 且未收到 Affine 扫描帧」。Windows 路径保持原样, 不动。
+            #[cfg(not(target_os = "windows"))]
+            if let Err(e) = port.write_data_terminal_ready(true) {
+                // 有些驱动不支持 DTR, 那也只是少一层保障, 不该因此连不上。
+                eprintln!("[umg][hw] 拉高 DTR 失败({name}): {e}");
+            }
             Ok(Self {
                 port: Arc::new(Mutex::new(port)),
             })
@@ -182,23 +216,75 @@ mod imp {
             self.write_cmd(&affine::set_air_led(rgb))
         }
 
-        /// Affine 探测: 开扫描后 400ms 内收到 AUTO_SCAN 帧即认定是 Affine 手台。
+        /// Affine 探测: 开扫描后收到 AUTO_SCAN(0x01) 或 AUTO_AIR(0x05) 帧即认定是 Affine 手台。
         /// 官方/chu2board 固件会把非 0xFF 开头的字节直接丢掉, 所以探测是安全的。
+        ///
+        /// 窗口给到 ~1.2s 并且中途补发扫描命令, 是因为: 刚上电/DTR 刚拉高时固件可能还在
+        /// 初始化, 头几百毫秒不作声; 个别固件还会丢掉第一次 AUTO_SCAN_START。
         pub fn affine_probe(&self) -> Result<bool> {
             self.drain();
-            self.affine_start_scan()?;
             let mut dec = affine::Decoder::new();
-            let deadline = Instant::now() + Duration::from_millis(400);
+            let deadline = Instant::now() + Duration::from_millis(1200);
+            let mut next_nudge = Instant::now();
+            self.affine_start_scan()?;
             while Instant::now() < deadline {
-                if let Some(b) = self.read_byte(Duration::from_millis(20))? {
-                    if let Some(frame) = dec.push(b) {
-                        if frame.cmd == affine::CMD_AUTO_SCAN {
-                            return Ok(true);
-                        }
+                if Instant::now() >= next_nudge {
+                    let _ = self.affine_start_scan();
+                    next_nudge = Instant::now() + Duration::from_millis(400);
+                }
+                let Some(b) = self.read_byte(Duration::from_millis(20))? else {
+                    continue;
+                };
+                if let Some(frame) = dec.push(b) {
+                    // 0x01 = 触摸(可能带天键), 0x05 = 单独上报的天键: 都是官方滑块帧协议。
+                    if frame.cmd == affine::CMD_AUTO_SCAN || frame.cmd == affine::CMD_AUTO_AIR {
+                        return Ok(true);
                     }
                 }
             }
             Ok(false)
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn dedupe_callout_prefers_cu() {
+            let out = dedupe_callout(vec![
+                "/dev/tty.usbmodem1101".to_string(),
+                "/dev/cu.usbmodem1101".to_string(),
+                "/dev/tty.Bluetooth-Incoming-Port".to_string(),
+                "/dev/cu.Bluetooth-Incoming-Port".to_string(),
+                "COM3".to_string(),
+            ]);
+            // 成对出现时只留 cu(macOS 上 tty 侧会卡在 DCD 上)
+            assert!(out.contains(&"/dev/cu.usbmodem1101".to_string()));
+            assert!(!out.contains(&"/dev/tty.usbmodem1101".to_string()));
+            assert!(!out.contains(&"/dev/tty.Bluetooth-Incoming-Port".to_string()));
+            assert!(out.contains(&"COM3".to_string()));
+            // 没有 cu 对照的端口(只插出一个 tty, 或 Windows 的 COM)原样保留
+            assert_eq!(
+                dedupe_callout(vec!["/dev/tty.usbserial-1430".to_string(), "COM7".to_string()]),
+                vec!["/dev/tty.usbserial-1430".to_string(), "COM7".to_string()]
+            );
+        }
+
+        #[test]
+        fn usb_ports_sort_before_bluetooth() {
+            let mut ports = vec![
+                "/dev/cu.Bluetooth-Incoming-Port".to_string(),
+                "/dev/cu.usbserial-1430".to_string(),
+                "COM3".to_string(),
+                "COM4".to_string(),
+            ];
+            sort_for_connect(&mut ports);
+            assert!(ports[0].contains("usbserial"), "USB 串口要排第一: {ports:?}");
+            assert!(
+                ports.last().unwrap().contains("Bluetooth"),
+                "蓝牙口要排最后: {ports:?}"
+            );
         }
     }
 }
@@ -254,27 +340,34 @@ mod imp {
     }
 }
 
-pub use imp::{list_ports, sort_for_connect, Connection};
+pub use imp::{list_ports, prepare_for_connect, Connection};
 
 /// 自动连接: 按 USB 优先顺序枚举端口, 逐个探测协议, 找到第一个手台。
 /// 返回 (端口名, 连接, 协议)。`force` 为 Some 时只认该协议。
 pub fn connect_auto(force: Option<Kind>) -> Result<(String, Connection, Kind)> {
-    let mut ports = list_ports();
+    let ports = prepare_for_connect();
     if ports.is_empty() {
-        anyhow::bail!("没有可用串口");
+        anyhow::bail!(
+            "系统里一个串口都没有 —— 手台没插好、线是纯充电线, 或者缺 USB 串口驱动(见 README「手台」)"
+        );
     }
-    sort_for_connect(&mut ports);
-    let mut last_err = String::from("未找到手台");
+    // 每个端口的结论都要留下来: 只报最后一个的话, 排在最后的蓝牙口会把真正有用的
+    // 信息顶掉(macOS 上那条 /dev/…Bluetooth-Incoming-Port 就是这么冒出来的)。
+    let mut tried: Vec<String> = Vec::with_capacity(ports.len());
     for name in &ports {
         match Connection::open(name) {
             Ok(conn) => match probe(&conn, force) {
                 Ok(kind) => return Ok((name.clone(), conn, kind)),
-                Err(e) => last_err = format!("{name}: {e}"),
+                Err(e) => tried.push(format!("{name}: {e:#}")),
             },
-            Err(e) => last_err = format!("{name}: {e}"),
+            Err(e) => tried.push(format!("{name}: {e:#}")),
         }
     }
-    anyhow::bail!("{last_err}")
+    anyhow::bail!(
+        "试过 {} 个串口, 都不像手台 —— {} (可用 hardware.port 指定端口, 见 README「手台」)",
+        tried.len(),
+        tried.join(" | ")
+    )
 }
 
 /// 连接指定端口(或自动)。

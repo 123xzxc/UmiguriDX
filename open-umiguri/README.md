@@ -108,7 +108,7 @@ open-umiguri/
 | 协议 | 手台 | 识别方式 |
 |---|---|---|
 | `chu2board` | chu2board 固件: 单字节命令(0xB0 握手 / 0xAF 问 API / 0xB1 读输入 / 0xB2 灯光),主机轮询 | API 版本(0x11)与握手都有响应 |
-| `affine` | Affine_IO 手台([QHPaeek/Affine_IO](https://github.com/QHPaeek/Affine_IO)): 官方滑块板帧协议 `FF cmd nbytes payload chk`(0xFD 转义、整帧字节和为 0),主机发一次 `AUTO_SCAN_START` 后设备主动推「32 压力 + 1 天键位图」 | 开扫描后 400ms 内收到 `AUTO_SCAN` 帧 |
+| `affine` | Affine_IO 手台([QHPaeek/Affine_IO](https://github.com/QHPaeek/Affine_IO)): 官方滑块板帧协议 `FF cmd nbytes payload chk`(0xFD 转义、整帧字节和为 0),主机发一次 `AUTO_SCAN_START` 后设备主动推「32 压力 + 1 天键位图」 | 开扫描后 ~1.2s 内收到 `AUTO_SCAN`(0x01)或 `AUTO_AIR`(0x05)帧(中途会补发扫描命令) |
 
 `/config/game.json` 里的可选配置(全在顶层 `hardware` 段,不写则自动):
 
@@ -132,7 +132,27 @@ open-umiguri/
 - 灯光:游戏自带 `ledOutput` 连 `ws://localhost:<led_controller.port>`(默认 8090),
   宿主把 SetLED 载荷转成手台灯光帧;Affine 手台还额外驱动整条 AIR(侧)灯(自定义命令 0x07)。
 - 帧格式与官方参考实现一致(segatools `board/slider-frame.c`),帧内的 `0xFF`/`0xFD` 按规范转义。
+- 识别出的天键(0x05 `AUTO_AIR` 帧)与 `AUTO_SCAN` 里的天键位图都会算进 AIR 档位(两者可能是分开的两帧)。
+- 自动连接会重试:前 12 次每 5s,之后每 60s,直到连上或用户手动断开 —— 手台比游戏晚插/晚就绪也能自己连上。
 - 排查:日志里 `[umg][hw] 手台已连接: <端口> (<协议>)`;`window.umgHardware.status()` 可查当前协议。
+  连接失败时是 `[umg][hw] 未连接手台(第 N 次尝试): 试过 X 个串口, 都不像手台 —— <端口>: <原因> | …`,
+  也就是会把**每个**串口的结论都列出来, 免得排在最后的蓝牙口把有用信息顶掉。
+
+### macOS 上连不上时(macOS 最容易踩的几个坑)
+
+1. **先看系统认没认出手台**: 插上后 `ls /dev/cu.*` 应该多出一个 `/dev/cu.usbmodem*` 或
+   `/dev/cu.usbserial-*`。只有一个 `Bluetooth-Incoming-Port` 就说明问题在系统/硬件这一侧:
+   线是纯充电线、USB 口/集线器供电不足, 或者缺这颗 USB 串口芯片的驱动
+   (CH34x / CP210x / FTDI 在 macOS 上可能要自己装)。这种情况宿主怎么改都没用。
+2. **macOS 上 `tty.*` 与 `cu.*` 是同一个口的两个名字**: 宿主只留 `cu.*` —— `tty.*`
+   在载波(DCD)为低时会卡住打开/读取, 是「Windows 能连、macOS 连不上」的常见原因。
+   `hardware.port` 也请写 `/dev/cu.*`。
+3. **DTR**: 手台固件要 DTR 拉高才开始推帧(Affine 的参考实现 `serialslider.c` 里就有一句
+   `EscapeCommFunction(SETDTR)`)。Windows 的 USB 串口驱动默认就拉高, macOS/Linux 不会 ——
+   所以宿主在非 Windows 平台上打开串口后会主动拉 DTR。
+4. **不放心自动探测就手动指定**(`/config/game.json` 的 `hardware` 段):
+   `"port": "/dev/cu.usbmodem103"`, 需要的话再加 `"protocol": "affine"`。
+5. 报问题时把 `[umg][hw] 未连接手台…` 那一行发出来: 里面列了系统枚举到的每个串口和各自的结论。
 
 ## 构建与运行
 

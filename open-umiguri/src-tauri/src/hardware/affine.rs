@@ -185,6 +185,12 @@ pub fn parse_scan(payload: &[u8]) -> Option<InputState> {
     Some(state)
 }
 
+/// 天键(AIR)状态: 0x05 AUTO_AIR 的载荷只有 1 字节位图(对应 slider_packet_t 的 _air_status)。
+/// 部分固件把天键单独用这个命令上报, 触摸走 AUTO_SCAN(见 Affine_IO/chuniio/chuniio.c)。
+pub fn parse_air(payload: &[u8]) -> Option<u8> {
+    payload.first().copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,5 +348,12 @@ mod tests {
         assert!(st.air_pressed(5));
 
         assert!(parse_scan(&single[..31]).is_none());
+    }
+
+    #[test]
+    fn parse_air_reads_bitmap() {
+        assert_eq!(parse_air(&[0b0010_0101]), Some(0b0010_0101));
+        assert_eq!(parse_air(&[0]), Some(0));
+        assert_eq!(parse_air(&[]), None, "空载荷不算一帧天键状态");
     }
 }

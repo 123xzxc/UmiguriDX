@@ -72,6 +72,10 @@ pub struct HardwareState {
     input_thread: Mutex<Option<thread::JoinHandle<()>>>,
     led_thread: Mutex<Option<thread::JoinHandle<()>>>,
     led_addr: Mutex<Option<String>>,
+    /// 自动连接是否仍然有效(用户手动断开后置 false, 免得刚断开又被连回来)
+    autoconnect_wanted: Arc<AtomicBool>,
+    /// 是否已经有探测线程在跑(手台只有一个口, 两个线程只会互相抢)
+    probing: Arc<AtomicBool>,
 }
 
 impl Default for HardwareState {
@@ -87,6 +91,8 @@ impl Default for HardwareState {
             input_thread: Mutex::new(None),
             led_thread: Mutex::new(None),
             led_addr: Mutex::new(None),
+            autoconnect_wanted: Arc::new(AtomicBool::new(false)),
+            probing: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -123,6 +129,9 @@ pub fn hw_init(
     auto_connect: Option<bool>,
 ) -> bool {
     let st = app.state::<HardwareState>();
+    // 打一行宿主版本: 贴日志时能直接看出跑的是哪个构建。
+    // (游戏标题里的 v2.0.2 是游戏本体的版本号, 跟宿主不是一回事。)
+    eprintln!("[umg][hw] 宿主版本 {}", env!("CARGO_PKG_VERSION"));
     if let Some(o) = led_order.as_deref() {
         *st.led_order.lock().unwrap() = LedOrder::parse(o);
     }
@@ -181,7 +190,7 @@ pub fn hw_connect(
             *st.kind.lock().unwrap() = k;
         }
     }
-    hw_disconnect(app.clone());
+    disconnect(app.clone(), false);
     let force = *st.force_kind.lock().unwrap();
     let (name, conn, kind) =
         serial::connect(port.as_deref(), force).map_err(|e| format!("{e:#}"))?;
@@ -193,7 +202,16 @@ pub fn hw_connect(
 
 #[tauri::command]
 pub fn hw_disconnect(app: AppHandle) -> bool {
+    disconnect(app, true)
+}
+
+/// 断开手台。user_action=false 是显式连接前的内部清理: 那时不该把自动探测也停掉,
+/// 否则 hardware.port 写错时连自动兜底都没了。
+fn disconnect(app: AppHandle, user_action: bool) -> bool {
     let st = app.state::<HardwareState>();
+    if user_action {
+        st.autoconnect_wanted.store(false, Ordering::Relaxed);
+    }
     st.running.store(false, Ordering::Relaxed);
     if let Some(h) = st.input_thread.lock().unwrap().take() {
         let _ = h.join();
@@ -316,7 +334,11 @@ fn input_loop_poll(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>) {
 }
 
 /// Affine: 设备在收到 AUTO_SCAN_START 后主动推帧, 这里只负责拆帧。
+///
+/// 触摸与天键可能是两种帧(0x01 带 32 字节压力, 有的固件再把天键单独用 0x05 推),
+/// 所以状态是累积的: 只覆盖这一帧带来的那一半, 免得天键帧一来就把触摸清成 0。
 fn input_loop_stream(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>) {
+    let mut state = protocol::InputState::default();
     let mut prev = vec![0u8; LANES];
     let mut decoder = affine::Decoder::new();
     let mut fail = 0u32;
@@ -336,13 +358,32 @@ fn input_loop_stream(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>)
                 fail = 0;
                 if let Some(frame) = decoder.push(byte) {
                     last_frame = Instant::now();
-                    if frame.cmd == affine::CMD_AUTO_SCAN {
-                        if let Some(state) = affine::parse_scan(&frame.payload) {
-                            let lanes = lanes_of(&state);
-                            if lanes != prev {
-                                prev = lanes.clone();
-                                let _ = app.emit("umg-lanes", lanes);
+                    let mut dirty = false;
+                    match frame.cmd {
+                        // 32 字节压力; size==33 时后面还跟 1 字节天键位图
+                        affine::CMD_AUTO_SCAN => {
+                            if let Some(s) = affine::parse_scan(&frame.payload) {
+                                state.touch = s.touch;
+                                if frame.payload.len() > protocol::TOUCH_CHANNELS {
+                                    state.air = s.air;
+                                }
+                                dirty = true;
                             }
+                        }
+                        // 单独上报的天键(见 Affine_IO/chuniio/chuniio.c 的 SLIDER_CMD_AUTO_AIR)
+                        affine::CMD_AUTO_AIR => {
+                            if let Some(air) = affine::parse_air(&frame.payload) {
+                                state.air = air;
+                                dirty = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if dirty {
+                        let lanes = lanes_of(&state);
+                        if lanes != prev {
+                            prev = lanes.clone();
+                            let _ = app.emit("umg-lanes", lanes);
                         }
                     }
                 }
@@ -371,24 +412,66 @@ fn input_loop_stream(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>)
     }
 }
 
-/// 启动时按需自动连接(在后台线程里探测, 不阻塞启动)。
+/// 重试节奏(秒): 前 12 次每 5s, 之后每 60s。
+const AUTOCONNECT_FAST_TRIES: u32 = 12;
+const AUTOCONNECT_FAST_WAIT: u64 = 5;
+const AUTOCONNECT_SLOW_WAIT: u64 = 60;
+
+/// 启动时按需自动连接(在后台线程里探测并重试, 不阻塞启动)。
+///
+/// 手台往往比游戏晚就绪: USB 要枚举、固件要上电、macOS 还要认串口驱动。所以失败后
+/// 不是试着一次就放弃, 而是退避重试; 用户手动连接/断开就立刻收手。
 pub fn autoconnect(app: AppHandle) {
     thread::spawn(move || {
         let st = app.state::<HardwareState>();
+        if st.probing.swap(true, Ordering::SeqCst) {
+            return; // 已经有一个探测线程在跑
+        }
+        st.autoconnect_wanted.store(true, Ordering::Relaxed);
+        probe_until_connected(&app, &st);
+        st.probing.store(false, Ordering::SeqCst);
+    });
+}
+
+/// 探测循环: 连上、或者用户接管(手动断开)才返回。
+fn probe_until_connected(app: &AppHandle, st: &HardwareState) {
+    let mut attempt = 0u32;
+    loop {
+        if !st.autoconnect_wanted.load(Ordering::Relaxed) || st.conn.lock().unwrap().is_some() {
+            return;
+        }
         let force = *st.force_kind.lock().unwrap();
         match serial::connect_auto(force) {
             Ok((name, conn, kind)) => {
-                if let Err(e) = install(&app, &st, name.clone(), conn, kind) {
+                if let Err(e) = install(app, st, name.clone(), conn, kind) {
                     eprintln!("[umg][hw] 手台输入线程启动失败: {e}");
                     return;
                 }
-                eprintln!(
-                    "[umg][hw] 手台自动连接成功: {name} ({})",
-                    kind.as_str()
-                );
-                let _ = app.emit("umg-hw-status", status(&st));
+                eprintln!("[umg][hw] 手台自动连接成功: {name} ({})", kind.as_str());
+                let _ = app.emit("umg-hw-status", status(st));
+                return;
             }
-            Err(e) => eprintln!("[umg][hw] 未连接手台: {e:#}"),
+            Err(e) => {
+                attempt += 1;
+                eprintln!("[umg][hw] 未连接手台(第 {attempt} 次尝试): {e:#}");
+                // 第一次失败时把状态推给前端诊断日志(hw-status 里带完整串口列表),
+                // 之后不再推, 免得每 5s 刷一行。
+                if attempt == 1 {
+                    let _ = app.emit("umg-hw-status", status(st));
+                }
+            }
         }
-    });
+        let wait = if attempt < AUTOCONNECT_FAST_TRIES {
+            AUTOCONNECT_FAST_WAIT
+        } else {
+            AUTOCONNECT_SLOW_WAIT
+        };
+        // 拆成 1s 一片地睡: 用户中途手动连上/断开能立刻退出, 不用等满一轮。
+        for _ in 0..wait {
+            thread::sleep(Duration::from_secs(1));
+            if !st.autoconnect_wanted.load(Ordering::Relaxed) || st.conn.lock().unwrap().is_some() {
+                return;
+            }
+        }
+    }
 }
