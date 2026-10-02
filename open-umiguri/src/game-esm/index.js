@@ -4196,22 +4196,28 @@ scope.v_Hs_28017.prototype = {
   },
   iP: function (v_t_33919) {
     // ⚠ 返回值语义必须保持原样: 已经到位的返回 true, 否则返回一个 **Promise**,
-    //   等 137(PUSH_STATE) 把 aP 推到目标值时才 resolve(见 Tx/lP 与 rP)。
+    //   等服务端把 aP 推到目标值时才 resolve(见 lP 与 rP)。
     //   调用方(s.ClearStore 的 v_g_29168 / gameCore)都是 `await v_oe_27649.iP(n)`。
     //   曾经为了「把状态发给服务端」把它改成返回布尔的同步函数 —— 于是 await 立刻
     //   拿到 false 不等待, 而真正等状态的 rP 再也没人挂上, 表现是「点了开始/跳过
     //   匹配之后, 非房主玩家一直停在原地不进歌曲界面」。
     //
-    // 房主推进状态(0 → 1 → … → 5, 见 gameCore 的 v_Hi_30330)时还要上报服务端:
-    // 所有人(含房主自己)进下一局前都会 await 137 状态 >= N, 而 137 只有服务端
-    // 的 pushState 才会发。不上报的话房主本地 nP 动了、aP 不动, 谁都等不到。
+    // ⚠ 这里的上报**必须走 oP(op=22), 也就是 tP() 走的那条通道**: 服务端回 141
+    //   (PUSH_ALLREADY), 客户端 iT 的 v_Qs_28030 分支才会写 this.aP。
+    //   iP 等的是 aP; 而 137(PUSH_STATE) 只写 sP —— 那是 Tx() 在等的另一个值。
+    //
+    //   曾经这里错写成 LC.XC(n, 0)(op=19 对局状态上报) —— 137 确实回来了、sP 也动了,
+    //   但 aP 一直是 0, 于是 iP(n) 挂上的 Promise 永不 resolve。真机日志正好长这样:
+    //       iP(1) 等待中 aP=0
+    //       -> 19 上报状态 1
+    //       137 收到: 房状态 sP=1 (本地 137 等待值 DC=-1)   ← sP 动了, aP 没动
+    //   表现就是「拿着房号进来的人站在大堂不动, 进不了选歌界面」。
     if (this.aP >= v_t_33919) { console.log("[umg][coop] iP(" + v_t_33919 + ") 已满足 aP=" + this.aP); return !0; }
-    console.log("[umg][coop] iP(" + v_t_33919 + ") 等待中 aP=" + this.aP);
+    console.log("[umg][coop] iP(" + v_t_33919 + ") 等待中 aP=" + this.aP + " -> 发 22(ready)");
     this.nP = v_t_33919;
     try {
-      // OP_STATE=19 的上报入口是 v_Pa_28060.XC(n, 0)(v_Hs_28017.xx/Lx 也走它)。
-      // 没有 LC(单机)或没连接时静默跳过。
-      this.LC.XC(v_t_33919, 0);
+      // 只能走 oP(op=22)。单机或没连上时静默跳过, 与 xx/Lx/tP 的守卫一致。
+      this.Gi() && this.LC && this.LC.oP(v_t_33919);
     } catch (v_umgE) {}
     return new Promise(v_t_33920 => {
       this.rP = v_t_33920;

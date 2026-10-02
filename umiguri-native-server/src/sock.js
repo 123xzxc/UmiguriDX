@@ -390,11 +390,21 @@ function dispatch(conn, frame) {
     }
 
     case OP_READY: {
+      // oP(n) = op=22「准备」。客户端 iP(n) 等的就是这个通道:
+      //   服务端回 141(PUSH_ALLREADY) -> iT 的 v_Qs_28030 分支写 this.aP。
+      //   ⚠ 与 137(PUSH_STATE -> sP) 是**两个不同的值**, 不能互相替代。
+      //
+      // 回的必须是「房间当前的整体就绪值」而不是发起者写的那个 n:
+      //   房主先进房并 oP(1) 之后, 晚进的人若只收到别人上一次上报的值,
+      //   他等的 iP(1) 就永远对不上。取房间最大值既能唤醒等待者, 也符合
+      //   「有人准备好了」的原意(全员准备由客户端自己看成员列表判断)。
+      //   每次上报都要回一帧(客户端是「挂上 Promise, 再收一帧才醒」)。
       const n = body.u16();
       member.ready = n;
+      room.ready = Math.max(room.ready || 0, n | 0);
       respond(conn, op, seq, 0);
       const w = new Writer();
-      w.u16(n);
+      w.u16(room.ready);
       const payload = w.bytes();
       for (const m of room.members.values()) push(m.conn, PUSH_ALLREADY, payload);
       return;
@@ -687,6 +697,15 @@ function handleEnter(conn, seq, body) {
     const sw = new Writer();
     sw.u32(room.selection ? room.selection.yx : room.yx).u16(room.state || 0);
     push(conn, PUSH_STATE, sw.bytes());
+  }
+
+  // 同理补一帧 141(准备状态): 客户端的 iP(n) 等的是 aP, 而 aP 只由 141 推进。
+  // 晚进房 / 重连的人如果没人再上报 22, aP 会一直是 0, 他等的 iP(1) 永不 resolve
+  // (真机表现: 拿着房号进来的人站在大堂不动, 进不了选歌界面)。
+  {
+    const rw = new Writer();
+    rw.u16(room.ready || 0);
+    push(conn, PUSH_ALLREADY, rw.bytes());
   }
 
   // 已经选好的曲子补一份, 不然中途进房的人看不到当前曲目。

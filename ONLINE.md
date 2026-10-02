@@ -609,3 +609,52 @@ REJECTION 二进制读取越界: 18 > 16 @ v3@ | @ | XI@
 `umiguri-native-server/src/sock.js`(`pushState` 允许回退, `OP_PICK` 补广播状态 1),
 `umiguri-native-server/test/native-smoke.mjs`(218 项: 状态回退到 1 且仍广播、重复上报仍回帧)。
 **这一版要重编桌面端**(客户端改了)。
+
+### 7.13 真机日志: `iP(1) 等待中 aP=0` —— 上报发错了通道(2026-10-03 续)
+
+7.12 让服务端能广播状态 1 之后, 137 通了, 但人还是进不去选歌界面。真机日志给了指纹:
+
+```
+[umg][coop] iP(1) 等待中 aP=0
+[umg][coop] -> 19 上报状态 1 (曲目序号 0)
+[umg][coop] 137 收到: 房状态 sP=1 (本地 137 等待值 DC=-1)
+```
+
+**sP 动了, aP 没动** —— 这就是根因。
+
+客户端有**两个独立的值**, 由两条**不同的推送码**喂:
+
+| 值 | 谁在等 | 推送码 | 喂它的入口 |
+| --- | --- | --- | --- |
+| `sP` | `Tx(n)` | 137 `PUSH_STATE` | op=19 `XC`(对局状态) |
+| `aP` | `iP(n)` | 141 `PUSH_ALLREADY` | op=22 `oP`(准备) |
+
+7.11 为了让「房主推进状态时也能唤醒别人」, 在 `iP()` 里加了一句 `this.LC.XC(n, 0)` ——
+那是 **op=19**, 只会喂 `sP`。而 `iP` 等的是 `aP`, 所以:
+
+- `tP(1)`(op=22)虽然也发了, 但它发在 `iP(1)` **之前**, 那帧 141 到达时还没有 waiter, 白丢;
+- `iP(1)` 挂上 Promise 之后, 唯一的上报是 op=19, 回的 137 只碰 `sP`;
+- `aP` 永远是 0 → `iP(1)` 的 Promise 永不 resolve → `v_g_29168` 停在
+  `await scope.v_oe_27649.iP(scope.v_pa_28050)` 那句, 大堂收尾动画和 `qS` 回调都不执行。
+
+表现就是「拿着房号进来的人站在大堂不动, 进不了选歌界面」。
+
+**修法**:
+
+1. `open-umiguri/src/game-esm/index.js` —— `iP()` 里的上报改成 **`this.LC.oP(n)`(op=22)**,
+   也就是 `tP()` 走的那条通道。这样服务端回 141, `iT` 的 `v_Qs_28030` 分支写 `aP`,
+   `iP` 的 Promise 才能 resolve。守卫也统一成 `this.Gi() && this.LC && …`。
+2. `umiguri-native-server/src/sock.js` —— `OP_READY` 回的改成**房间整体的就绪值**
+   (`room.ready = Math.max(room.ready, n)`), 而不是发起者这次写的那个数字:
+   否则房主先 `oP(1)`、晚进的人再收到别人(或补发)的低值, `iP(1)` 对不上。
+   每次上报仍回一帧(客户端是「挂上 Promise, 再收一帧才醒」)。
+3. 进房时除了 137 **再补一帧 141**, 让中途进房 / 重连的人也能立刻唤醒 `iP(1)`。
+
+**日志对照**: `iP(n) 等待中 aP=N -> 发 22(ready)` 是新加的, 一眼能看出这次上报走对了通道;
+配合 `137 收到: 房状态 sP=N` 就能同时看到两条通道各自的值。
+
+**改动**: `open-umiguri/src/game-esm/index.js`(`iP` 改走 op=22),
+`umiguri-native-server/src/sock.js`(`OP_READY` 回整体就绪值、进房补 141),
+`umiguri-native-server/test/native-smoke.mjs`(225 项: 新增一整段 141 通道回归 ——
+回帧给发起者与其他人、重复上报也回帧、不被单次 0 拉低、进房必补一帧)。
+**这一版要重编桌面端**, 服务端也要一起更新。

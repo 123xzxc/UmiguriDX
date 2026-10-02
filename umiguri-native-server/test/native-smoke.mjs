@@ -795,8 +795,36 @@ let guestB = 0;
   // 载荷与 pushState 一致: 先 u32 局号, 再 u16 状态(客户端的 137 分支就是这么读的)
   ok(stC.u32() > 0, "C 收到的 137 也带局号");
   eq(stC.u16(), 5, "C 进房立刻收到当前状态 5");
+  // 同时补一帧 141(准备状态): 客户端 iP(n) 等的是 aP, 而 aP **只**由 141 推进。
+  //   137 走的是另一条值(sP), 两者不能互相代替 —— 真机日志「iP(1) 等待中 aP=0」
+  //   加「137 收到: 房状态 sP=1」就是这个 bug 的指纹。
+  const rdC = await c.nextPush(141);
+  eq(rdC.u16(), 0, "C 进房立刻收到一帧 141(此刻房间还没人 oP, 所以是 0; 关键是这帧必须在)");
   c.close();
   await new Promise((v) => setTimeout(v, 50));
+}
+
+// 141: 准备状态(op=22 oP)。客户端 iP(n) 等的是 aP —— **只有 141 能推进它**。
+// 之前客户端的 iP() 错把上报发成 op=19(137/sP 那条), aP 永远是 0, iP 挂的
+// Promise 永不 resolve: 拿着房号进来的人站在大堂不动, 进不了选歌界面。
+// 服务端这边要保证: 每次 oP 都回一帧, 且回的是「房间整体的就绪值」。
+{
+  a.pushes.set(141, []);
+  b.pushes.set(141, []);
+  const r1 = await a.request(22, new Writer().u16(1));
+  eq(r1.body.u16(), 0, "oP(1) 结果码 0");
+  const rdA = await a.nextPush(141);
+  eq(rdA.u16(), 1, "141 回给发起者自己(唤醒了 aP)");
+  const rdB = await b.nextPush(141);
+  eq(rdB.u16(), 1, "141 也广播给房间里其他人");
+  // 重复上报同一个值也必须回帧(客户端是「挂上 Promise, 再收一帧才醒」)。
+  a.pushes.set(141, []);
+  await a.request(22, new Writer().u16(1));
+  eq((await a.nextPush(141)).u16(), 1, "重复上报 22 也要回一帧 141");
+  // 回的是房间整体的就绪值, 不是发起者这次写的那个数字。
+  const r0 = await a.request(22, new Writer().u16(0));
+  eq(r0.body.u16(), 0, "oP(0) 结果码 0");
+  eq((await a.nextPush(141)).u16(), 1, "回的是房间整体就绪值 1(不被单次 0 拉低)");
 }
 
 {
