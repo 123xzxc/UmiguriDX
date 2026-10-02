@@ -605,7 +605,11 @@ mod imp {
             .call_method(context, "getPackageName", "()Ljava/lang/String;", &[])?
             .l()?;
         let js = jni::objects::JString::from(s);
-        Ok(env.get_string(&js)?.into())
+        // 注意: jni 的 JavaStr 借用 env 与 js, 必须先用 let 绑定成具名局部变量再转
+        // String, 否则临时值会在块末尾先于 js 析构, 报 E0597(borrowed value does not
+        // live long enough) —— Android 目标编不过就是这个原因。
+        let out: String = env.get_string(&js)?.into();
+        Ok(out)
     }
 
     /// context.getSystemService(Context.USB_SERVICE) -> UsbManager
