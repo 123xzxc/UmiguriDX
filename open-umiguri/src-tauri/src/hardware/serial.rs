@@ -24,6 +24,7 @@ pub struct RxTrace {
     head: Vec<u8>,
 }
 
+#[allow(dead_code)] // 移动端没有串口, push/clear 只在桌面端用到
 impl RxTrace {
     /// 记一个收到的字节(超过 32 个只加计数)
     pub fn push(&mut self, byte: u8) {
@@ -388,7 +389,10 @@ mod imp {
         Vec::new()
     }
 
-    pub fn sort_for_connect(_ports: &mut [String]) {}
+    /// 桌面端会按「USB 优先 + 去掉 tty/cu 重复」排序; 移动端没有串口, 空列表即可。
+    pub fn prepare_for_connect() -> Vec<String> {
+        Vec::new()
+    }
 
     #[derive(Clone)]
     pub struct Connection;

@@ -141,7 +141,16 @@ def main():
     if sys.platform != 'darwin':
         sys.exit('这个脚本是给 macOS 用的(ioctl 常量是 Darwin 的)')
     ports = list_ports()
-    path = sys.argv[1] if len(sys.argv) > 1 else choose_port(ports)
+    arg = sys.argv[1] if len(sys.argv) > 1 else ''
+    if arg and not arg.startswith('/dev/'):
+        # 常见坑: 把命令里 '#' 后面的说明一起复制进来了('#' 在某些 shell 里不是注释),
+        # 于是参数变成 '#'。这种情况直接忽略, 改成自动挑口。
+        print('参数 %r 不像端口名(要以 /dev/ 开头), 忽略它, 自动挑口' % arg)
+        print('')
+        arg = ''
+    path = arg or choose_port(ports)
+    if not os.path.exists(path):
+        sys.exit('没有这个串口: %s(用上面的列表核对一下)' % path)
     print('端口: %s' % path)
     print('')
 
