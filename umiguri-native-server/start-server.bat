@@ -3,7 +3,7 @@ chcp 65001 >nul
 title UMIGURI 原生协议服务端
 cd /d "%~dp0"
 echo ================================================
-echo  UMIGURI 原生协议服务端(游戏内联机 + 云存档)
+echo  UMIGURI 原生协议服务端(游戏内联机 + 云存档 + 网页面板)
 echo  端口 8101, 数据库与 umiguri-server 共用
 echo ================================================
 echo.
@@ -13,7 +13,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-echo 按 Ctrl+C 停止服务
+echo  网页面板 /panel, 管理面板 /admin-panel(管理员令牌启动后会打印)
+echo  按 Ctrl+C 停止服务
 echo.
 node src/index.js
 echo.

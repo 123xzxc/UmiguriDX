@@ -105,14 +105,19 @@ export function createRouter() {
     patch: (p, h, o) => add("PATCH", p, h, o),
     delete: (p, h, o) => add("DELETE", p, h, o),
 
-    // 返回一个 node http handler
-    handler(authResolver) {
+    // 返回一个 node http handler。
+    // 默认每个请求都由它终结; opts.passthrough = true 时, "路径没命中任何路由"
+    // 会返回 false 且不写响应, 交给调用方继续处理 —— 原生服务端就是靠这个把面板
+    // 挂在自己的 HTTP 循环后面(见 umiguri-native-server/src/web-panel.js)。
+    // 返回值: true = 已处理, false = 已放行。
+    handler(authResolver, opts = {}) {
+      const passthrough = opts.passthrough === true;
       return async (req, res) => {
         applyCors(res);
         if (req.method === "OPTIONS") {
           res.writeHead(204);
           res.end();
-          return;
+          return true;
         }
 
         const url = new URL(req.url, "http://localhost");
@@ -140,7 +145,7 @@ export function createRouter() {
             // res 也交给处理器: 面板要写 set-cookie、/panel 要直接吐 HTML,
 // 这两类响应没法走统一的 sendOk 包装。
             const result = await route.handler({ params, body, query: url.searchParams, auth, req, res });
-            if (res.headersSent) return;
+            if (res.headersSent) return true;
             if (result === undefined) sendOk(res);
             else sendOk(res, result);
           } catch (err) {
@@ -153,14 +158,18 @@ export function createRouter() {
               sendJson(res, 500, { ok: false, error: "服务器内部错误", code: "internal" });
             }
           }
-          return;
+          return true;
         }
+
+        // 放行: 调用方(通常是原生服务端)接着往下走自己的路由。
+        if (passthrough && !matchedPath) return false;
 
         sendJson(res, matchedPath ? 405 : 404, {
           ok: false,
           error: matchedPath ? "方法不允许" : "路径不存在",
           code: matchedPath ? "method_not_allowed" : "not_found"
         });
+        return true;
       };
     }
   };

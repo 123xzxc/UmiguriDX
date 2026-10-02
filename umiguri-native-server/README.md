@@ -1,6 +1,6 @@
 # umiguri-native-server
 
-游戏**原生协议**服务端: 卡号登录、云存档、游戏内联机房间。
+游戏**原生协议**服务端: 卡号登录、云存档、游戏内联机房间, 外加网页面板。
 
 ## 它解决什么问题
 
@@ -12,12 +12,15 @@
 
 | | umiguri-server | umiguri-native-server(本项目) |
 |---|---|---|
-| 面向 | 网页面板 / 自制联机面板 / 管理后台 | 游戏本体 |
+| 面向 | 网页面板 / 自制联机面板 / 管理后台 | 游戏本体 + 网页面板 |
 | 协议 | 自家 REST(JSON + JWT) | `POST /1/*` (JSON) + `GET /sock` (加密二进制 WebSocket) |
 | 默认端口 | 8787 | **8101**(游戏写死的端口) |
 | 数据库 | `umiguri-server/data/umiguri.db` | **同一个库**(账号/卡号共用) |
+| 网页面板 | 有(`/panel`, `/admin-panel`) | **有**(同一套页面, 直接挂在 8101 上) |
 
-两个服务端可以同时跑: 用一个库、各听自己的端口, 网页面板发的卡在游戏里直接能刷。
+也就是说: **只跑这一个进程就够了** —— 游戏联机、云存档、网页面板、管理后台都在 8101。
+`umiguri-server` 现在只是"不带游戏协议的那半边", 需要时可以两个一起跑(同一个库,
+各听自己的端口), 账号与卡号完全互通。
 
 ## 快速开始
 
@@ -39,6 +42,30 @@ node src/index.js
 node test/native-smoke.mjs
 ```
 
+## 网页面板
+
+面板(玩家面板 + 管理面板)与游戏接口**同一个端口**, 页面和凭据体系都复用
+`umiguri-server` 那一套(见 `src/web-panel.js`):
+
+| 地址 | 用途 | 登录方式 |
+|---|---|---|
+| `http://<地址>:8101/panel` | 玩家面板: 改用户名/称号、看自己的卡、看最近游玩 | 用户名 + Google 验证器(TOTP) |
+| `http://<地址>:8101/admin-panel` | 管理面板: 建号、重置验证器、发卡、吊销卡 | 管理员令牌 |
+| `/admin/*` | 同一批管理能力的接口版(给脚本/CI 用) | `Authorization: Bearer <管理员令牌>` |
+
+管理员令牌存在 `umiguri-server/data/admin-token`(与两个服务端共用), 优先级是
+`UMIGURI_ADMIN_TOKEN` 环境变量 > 该文件 > 随机生成并写盘。启动时会在控制台打印,
+复制它就能登管理面板。
+
+要注意的两点:
+
+- **面板只认 TOTP, 没有密码**(这是刻意的: 有口令就有口令泄露)。所以新账号要开面板,
+  得由管理员在管理面板里点一次"重置验证器", 把密钥/扫码链接发给本人。
+- 自动注册的卡号(直接刷卡建出来的号)一开始没有验证器密钥, 同理需要管理员发一次。
+- 面板里的"最近游玩"读的是 `plays` / `bests` 表(与 umiguri-server 共用的表),
+  原生成绩写进 `native_records` 时会**顺手镜像一份**过去, 所以原生模式下面板也有记录,
+  等级按分数算(阈值与客户端 `scope.rankLabel` 一致), 通关状态取 `flags` 第 0 位。
+
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
@@ -46,6 +73,9 @@ node test/native-smoke.mjs
 | `UMIGURI_NATIVE_PORT` | `8101` | 监听端口。游戏写死 8101, 除非客户端打了补丁, 否则别改 |
 | `UMIGURI_NATIVE_HOST` | `0.0.0.0` | 监听地址 |
 | `UMIGURI_DB` | `../umiguri-server/data/umiguri.db` | 数据库。与 umiguri-server 共用同一份账号与卡号 |
+| `UMIGURI_ADMIN_TOKEN` | 空 | 管理面板/管理接口的令牌。留空则读 `umiguri-server/data/admin-token`, 还没有就随机生成并写盘 |
+| `UMIGURI_PANEL_TTL` | `604800` | 面板会话有效期(秒), 默认 7 天 |
+| `UMIGURI_PANEL_SECURE` | `0` | 面板 cookie 是否带 `Secure`。挂在 https 反代后面时置 `1` |
 | `UMIGURI_NATIVE_AUTO_REGISTER` | `1` | 格式合法但没注册过的卡号是否自动建号 |
 | `UMIGURI_NATIVE_NEW_CARD` | `ok` | 新账号 getProfile 返回什么。`card_not_found` 则回 -11 让客户端走"新卡建档"流程 |
 | `UMIGURI_NATIVE_DUP_LOGIN` | `0` | 同一张卡重复登录: `0`=顶掉旧会话, `1`=回 `card_dup_login` |
@@ -178,7 +208,8 @@ window.__umgServer = {
 ## 目录结构
 
 ```
-src/index.js        入口: 一个端口同时提供 /1/* 与 /sock
+src/index.js        入口: 一个端口同时提供 /1/* 、/sock 与网页面板
+src/web-panel.js    把网页面板挂到这个进程上(共用一个数据库连接与一套表)
 src/native-http.js  游戏原生 HTTP 协议
 src/sock.js         /sock 协议与房间状态机
 src/store.js        账号/卡号/档案/成绩的数据访问

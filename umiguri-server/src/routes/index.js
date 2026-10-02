@@ -61,7 +61,22 @@ function requireAdmin(req) {
 
 export function buildRouter() {
   const r = createRouter();
+  registerGameRoutes(r);
+  registerPanelRoutes(r);
+  return r;
+}
 
+// 只挂网页面板的 router。
+// 原生服务端(umiguri-native-server)用它把面板挂到自己的 HTTP 循环上, 这样
+// 玩家只跑一个进程就能既联机又开面板。游戏端那套 REST 不挂 —— 它依赖 JWT
+// 密钥, 而原生服务端的身份体系是 native_sessions, 挂上去只是多开一扇没必要的门。
+export function buildPanelRouter() {
+  const r = createRouter();
+  registerPanelRoutes(r);
+  return r;
+}
+
+function registerGameRoutes(r) {
   // ---------- 健康检查 ----------
   r.get("/health", () => ({ status: "ok", time: Date.now() }));
 
@@ -168,7 +183,11 @@ export function buildRouter() {
     })
   }), { auth: true });
 
-  // ---------- 网页面板 ----------
+}
+
+// ---------- 网页面板 + 管理面板 ----------
+// 与游戏端路由分开注册, 因为原生服务端也要挂这一半(见 buildPanelRouter)。
+export function registerPanelRoutes(r) {
   r.get("/panel", ({ res }) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     res.end(renderPanel());
@@ -345,7 +364,6 @@ export function buildRouter() {
     return { card: issueCard(userId, { cardId: body.cardId, label: body.label }) };
   });
 
-  return r;
 }
 
 export { authResolver };

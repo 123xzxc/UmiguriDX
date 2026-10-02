@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // 服务端入口: node src/index.js
 //
-// 同一个端口同时提供两件事(客户端就是这么设计的, 它连的是 http://<host>:8101):
+// 同一个端口同时提供三件事(客户端就是这么设计的, 它连的是 http://<host>:8101):
 //   - POST /1/...  游戏原生 HTTP(登录/云存档/成绩), 见 native-http.js
 //   - GET  /sock   游戏内联机 WebSocket, 见 sock.js
+//   - /panel 等    网页面板与管理面板(与 umiguri-server 同一套账号库), 见 web-panel.js
 
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
@@ -12,6 +13,7 @@ import { closeDb, openDb } from "./lib/db.js";
 import { isWebSocketUpgrade } from "./lib/ws.js";
 import { handleNativeHttp } from "./native-http.js";
 import { handleSocketUpgrade } from "./sock.js";
+import { installWebPanel } from "./web-panel.js";
 
 function localAddresses() {
   const out = [];
@@ -26,6 +28,8 @@ function localAddresses() {
 
 export function startServer({ port = config.port, host = config.host } = {}) {
   openDb();
+  // 网页面板挂在同一个端口上: /panel 玩家面板, /admin-panel 管理面板。
+  const panel = installWebPanel();
 
   const server = createServer((req, res) => {
     let url;
@@ -36,6 +40,8 @@ export function startServer({ port = config.port, host = config.host } = {}) {
       return;
     }
     handleNativeHttp(req, res, url)
+      // 原生接口没接的路径再交给面板, 还不是面板的就照旧 404。
+      .then((handled) => (handled ? true : panel.handle(req, res, url)))
       .then((handled) => {
         if (handled) return;
         const payload = JSON.stringify({ result: "bad" });
@@ -82,6 +88,9 @@ export function startServer({ port = config.port, host = config.host } = {}) {
     console.log("[umg-native] 游戏里把联机地址指到本机即可, 例如:");
     for (const ip of localAddresses()) console.log("             http://" + ip + ":" + shown);
     console.log("             (本机自测可用 http://127.0.0.1:" + shown + ")");
+    console.log("[umg-native] 玩家面板 http://127.0.0.1:" + shown + "/panel");
+    console.log("[umg-native] 管理面板 http://127.0.0.1:" + shown + "/admin-panel");
+    console.log("[umg-native] 管理员令牌 " + panel.adminToken + " (存于 " + panel.adminTokenPath + ")");
     if (config.traceSock) console.log("[umg-native] 已开启 /sock 帧跟踪(UMIGURI_SOCK_TRACE=1)");
   });
 

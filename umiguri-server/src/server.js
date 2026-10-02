@@ -5,8 +5,7 @@ import { config } from "./config.js";
 import { openDb, closeDb } from "./lib/db.js";
 import { buildRouter, authResolver } from "./routes/index.js";
 import { reapIdleRooms } from "./rooms.js";
-import { reapExpiredAdminSessions } from "./admin-panel.js";
-import { randomBytes } from "node:crypto";
+import { ADMIN_TOKEN_PATH, ensureAdminToken, reapExpiredAdminSessions } from "./admin-panel.js";
 
 export function createApp() {
   openDb();
@@ -17,6 +16,10 @@ export function createApp() {
 export function startServer({ port = config.port, host = config.host } = {}) {
   const server = createApp();
 
+  // 管理员令牌: 环境变量 > data/admin-token > 随机生成并写盘(见 admin-panel.js)。
+  // 必须在 listen 之前准备好 —— 否则日志静默的部署里这个进程根本没有管理令牌。
+  const adminToken = ensureAdminToken();
+
   server.listen(port, host, () => {
     if (config.logLevel !== "silent") {
       const addr = server.address();
@@ -26,17 +29,15 @@ export function startServer({ port = config.port, host = config.host } = {}) {
       if (config.jwtSecret === "umiguri-dev-secret-change-me") {
         console.warn("[umg-server] 警告: 正在使用默认 JWT 密钥, 生产部署请设置 UMIGURI_JWT_SECRET");
       }
-      // 管理员令牌: 未配置时随机生成并打印。它是建号/发卡的唯一凭据,
-      // 每次重启都换一把(除非设了 UMIGURI_ADMIN_TOKEN), 避免默认值被猜到。
-      if (!config.adminToken) {
-        config.adminToken = randomBytes(24).toString("base64url");
-        console.log("[umg-server] 管理员令牌(本次运行有效): " + config.adminToken);
-        console.log("[umg-server] 建号示例:");
-        console.log("  curl -X POST http://127.0.0.1:" + shown + "/admin/users" +
-          " -H \"content-type: application/json\"" +
-          " -H \"authorization: Bearer " + config.adminToken + "\"" +
-          " -d '{\"username\":\"yourname\"}'");
-      }
+      console.log("[umg-server] 玩家面板 http://127.0.0.1:" + shown + "/panel");
+      console.log("[umg-server] 管理面板 http://127.0.0.1:" + shown + "/admin-panel");
+      // 管理员令牌是建号/发卡的唯一凭据, 打印出来好复制。
+      console.log("[umg-server] 管理员令牌 " + adminToken + " (存于 " + ADMIN_TOKEN_PATH + ")");
+      console.log("[umg-server] 建号示例:");
+      console.log("  curl -X POST http://127.0.0.1:" + shown + "/admin/users" +
+        " -H \"content-type: application/json\"" +
+        " -H \"authorization: Bearer " + adminToken + "\"" +
+        " -d '{\"username\":\"yourname\"}'");
     }
   });
 

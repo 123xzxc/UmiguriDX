@@ -90,7 +90,9 @@ JUDGE_JUSTICE_CRITICAL (正义暴击) / JUSTICE (正义) / ATTACK (攻击) / MIS
 | 目录 | 面向 | 协议 / 端口 |
 |---|---|---|
 | `umiguri-server/` | 网页面板 / 宿主联机面板 | 自家 REST(JSON + JWT), 端口 8787 |
-| `umiguri-native-server/` | **游戏本体** | 游戏原生协议 `POST /1/*` + `GET /sock`(加密二进制), 端口 8101 |
+| `umiguri-native-server/` | **游戏本体 + 网页面板** | 游戏原生协议 `POST /1/*` + `GET /sock`(加密二进制), 端口 8101 |
 
 两者都零第三方依赖(`node:sqlite`), 共用同一个 `data/umiguri.db` —— 网页面板发的卡,
-游戏里直接就能刷。现状、客户端补丁的三个锚点与待回归清单见 `ONLINE.md`。
+游戏里直接就能刷。**只跑 `umiguri-native-server` 就够**: 网页面板(`/panel`)、管理面板
+(`/admin-panel`)与游戏联机都在 8101 上, 管理员令牌见 `umiguri-server/data/admin-token`。
+现状、客户端补丁的三个锚点与待回归清单见 `ONLINE.md`。

@@ -122,6 +122,7 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 - [x] 宿主启动器(`keypanel/launcher.js`, 游戏加载前输卡号登录)
 - [x] 服务端冒烟测试(77 项断言, 覆盖卡号/TOTP/面板/管理面板/房间全链路)
 - [x] 管理面板 `/admin-panel`(网页建号/重置验证器/发卡/吊销, 令牌换会话 cookie)
+- [x] 面板挂到原生服务端上 —— 一个进程(8101)同时提供游戏协议与 `/panel`、`/admin-panel`
 - [ ] 自助注册面板(**刻意不做** —— 谁能自助申请 TOTP 密钥, 谁就能接管任意用户名)
 - [x] 对局上报接入(游玩桥 `__umgPlay` 暴露 `musicId`, play -> result 时上报 `/plays`)
 - [x] 游戏内房间入口 —— 宿主层联机面板, 取代丢失的 `openCoop`
@@ -190,9 +191,31 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 
 | | umiguri-server | umiguri-native-server |
 |---|---|---|
-| 面向 | 网页面板 / 宿主联机面板 | 游戏本体 |
+| 面向 | 网页面板 / 宿主联机面板 | 游戏本体 + 网页面板 |
 | 协议 | 自家 REST(JSON + JWT) | `POST /1/*`(JSON) + `GET /sock`(加密二进制 WS) |
 | 端口 | 8787 | **8101**(游戏里写死的) |
+| 面板 | `/panel`, `/admin-panel` | **同样挂在这上面**(见 7.1.1) |
+
+#### 7.1.1 面板也挂在原生服务端上(2026-10 补)
+
+面板原先只在 `umiguri-server`(8787), 于是"想开面板就得再跑一个进程"。现在把
+`routes/index.js` 拆成 `registerGameRoutes` / `registerPanelRoutes` 两半,
+原生服务端用 `buildPanelRouter()` 把面板挂到自己的 HTTP 循环上(`src/web-panel.js`),
+**一个进程、一个端口**同时给游戏和网页用。
+
+三处必须一起做对, 否则会踩坑:
+
+- **共用一个数据库连接**: 同一个进程里对同一个库开两个写连接会互相卡死(SQLite 的
+  `busy_timeout` 只在跨进程时有用), 所以用 `attachDb()` 把原生服务端的连接交给
+  umiguri-server 那套模块, 再由 `migrateSchema()` 补上面板用的表(幂等)。
+- **只挂面板相关路径**: 游戏端旧 REST(`/auth/card` 等依赖 JWT 密钥)不挂, 原生服务端
+  的身份体系是 `native_sessions`, 没必要多开一扇门。
+- **面板要有数据**: 面板读 `plays`/`bests`, 原生成绩写在 `native_records`, 所以
+  `setRecord` 时顺手镜像一份(`rankLabelOf()` 按客户端 `scope.rankLabel` 的阈值定级,
+  `clear` 取 `flags` 第 0 位), 否则面板永远是"暂无记录"。
+
+管理员令牌统一放在 `umiguri-server/data/admin-token`(两个服务端共用), 环境变量
+`UMIGURI_ADMIN_TOKEN` 优先于该文件。
 
 ### 7.2 客户端: 三个锚点
 

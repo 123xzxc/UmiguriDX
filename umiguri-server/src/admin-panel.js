@@ -10,11 +10,45 @@
 // token + TTL, 泄漏影响面小得多。
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { getDb } from "./lib/db.js";
 import { config } from "./config.js";
 import { readCookie, unauthorized, notFound } from "./lib/http.js";
 
 const now = () => Date.now();
+
+// 管理员令牌的存放位置: 与数据库同目录(umiguri-server/data/admin-token)。
+// 两个服务端共用这一个文件, 所以在哪边起的服务, 令牌都是同一串。
+export const ADMIN_TOKEN_PATH = resolve(
+  dirname(fileURLToPath(import.meta.url)), "..", "data", "admin-token"
+);
+
+// 管理员令牌的来源, 优先级:
+//   UMIGURI_ADMIN_TOKEN 环境变量 > data/admin-token 文件 > 随机生成并写入该文件。
+// 落盘是刻意的: 令牌一变, 之前打印出来/记在管理面板浏览器里的那串就废了,
+// 而"每次重启都换令牌"对自建服来说只是折腾自己。
+export function ensureAdminToken() {
+  if (config.adminToken) return config.adminToken;
+  try {
+    const saved = readFileSync(ADMIN_TOKEN_PATH, "utf8").trim();
+    if (saved) {
+      config.adminToken = saved;
+      return config.adminToken;
+    }
+  } catch {
+    // 第一次运行还没有这个文件, 走下面的随机生成。
+  }
+  config.adminToken = randomBytes(24).toString("base64url");
+  try {
+    mkdirSync(dirname(ADMIN_TOKEN_PATH), { recursive: true });
+    writeFileSync(ADMIN_TOKEN_PATH, config.adminToken + "\n", { mode: 0o600 });
+  } catch (e) {
+    console.warn("[umg] 管理员令牌无法写入 " + ADMIN_TOKEN_PATH + " (" + e.message + "), 本次运行有效");
+  }
+  return config.adminToken;
+}
 
 // 登录失败节流。内存态即可: 进程重启就清空, 而重启本身也不利于爆破。
 // 按 IP 计数, 连续失败到上限后锁一段时间。

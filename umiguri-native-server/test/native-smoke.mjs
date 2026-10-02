@@ -5,6 +5,7 @@
 //   1. 帧加密与客户端实现逐字节一致
 //   2. /1/* HTTP: 登录 / 档案 / 设置 / 成绩 / 角色, 以及失败分支
 //   3. /sock: 心跳、进房、第二人加入、选曲、实时分数、聊天、离房解散
+//   4. 网页面板(/panel + /admin-panel): 与 umiguri-server 共用同一套账号库
 //
 // 跑法: node test/native-smoke.mjs
 
@@ -25,10 +26,13 @@ for (const f of [dbPath, dbPath + "-wal", dbPath + "-shm"]) {
 }
 process.env.UMIGURI_DB = dbPath;
 process.env.UMIGURI_LOG_LEVEL = "silent";
+// 面板的管路要一起测, 所以给管理接口一把固定令牌。
+process.env.UMIGURI_ADMIN_TOKEN = "native-smoke-admin";
 
 // 环境变量必须在 import 之前设好, 所以这里用动态 import。
 const wire = await import("../src/lib/wire.js");
 const { startServer } = await import("../src/index.js");
+const { totp } = await import("../../umiguri-server/src/lib/totp.js");
 const { cryptFrame, parseFrame, Writer } = wire;
 
 let pass = 0;
@@ -474,6 +478,123 @@ let guestB = 0;
   eq(closed.u32(), roomId, "房主离开后 B 收到 129(房间解散)");
   const r2 = await b.request(1, null);
   eq(r2.body.u16(), 0, "房间解散后 B 仍然能心跳(连接没断)");
+}
+
+// ---- 4. 网页面板(面板挂在原生服务端上, 见 src/web-panel.js) ----
+{
+  const page = await fetch(base + "/panel");
+  eq(page.status, 200, "玩家面板返回 200");
+  ok(String(page.headers.get("content-type")).includes("text/html"), "玩家面板是 HTML");
+  const html = await page.text();
+  ok(html.includes("UMIGURI 玩家面板"), "玩家面板页面内容正确");
+
+  const adminPage = await fetch(base + "/admin-panel");
+  eq(adminPage.status, 200, "管理面板返回 200");
+  const adminHtml = await adminPage.text();
+  ok(adminHtml.includes("管理员令牌"), "管理面板页面内容正确");
+}
+
+const adminHeaders = {
+  authorization: "Bearer " + process.env.UMIGURI_ADMIN_TOKEN,
+  "content-type": "application/json"
+};
+const panelUser = await (await fetch(base + "/admin/users", {
+  method: "POST",
+  headers: adminHeaders,
+  body: JSON.stringify({ username: "panel01" })
+})).json();
+ok(panelUser.user && panelUser.user.id > 0, "管理接口建号成功");
+ok(typeof panelUser.totpSecret === "string" && panelUser.totpSecret.length >= 16, "管理接口给出 TOTP 密钥");
+
+let panelCard = "";
+{
+  const r = await (await fetch(base + "/admin/cards", {
+    method: "POST",
+    headers: adminHeaders,
+    body: JSON.stringify({ userId: panelUser.user.id, label: "面板卡" })
+  })).json();
+  panelCard = r.card && r.card.cardId;
+  ok(/^E004[0-9]{16}$/.test(String(panelCard)), "管理接口发的卡是 20 位 E004 卡: " + panelCard);
+}
+
+// 管理接口建的号 + 发的卡, 直接走游戏原生登录 —— 两个服务端必须是同一个库。
+let panelToken = "";
+{
+  const r = await api(base, "/1/user/login", { code: panelCard, nw_token: "nw-panel-0001" });
+  eq(r.result, "ok", "管理接口发的卡能走原生刷卡登录");
+  eq(r.user_id, panelUser.user.id, "原生登录认的就是管理接口建的那个账号");
+  panelToken = r.token;
+}
+
+{
+  const r = await api(base, "/1/umiguri/setRecord", {
+    token: panelToken,
+    nw_token: "nw-panel-0001",
+    data: { musicId: "song_panel", musicDiff: 2, score: 1009500, flags: 1, playCount: 1, updatedAt: 1 }
+  });
+  eq(r.result, "ok", "面板账号上报成绩成功");
+}
+
+let panelCookie = "";
+{
+  const res = await fetch(base + "/panel/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "panel01", code: totp(panelUser.totpSecret) })
+  });
+  const setCookie = String(res.headers.get("set-cookie") || "");
+  await res.text();
+  eq(res.status, 200, "面板 TOTP 登录成功");
+  ok(setCookie.startsWith("umg_panel="), "下发面板会话 cookie");
+  panelCookie = setCookie.split(";")[0];
+}
+
+{
+  const res = await fetch(base + "/panel/me", { headers: { cookie: panelCookie } });
+  const me = await res.json();
+  eq(res.status, 200, "带面板会话读 me 返回 200");
+  eq(me.user && me.user.username, "panel01", "面板会话指向正确账号");
+  eq((me.cards || []).length, 1, "面板能看到自己名下的卡");
+}
+
+{
+  const res = await fetch(base + "/panel/plays?limit=20", { headers: { cookie: panelCookie } });
+  const data = await res.json();
+  eq(res.status, 200, "带面板会话读 plays 返回 200");
+  ok(Array.isArray(data.plays) && data.plays.length >= 1, "面板能看到游玩记录(原生成绩已镜像到 plays)");
+  if (data.plays && data.plays.length) {
+    eq(data.plays[0].musicId, "song_panel", "面板记录里的曲目正确");
+    eq(data.plays[0].score, 1009500, "面板记录里的分数正确");
+    eq(data.plays[0].rank, "SSS+", "面板按分数算出的等级正确");
+    eq(data.plays[0].clear, 1, "面板记录里的通关状态取自 flags 第 0 位");
+  }
+}
+
+{
+  const res = await fetch(base + "/panel/nonexistent", { headers: { cookie: panelCookie } });
+  await res.text();
+  eq(res.status, 404, "面板下的未知路径仍然 404");
+}
+
+{
+  const res = await fetch(base + "/auth/card", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-cli": "UMIGURI" },
+    body: JSON.stringify({ cardId: panelCard })
+  });
+  const data = await res.json();
+  eq(res.status, 404, "游戏端旧 REST(/auth/card)没有挂到原生服务端上");
+  eq(data.result, "bad", "旧 REST 未挂载时回的是原生格式的错误");
+}
+
+{
+  const res = await fetch(base + "/1/umiguri/nope", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-cli": "UMIGURI" },
+    body: JSON.stringify({})
+  });
+  const data = await res.json();
+  eq(data.result, "bad", "原生接口的未知端点仍然是原生格式的错误");
 }
 
 a.close();

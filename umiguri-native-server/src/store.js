@@ -272,7 +272,64 @@ export function putRecord(userId, { musicId, musicDiff, score, flags, playCount,
     "INSERT INTO native_records (user_id, music_id, difficulty, score, flags, play_count, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
       "ON CONFLICT(user_id, music_id, difficulty) DO UPDATE SET score = excluded.score, flags = excluded.flags, play_count = excluded.play_count, updated_at = excluded.updated_at"
   ).run(userId, String(musicId), musicDiff | 0, finalScore, flags | 0, finalCount, updatedAt || now());
+  // 网页面板的"最近游玩 / 个人最佳"读的是 plays / bests(与 umiguri-server 共用的表),
+  // 原生成绩落在 native_records 里, 所以顺手镜像一份过去 —— 否则面板永远是"暂无记录"。
+  // 只在"真的又玩了一局"时记: 分数没涨、playCount 也没涨就不重复记,
+  // 免得客户端每次启动全量同步都把面板刷成一堆重复行。
+  if (!prev || finalScore > prev.score || finalCount > prev.play_count) {
+    mirrorToPlayTables(userId, {
+      musicId: String(musicId),
+      difficulty: musicDiff | 0,
+      score: finalScore,
+      flags: flags | 0
+    });
+  }
   return { musicId, musicDiff, score: finalScore, flags, playCount: finalCount, updatedAt };
+}
+
+// 分数 -> 等级名。阈值与客户端 scope.rankLabel 一致, 只把内部名(Sssp/Sss/...)
+// 换成玩家看到的写法(SSS+/SSS/...)。
+function rankLabelOf(score) {
+  if (score >= 1009000) return "SSS+";
+  if (score >= 1007500) return "SSS";
+  if (score >= 1005000) return "SS+";
+  if (score >= 1000000) return "SS";
+  if (score >= 990000) return "S+";
+  if (score >= 975000) return "S";
+  if (score >= 950000) return "AAA";
+  if (score >= 925000) return "AA";
+  if (score >= 900000) return "A";
+  if (score >= 800000) return "BBB";
+  if (score >= 700000) return "BB";
+  if (score >= 600000) return "B";
+  if (score >= 500000) return "C";
+  return "D";
+}
+
+// flags 的第 0 位是"是否通关"(客户端 recordsStore 解出来就是 flag & 1,
+// 上报时再用 PA() 打包回去), 所以这里直接取。
+// played_at 用服务器时间: 客户端传的 updatedAt 是"日期"不是时间戳(见 gameCore),
+// 拿它排序会乱。
+function mirrorToPlayTables(userId, { musicId, difficulty, score, flags }) {
+  const d = getDb();
+  const at = now();
+  const rank = rankLabelOf(score);
+  const clear = flags & 1;
+
+  const prevBest = d
+    .prepare("SELECT score FROM bests WHERE user_id = ? AND music_id = ? AND difficulty = ?")
+    .get(userId, musicId, difficulty);
+  if (!prevBest || score > prevBest.score) {
+    d.prepare(
+      "INSERT INTO bests (user_id, music_id, difficulty, score, rank, clear, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT(user_id, music_id, difficulty) DO UPDATE SET score = excluded.score, rank = excluded.rank, clear = excluded.clear, updated_at = excluded.updated_at"
+    ).run(userId, musicId, difficulty, score, rank, clear, at);
+  }
+
+  d.prepare(
+    "INSERT INTO plays (user_id, music_id, difficulty, score, rank, clear, combo, judge_crit, judge_miss, played_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?)"
+  ).run(userId, musicId, difficulty, score, rank, clear, at);
 }
 
 export function listCourseRecords(userId) {

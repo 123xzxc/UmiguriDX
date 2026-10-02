@@ -8,6 +8,9 @@ import { dirname } from "node:path";
 import { config } from "../config.js";
 
 let db = null;
+// 连接是不是本模块开的。原生服务端会把自己的连接交过来(attachDb),
+// 那种连接由它自己负责关闭, 这里只管放手, 免得 close 两次。
+let ownsDb = true;
 
 export function openDb(path = config.dbPath) {
   if (db) return db;
@@ -15,8 +18,29 @@ export function openDb(path = config.dbPath) {
   db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
+  // 另一个进程(原生服务端)可能正在写, 等一会儿而不是直接报 SQLITE_BUSY。
+  db.exec("PRAGMA busy_timeout = 5000");
   migrate(db);
+  ownsDb = true;
   return db;
+}
+
+// 复用外部已经打开的连接。
+// 为什么必须共用: 同一个进程里对同一个库开两个连接, 一旦并发写就会互相卡住 ——
+// SQLite 的 busy_timeout 是给跨进程用的, 同进程内那个锁永远等不到。原生服务端
+// 把自己的连接交过来, 面板那套模块(users/cards/panel/admin)就跟着用同一个句柄。
+export function attachDb(handle) {
+  if (!handle) throw new Error("attachDb 需要一个已打开的数据库连接");
+  if (db && db !== handle) throw new Error("数据库已经初始化, 不能换成另一个连接");
+  db = handle;
+  ownsDb = false;
+  return db;
+}
+
+// 建表(全部 IF NOT EXISTS, 幂等)。外部连接接上后由调用方执行一次。
+export function migrateSchema(target = getDb()) {
+  migrate(target);
+  return target;
 }
 
 export function getDb() {
@@ -26,8 +50,10 @@ export function getDb() {
 
 export function closeDb() {
   if (db) {
-    db.close();
+    const handle = db;
     db = null;
+    if (ownsDb) handle.close();
+    ownsDb = true;
   }
 }
 
