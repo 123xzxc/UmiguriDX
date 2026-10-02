@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""macOS 手台串口原始探测 v2(只用 Python 标准库, 不需要 pyserial)。
+"""macOS 手台串口原始探测 v3(只用 Python 标准库, 不需要 pyserial)。
 
-v1 只回答「设备有没有回字节」; v2 把「一个字节都没回」拆成能定位的几种:
+它把「手台连不上」拆成能定位的几层:
 
   A. 设备不在 USB 总线上 / 挑错了口   -> 看第 1 段 USB 设备树
   B. 在, 但 macOS 读口就报错          -> 脚本会打出 errno 名字(EIO/ENXIO/...)
   C. 在, 读口正常, 但一个字节都不发   -> 分「没碰手台」和「碰了也不发」
   D. 是 macOS 的 CDC 驱动这一层出的错 -> 最后一段 AppleUSBCDC 的内核日志
+  E. 设备到底要什么才开始推流         -> 静听/单次开扫描/补发开扫描/只摸手台/发灯光帧, 哪一步开始
+  F. 帧收到了但校验和对不上吗         -> 对比「未转义后整帧和==0」与「线上原字节整帧和==0」
+
+(v2 那次已经出现过「设备在推 cmd=0x01 的帧, 但每帧都被判校验和错」, F 就是为此加的。)
 
 用法(先退出游戏/断开手台, 否则串口被占用):
 
     python3 mac-hw-probe.py
     python3 mac-hw-probe.py /dev/cu.usbmodem3563345B32343
 
-跑的过程中按屏幕提示做: 会请你用手指在手台上左右来回划 12 秒。
-整段输出贴回来就行。macOS 自带 /usr/bin/python3。
+中途会请你用手指在手台上左右来回划(每次几秒), 按屏幕提示做就行。
+整段输出贴回来即可。macOS 自带 /usr/bin/python3。
 """
 import errno as errno_mod
 import fcntl
@@ -253,15 +257,102 @@ def report(label, data, events):
         say('      !! ' + e)
 
 
-def touch_test(fd, secs, label):
-    say('  >>> 现在开始: 请用一根手指在手台(触摸条)上从左划到右, 再划回来,')
-    say('      来回划几次, 持续约 %d 秒(现在就开始, 别等)…' % secs)
-    for i in (3, 2, 1):
+def send_scan(fd):
+    """AUTO_AIR_START + AUTO_SCAN_START(Affine 参考实现的开扫描顺序)"""
+    return write_all(fd, AFFINE_START, '开扫描(AIR_START+SCAN_START)')
+
+
+def analyze(data, max_frames=400):
+    """拆帧 + 对比两种校验和规则 + 打出前两帧的原始字节。"""
+    say('  ---- 收到的数据: %d 字节 ----' % len(data))
+    say('  流开头 80 字节: %s' % hexdump(data, 80))
+    if len(data) > 100:
+        say('  流结尾 20 字节: %s' % hexdump(data[-20:], 20))
+    frames = 0
+    logical_ok = 0
+    wire_ok = 0
+    samples = []
+    i = 0
+    n = len(data)
+    while i < n and frames < max_frames:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        start = i
+        j = i + 1
+        logical = [0xFF]
+        bad = False
+        while len(logical) < 3 and not bad:
+            if j >= n:
+                bad = True
+                break
+            b = data[j]
+            j += 1
+            if b == 0xFF:
+                bad = True
+                break
+            if b == 0xFD:
+                if j >= n:
+                    bad = True
+                    break
+                b = (data[j] + 1) & 0xFF
+                j += 1
+            logical.append(b)
+        if bad or len(logical) < 3:
+            i = start + 1
+            continue
+        size = logical[2]
+        while len(logical) < size + 4 and not bad:
+            if j >= n:
+                bad = True
+                break
+            b = data[j]
+            j += 1
+            if b == 0xFF:
+                bad = True
+                break
+            if b == 0xFD:
+                if j >= n:
+                    bad = True
+                    break
+                b = (data[j] + 1) & 0xFF
+                j += 1
+            logical.append(b)
+        if bad or len(logical) < size + 4:
+            i = start + 1
+            continue
+        wire = data[start:j]
+        frames += 1
+        if sum(logical) & 0xFF == 0:
+            logical_ok += 1
+        if sum(wire) & 0xFF == 0:
+            wire_ok += 1
+        if len(samples) < 2:
+            samples.append((wire, bytes(logical)))
+        i = j
+    say('  拆出 %d 帧; 校验和对比: 「未转义后整帧和==0」%d 帧, 「线上原字节整帧和==0」%d 帧'
+        % (frames, logical_ok, wire_ok))
+    for k, pair in enumerate(samples, 1):
+        wire, logical = pair
+        say('  第 %d 帧 线上字节(%d): %s' % (k, len(wire), hexdump(wire, 64)))
+        say('  第 %d 帧 未转义后(%d): %s' % (k, len(logical), hexdump(logical, 64)))
+        say('       cmd=0x%02X size=%d 末尾校验字节=0x%02X 未转义和=0x%02X 线上和=0x%02X'
+            % (logical[1], logical[2], logical[-1], sum(logical) & 0xFF, sum(wire) & 0xFF))
+    if samples:
+        logical = samples[0][1]
+        pl = logical[3:3 + logical[2]]
+        say('  第 1 帧 payload(%d): %s' % (len(pl), ' '.join('%02X' % b for b in pl)))
+        if len(pl) >= 32:
+            say('      前 32 个=压力值(十进制): %s' % ' '.join('%d' % b for b in pl[:32]))
+        if len(pl) > 32:
+            say('      第 33 个=天键位图: 0b%s' % format(pl[32], '08b'))
+    return frames
+
+
+def countdown(secs):
+    for i in range(secs, 0, -1):
         say('      %d…' % i)
         time.sleep(1)
-    data, events = listen(fd, secs, tick=2.0)
-    report(label, data, events)
-    return data
 
 
 def full_probe(path):
@@ -272,65 +363,80 @@ def full_probe(path):
         say('  打不开: %s(%s) —— 多半是游戏/别的程序占着这个口'
             % (errno_mod.errorcode.get(e.errno, e.errno), e.strerror))
         return False
-    ok = False
+    buf = bytearray()
+    onset = [None]
+
+    def take(label, secs):
+        data, events = listen(fd, secs)
+        report(label, data, events)
+        if data:
+            if onset[0] is None:
+                onset[0] = label
+            buf.extend(data)
+        return data
+
     try:
         say('  已按 115200 8N1 打开, DTR 置位(和 Windows 参考实现的 SETDTR 一致)')
-        data, events = listen(fd, 2.0)
-        report('静听 2.0s', data, events)
-        ok = ok or bool(data)
+        write_all(fd, affine_frame(0x04), 'AUTO_SCAN_STOP(先让它回到「没在扫描」)')
+        take('[0] 复位后静听 2.0s', 2.0)
+        send_scan(fd)
+        take('[1] 开扫描 ×1 之后听 3.0s', 3.0)
+        if not buf:
+            for k in range(6):
+                send_scan(fd)
+                if take('[2] 补发开扫描 第 %d 次 之后听 0.7s' % (k + 1), 0.7):
+                    break
+        if not buf:
+            say('  >>> [3] 请现在用手指在手台上左右来回划, 持续 5 秒(这一步不写任何东西)…')
+            countdown(3)
+            take('[3] 只摸手台 → 听 5.0s', 5.0)
+        if not buf:
+            write_all(fd, LED_FRAME, '灯光帧(黄)')
+            take('[4] 发灯光帧(黄) → 听 3.0s', 3.0)
+            say('      >>> 顺便看一眼手台灯带有没有变黄')
+        if not buf:
+            write_all(fd, AIR_LED_FRAME, 'AIR 灯光帧(绿)')
+            take('[5] 发 AIR 灯光帧(绿) → 听 3.0s', 3.0)
 
-        write_all(fd, AFFINE_START, 'Affine 开扫描')
-        data = touch_test(fd, 12.0, '摸手台 + 听 12.0s')
-        ok = ok or bool(data)
-        if data:
-            return True
-
-        write_all(fd, CHU2_POLL, 'chu2board 0xB0/0xAF')
-        data, events = listen(fd, 2.0)
-        report('再听 2.0s', data, events)
-        ok = ok or bool(data)
-
-        write_all(fd, LED_FRAME, '灯光帧(黄)')
-        say('      >>> 请看一眼手台灯带: 有没有变成黄色/绿色? (记住这个结果, 很有用)')
-        write_all(fd, AIR_LED_FRAME, 'AIR 灯光帧(绿)')
-        data, events = listen(fd, 3.0)
-        report('发完灯再听 3.0s', data, events)
-        ok = ok or bool(data)
+        if buf:
+            say('')
+            say('  >>> 数据是在「%s」这一步开始来的' % onset[0])
+            analyze(buf)
+            say('')
+            say('  再摸 3 秒, 看压力值会不会变(确认手台真的在工作)…')
+            countdown(3)
+            data, events = listen(fd, 3.0)
+            if data:
+                analyze(data, max_frames=3)
+            else:
+                say('      这 3 秒没有数据 —— 流可能停了')
+        else:
+            say('')
+            say('  ---- 换一种开法: 控制线全不动 ----')
     finally:
         os.close(fd)
 
-    # 有的固件在「打开串口」瞬间会复位一下, 关掉重开再听一次
-    time.sleep(0.3)
-    if not os.path.exists(path):
-        say('  !! 关掉后 %s 消失了 —— 设备在打开串口时重新枚举了' % path)
-    try:
-        fd = open_port(path, BAUD, True, False)
-    except OSError as e:
-        say('  重开失败: %s' % e.strerror)
-        return ok
-    try:
-        write_all(fd, AFFINE_START, '重开后开扫描')
-        data = touch_test(fd, 6.0, '重开 + 摸手台 + 听 6.0s')
-        ok = ok or bool(data)
-    finally:
-        os.close(fd)
-
-    if not ok:
-        # 控制线一点不动再来一次(排除 DTR/RTS 的锅)
-        say('  ---- 换一种开法: 控制线全不动 ----')
+    if not buf:
+        time.sleep(0.3)
+        if not os.path.exists(path):
+            say('  !! 关掉后 %s 消失了 —— 设备在打开串口时重新枚举了' % path)
         try:
             fd = open_port(path, BAUD, False, False)
         except OSError as e:
-            say('  打不开: %s' % e.strerror)
+            say('  重开失败: %s' % e.strerror)
             return False
         try:
-            write_all(fd, AFFINE_START, 'Affine 开扫描')
-            data = touch_test(fd, 6.0, '控制线不动 + 摸手台 + 听 6.0s')
-            ok = ok or bool(data)
+            send_scan(fd)
+            say('  >>> 请现在摸手台 6 秒…')
+            countdown(3)
+            data, events = listen(fd, 6.0)
+            report('[6] 控制线不动 + 摸手台 → 听 6.0s', data, events)
+            if data:
+                analyze(data)
+                buf.extend(data)
         finally:
             os.close(fd)
-    return ok
-
+    return bool(buf)
 
 def quick_probe(path):
     try:
@@ -431,7 +537,13 @@ def main():
     say('')
     say('==== 6. 结果怎么看 ====')
     if got:
-        say('  有字节回来了: 上面 [ ] 里就是设备说的话。这是协议层的问题, 把这整段贴回来。')
+        say('  手台说话了 —— 请把这整段贴回来, 尤其是下面这三组:')
+        say('   - 「数据是在「…」这一步开始来的」: 说明设备要什么才会开始推流;')
+        say('   - 「校验和对比」两边的帧数: 哪边等于总帧数, 宿主就该按哪种算法校验')
+        say('     (「未转义后整帧和==0」= 官方/Affine 参考实现的算法; 「线上原字节整帧和==0」')
+        say('     = 连 0xFD 转义字节也一起算进去。现在宿主只认前一种, 所以两种对不上就会')
+        say('     「明明有数据却一帧都不认」);')
+        say('   - 「第 1/2 帧 线上字节 / 未转义后」这两行原始字节。')
     else:
         say('  一个字节都没有。请对照上面三段系统信息:')
         say('   a) USB 设备树里没有 Linnea / idVendor = %d 的设备:' % AFFINE_VID)
