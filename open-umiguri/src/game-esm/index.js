@@ -4112,7 +4112,7 @@ scope.v_Hs_28017.prototype = {
   iT: function (v_i_33880, v_e_33881) {
     if (v_i_33880 === scope.v_js_28019) {
       var v_t_33882 = v_e_33881.Hx;
-      this.ix.set(v_e_33881.Hx.nx, v_t_33882), this.qC(v_e_33881.Hx.nx, !1), v_e_33881.Hx.nx !== scope.v_oe_27649.sx() && scope.v_Ia_28059.LI(v_e_33881.Hx.nx) && scope.v_Fe_28101(async () => {
+      this.ix.set(v_e_33881.Hx.nx, v_t_33882), console.log("[umg][coop] 130 进房 nx=" + v_e_33881.Hx.nx + " (自己=" + scope.v_oe_27649.sx() + ") ix.size=" + this.ix.size), this.qC(v_e_33881.Hx.nx, !1), v_e_33881.Hx.nx !== scope.v_oe_27649.sx() && scope.v_Ia_28059.LI(v_e_33881.Hx.nx) && scope.v_Fe_28101(async () => {
         for (let v_t_33893 = 0; v_t_33893 < 10 && !this.fC(v_e_33881.Hx.nx); ++v_t_33893) await scope.v_fo_28103(500);
       });
     } else if (v_i_33880 === scope.v_aa_28037) v_e_33881.nx !== scope.v_oe_27649.sx() && this.iR(v_e_33881.nx);else if (v_i_33880 === scope.v_Vs_28021) {
@@ -4155,7 +4155,7 @@ scope.v_Hs_28017.prototype = {
       for (v_u_33890 of this.BC) if (v_u_33890.OI(v_i_33880, v_f_33891)) break;
     } else v_i_33880 === scope.v_ta_28031 ? (v_t_33882 = v_e_33881.Hx).nx !== scope.v_oe_27649.sx() && (v___33892 = this.ix.get(v_t_33882.nx)) && (v___33892.TC = v_t_33882.TC, v___33892.MC = v_t_33882.MC, v___33892.RC = v_t_33882.RC, this.iR(v_t_33882.nx)) : v_i_33880 === scope.v_Js_28018 ? this.Gx() : v_i_33880 === scope.v_ea_28033 && scope.audioFontHub.cL(v_i_33880, v_e_33881);
     var v___33892;
-    this.EC && this.EC(v_i_33880, v_e_33881), v_i_33880 === scope.v_Ws_28022 ? this.ZC(v_e_33881.yx) : v_i_33880 === scope.v_Os_28020 && ((v___33892 = this.ix.get(v_e_33881.nx)) && (v_t_33882 = scope.renderer.Yt.Zt[v___33892.ux]) && (delete scope.renderer.Yt.Zt[v___33892.ux], v_t_33882.free()), this.ix.delete(v_e_33881.nx), this.GC) && (v___33892 = this.Ox.find(v_t_33903 => v_t_33903.Ae === v_e_33881.nx)) && (v___33892.eP = !0), this.EC && this.EC(scope.v_sa_28036, {
+    this.EC && this.EC(v_i_33880, v_e_33881), v_i_33880 === scope.v_Ws_28022 ? this.ZC(v_e_33881.yx) : v_i_33880 === scope.v_Os_28020 && ((v___33892 = this.ix.get(v_e_33881.nx)) && (v_t_33882 = scope.renderer.Yt.Zt[v___33892.ux]) && (delete scope.renderer.Yt.Zt[v___33892.ux], v_t_33882.free()), this.ix.delete(v_e_33881.nx), console.log("[umg][coop] 131 离开 nx=" + v_e_33881.nx + " ix.size=" + this.ix.size), this.GC) && (v___33892 = this.Ox.find(v_t_33903 => v_t_33903.Ae === v_e_33881.nx)) && (v___33892.eP = !0), this.EC && this.EC(scope.v_sa_28036, {
       nx: v_e_33881.nx
     });
   },
@@ -4213,12 +4213,16 @@ scope.v_Hs_28017.prototype = {
     //       137 收到: 房状态 sP=1 (本地 137 等待值 DC=-1)   ← sP 动了, aP 没动
     //   表现就是「拿着房号进来的人站在大堂不动, 进不了选歌界面」。
     if (this.aP >= v_t_33919) { console.log("[umg][coop] iP(" + v_t_33919 + ") 已满足 aP=" + this.aP); return !0; }
-    console.log("[umg][coop] iP(" + v_t_33919 + ") 等待中 aP=" + this.aP + " -> 发 22(ready)");
     this.nP = v_t_33919;
     try {
       // 只能走 oP(op=22)。单机或没连上时静默跳过, 与 xx/Lx/tP 的守卫一致。
       this.Gi() && this.LC && this.LC.oP(v_t_33919);
     } catch (v_umgE) {}
+    // 上报之后再判一次: 141 有可能是**在我们挂等待之前**就广播过来的(进房补帧那条),
+    // 那种情况下 aP 已经是目标值, 直接返回 true, 不挂 Promise(挂了就再也等不到第二帧)。
+    // 以前这里先打印再挂, 日志会长成「等待中 aP=0」, 看着像没收到 141, 其实是时序。
+    if (this.aP >= v_t_33919) { console.log("[umg][coop] iP(" + v_t_33919 + ") 上报后 aP=" + this.aP + " 已满足, 不挂等待"); return !0; }
+    console.log("[umg][coop] iP(" + v_t_33919 + ") 挂等待 aP=" + this.aP + " (nP=" + this.nP + "), 等 141 >= " + v_t_33919);
     return new Promise(v_t_33920 => {
       this.rP = v_t_33920;
     });

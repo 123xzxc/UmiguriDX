@@ -685,6 +685,15 @@ function handleEnter(conn, seq, body) {
   push(conn, PUSH_JOIN, selfPayload);
   forEachOther(room, member, (m) => push(m.conn, PUSH_JOIN, selfPayload));
 
+  // 把「房间里现在有谁」记进 trace: 客户端 ix(玩家表)只由 130 填, 而且大厅要 ix.size >= 1
+  // 才放行。排查「进不了选歌界面」时, 需要一眼看出自己那份 130 到底发出去没有、
+  // 房间成员和客户端看到的是不是同一批(两边 nx 对不上就是另一个方向的 bug)。
+  trace(
+    "房间 #" + room.id + " 成员 " + room.members.size + " 人: " +
+      [...room.members.values()].map((m) => "user#" + m.userId + "(" + m.name + ")").join(", ") +
+      " | 已向 user#" + conn.userId + " 补发 " + room.members.size + " 条 130(含自己)"
+  );
+
   const rid = new Writer();
   rid.u16(room.id & 0xffff);
   push(conn, PUSH_ROOM_ID, rid.bytes());

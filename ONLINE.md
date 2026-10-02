@@ -709,3 +709,49 @@ else if (v_i_33880 === v_Qs_28030) this.aP = v_e_33881.n1,
 `umiguri-native-server/src/sock.js`(出站 trace),
 `umiguri-native-server/test/native-smoke.mjs`(239 项)。
 **这一版要重编桌面端。**
+
+### 7.15 141 通了但还是进不去 + 2.9.11
+
+7.14 之后真机日志变成了:
+
+```
+[umg][coop] 网络层收到 141 准备状态 n=1
+[umg][coop] 141 收到: 准备 aP=1 (本地 iP 等待值 nP=-1)
+```
+
+`aP` 确实写进去了, 而且 `nP=-1` 说明 **141 比 `iP(1)` 先到** —— 那按代码 `iP` 应该直接
+返回 `!0` 才对。所以卡点已经不在 141 这条链上了, 需要把「进房到进选歌」中间每一步
+都变成可观测的, 而不是继续推理。
+
+一个真实的可疑点:`ix`(房内玩家表, 大厅界面按它渲染、`v_g_29168` 用 `ix.size` 判空)
+**唯一**的填充处是 130 分支里的 `this.ix.set(...)`。而 137/141 都不碰 `ix`。
+如果自己那份 130 没到(或到了但 `nx` 对不上), 表现就是:
+
+- 大堂里自己那一格是空的;
+- `ix.size` 为 0 → 走 `copClosedModeByNoGuests` 那条路;
+- 选歌界面进不去。
+
+**这一版只加观测, 不改行为**(行为改动等日志确认真凶再上):
+
+1. `iP()` —— 先上报再判一次 `aP`: 若「上报之后」`aP` 已达标, 直接返回 `!0` 不挂 Promise。
+   原版就有这层(`return this.aP >= n || (…Promise…)`), 只是 7.13 改成显式上报时
+   顺序反了, 会白挂一次等待。现在的日志把两种情况分开:
+   - `iP(1) 上报后 aP=1 已满足, 不挂等待`
+   - `iP(1) 挂等待 aP=0 (nP=1), 等 141 >= 1`
+2. 130 分支 —— 打印 `130 进房 nx=… (自己=…) ix.size=…`, 直接看得到谁进了表。
+3. 131 分支 —— 打印 `131 离开 nx=… ix.size=…`。
+4. `umiguri-native-server/src/sock.js` 的 `enter` —— trace 里补一行房间成员清单
+   (`房间 #N 成员 K 人: user#a(名), … | 已向 user#x 补发 K 条 130(含自己)`)。
+   客户端 `ix` 和服务端 `room.members` 两边一比就知道是不是「服务端没发」还是
+   「发了但客户端没认」。
+
+**改动**: `open-umiguri/src/game-esm/index.js`, `umiguri-native-server/src/sock.js`。
+**这一版要重编桌面端**, 服务端也该一起更新(不然拿不到那条成员 trace)。
+
+排障时请把这三行贴回来(`UMIGURI_SOCK_TRACE=1` 起服务端):
+
+```
+[umg][coop] 130 进房 nx=… (自己=…) ix.size=…
+[umg][coop] iP(1) 上报后 … / iP(1) 挂等待 …
+[native][sock] 房间 #N 成员 K 人: …
+```
