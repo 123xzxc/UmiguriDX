@@ -54,6 +54,37 @@ console.log("== 健康检查 ==");
 const health = await call("GET", "/health");
 check("health 200", health.status === 200);
 
+console.log("== 页面与内联脚本 ==");
+// 页面是把 HTML 当字符串拼出来的(见 src/panel-ui.js / admin-ui.js), 拼错一个引号就会交付一个
+// 语法错误的内联 <script> —— 页面能打开, 但所有按钮都点不动, 而且服务端一点日志都不会有。
+// 这里把两个页面的内联脚本抠出来做语法检查, 顺带断言按钮 id 与取值 id 都在。
+// (2026-10 事故: panel-ui.js 里 <td colspan=\"4\"> 的引号把渲染出来的 HTML 提前截断了,
+//  整个脚本变成 SyntaxError, 现象就是「点登录没反应」。)
+function inlineScript(html) {
+  const m = /<script>([\s\S]*?)<\/script>/.exec(html);
+  return m ? m[1] : null;
+}
+
+for (const [label, path, ids] of [
+  ["/panel", "/panel", ["loginBtn", "loginMsg", "u", "c", "logoutBtn", "saveProfileBtn", "issueBtn", "cardTable", "playTable"]],
+  ["/admin-panel", "/admin-panel", ["loginBtn", "newUser", "createBtn", "usersBox", "logoutBtn"]],
+]) {
+  const page = await fetch(BASE + path);
+  const html = await page.text();
+  const js = inlineScript(html);
+  check(label + " 能打开", page.status === 200 && html.length > 500, String(page.status));
+  check(label + " 有内联脚本", !!js);
+  let syntaxErr = null;
+  try {
+    new Function(js); // 只做语法检查, 不执行
+  } catch (e) {
+    syntaxErr = e.message;
+  }
+  check(label + " 内联脚本语法正确", !syntaxErr, String(syntaxErr));
+  for (const id of ids) {
+    check(label + " 有元素 #" + id, html.includes('id="' + id + '"'));
+  }
+}
 console.log("== 管理员建号 ==");
 const created = await adminCreateUser("player1");
 check("建号成功", created.status === 200 && created.body.ok, JSON.stringify(created.body));

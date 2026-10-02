@@ -156,7 +156,7 @@ const HTML =
     "    tb.innerHTML = \"\";" +
     "    if (!cards.length) {" +
     "      var empty = document.createElement(\"tr\");" +
-    "      empty.innerHTML = \"<td colspan=\"4\" style=\"color:#9aa0a6\">还没有卡号</td>\";" +
+    "      empty.innerHTML = \"<td colspan='4' style='color:#9aa0a6'>还没有卡号</td>\";" +
     "      tb.appendChild(empty);" +
     "      return;" +
     "    }" +
@@ -198,7 +198,7 @@ const HTML =
     "      tb.innerHTML = \"\";" +
     "      if (!r.plays.length) {" +
     "        var empty = document.createElement(\"tr\");" +
-    "        empty.innerHTML = \"<td colspan=\"4\" style=\"color:#9aa0a6\">暂无记录</td>\";" +
+    "        empty.innerHTML = \"<td colspan='4' style='color:#9aa0a6'>暂无记录</td>\";" +
     "        tb.appendChild(empty);" +
     "        return;" +
     "      }" +
