@@ -123,10 +123,11 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 - [x] 服务端冒烟测试(77 项断言, 覆盖卡号/TOTP/面板/管理面板/房间全链路)
 - [x] 管理面板 `/admin-panel`(网页建号/重置验证器/发卡/吊销, 令牌换会话 cookie)
 - [ ] 自助注册面板(**刻意不做** —— 谁能自助申请 TOTP 密钥, 谁就能接管任意用户名)
-- [ ] 对局上报接入
-- [ ] `openCoop` 房间入口
-- [ ] `coopLobby` 房间态与实时对手分数
-- [ ] 游戏内卡号输入界面(现在只有启动器, 游戏中无法换号)
+- [x] 对局上报接入(游玩桥 `__umgPlay` 暴露 `musicId`, play -> result 时上报 `/plays`)
+- [x] 游戏内房间入口 —— 宿主层联机面板, 取代丢失的 `openCoop`
+- [x] 房间态与实时对手分数 —— 面板内 1s 轮询房间快照 + 上报自己的分数
+- [x] 游戏内换号/登出 —— 面板里可直接叫起启动器
+- [ ] 游戏原生联机路径(`scope.v_Xt_27648`)—— 需要补 `/1/*` HTTP 与 `/sock` 二进制协议, 见下
 
 ### 认证模型速查
 
@@ -139,3 +140,39 @@ macOS 无文字问题, 详见 `open-umiguri/REGRESSION.md`。
 
 不开放自助注册: 账号由管理员建, TOTP 密钥随建号返回(`otpauthUrl`)。
 游戏端启动器写在 `localStorage.umg_online_token`, 游戏内 account 模块读它恢复会话。
+## 六、游戏内联机面板(宿主层)
+
+### 6.1 为什么不接游戏自己的 openCoop
+
+把全库搜了一遍: 联机客户端实例 `scope.v_Xt_27648` 只有 `= null` 一处赋值
+(`src/game-esm/index.js` 的 bootstrap), 之后再没有任何地方写它。而游戏里所有
+联机分支都是 `if (v_Xt_27648 ...)` 开头:
+
+| 位置 | 分支 |
+| --- | --- |
+| `modules/v_G1_27905` | 登录/建档流程(刷卡 -> 拉资料) |
+| `modules/v_nr_27925` | 选曲确认后进入联机对局(`handshake.Bm.Fm > 2`) |
+| `modules/audioFontHub` | 对手名字(读 `v_oe_27649.ix` 玩家表) |
+
+因此这份产物里游戏自身的联机路径**永远不会被走到**, 也不会去连
+`d.umgr-serv.inonote.jp:8101`(所以现在跑起来没有网络报错)。
+要让游戏原生路径活过来, 得把 `/1/*` HTTP 与 `/sock` 二进制协议都补上,
+再把 `v_Xt_27648` 指到一个实现同样接口的适配器 —— 工作量大, 单独排期。
+
+### 6.2 现在怎么做: 宿主层面板
+
+`src/host/online/ui.js`, 打开方式 **Cmd/Ctrl+Shift+O**(或控制台
+`window.umgOnline.open()`):
+
+- 账号: 显示名/用户名/服务端地址; 「换卡登录」直接叫起启动器, 「登出」清 token
+- 房间: 创建 / 加入(6 位数字) / 准备 / 开始 / 离开, 玩家列表带每人分数
+- 实时分数: 对局中每 1s 把 `{score, progress}` 上报 `/rooms/:code/progress`,
+  同时轮询 `/rooms/:code/state?since=` 拿对手分数(命中 `unchanged` 就跳过重绘)
+- 对局上报: `play -> result` 那一刻上报 `/plays`(曲目 id 由游玩桥新暴露的
+  `__umgPlay.state.musicId` 提供)
+
+登录态/地址集中放在 `src/host/online/session.js`(`setBase` / `setSession`),
+启动器与面板共用, 免得两处各写一遍。
+
+注意: 面板里换号后, 服务端 displayName 会立刻写进 `__umgForceProfile` 与
+`umgr_elc._.rm.om`, 但游戏的名牌板是**启动时读一次**, 所以名字要重启才刷新。

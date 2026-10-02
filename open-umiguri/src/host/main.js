@@ -30,6 +30,7 @@ import { rebuildLaneMap } from './input/lanes.js';
 import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
 import { installLauncher } from './keypanel/launcher.js';
+import { installOnlineUI } from './online/ui.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
 // 见 tauri#14707 / #15216。因此凡会触发 invoke 的初始化(含游戏启动)一律推迟到
@@ -57,6 +58,7 @@ installUmgrElc(); // window.umgr_elc
 installNativeInput(); // kbd*/di8Kbd*/串口桩
 installKeyPanelApi(); // window.umgKeyPanel
 installPauseMenu(); // 游玩暂停菜单(三键替换为暂停按钮)
+installOnlineUI(); // 游戏内联机面板(Cmd/Ctrl+Shift+O): 账号/房间/对手实时分数
 setupWindowDragPause(); // 拖动暂停 RAF
 installDxtSoftwareDecode(); // DXT 软解
 

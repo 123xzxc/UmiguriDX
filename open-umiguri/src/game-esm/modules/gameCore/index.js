@@ -4257,6 +4257,7 @@ export function createGameCore(scope) {
         length: s.q1 ? s.q1.Zu._w : 0,
         speed: s.b1,
         difficulty: s.Y1 ? s.Y1.te : null,
+        musicId: s.Y1 ? s.Y1.En : null,
         score: s.Ta ? s.Ta.Sr : 0
       };
     },
