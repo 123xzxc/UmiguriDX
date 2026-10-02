@@ -195,6 +195,19 @@ globalThis.__umgHostLogin = async function (v_umgCard) {
       await new Promise(function (v_umgR) { setTimeout(v_umgR, 100); });
     }
     if (!scope.v_Ns_28014 || !scope.handshake || !scope.handshake.rm) return { ok: false, error: "游戏初始化未完成" };
+    // 游客兜底(关键): 宿主已经绑卡时, 不让游戏再进游客态。
+    // scope.v_Ns_28014.vA() 是**唯一**把游客标志(v_r_33807)置真的地方, 只在
+    // v_p_28808() 无卡登录(登录画面的「GuestLogin」按钮)时调用。桌面没有 AM
+    // 读卡器时玩家常常只剩这个按钮可点 —— 一点就是游客, 成绩不上报。
+    // 这里换掉 vA: 有绑卡时直接返回成功但不置标志, 于是 dA() 落到
+    // v_Xt_27648.Dy() 取真实档案 —— 点 GuestLogin 也进自己的账号。
+    if (scope.v_Ns_28014.vA && !scope.v_Ns_28014.__umgGuestGuard) {
+      var v_umgOrigVA = scope.v_Ns_28014.vA.bind(scope.v_Ns_28014);
+      scope.v_Ns_28014.vA = function () {
+        return window.__umgServer && window.__umgServer.card ? scope.v_Ms_28009 : v_umgOrigVA();
+      };
+      scope.v_Ns_28014.__umgGuestGuard = !0;
+    }
     var v_umgRet = await v_umgAccount.Fy(String(v_umgCard || ""));
     // v_Ms_28009 = 0 成功; -10 重复登录; -1 网络/服务端错误
     if (v_umgRet !== scope.v_Ms_28009) return { ok: false, error: "login " + v_umgRet };
@@ -203,7 +216,9 @@ globalThis.__umgHostLogin = async function (v_umgCard) {
     await v_umgAccount.CA();   // getOptions -> handshake.On.ae
     await v_umgAccount.EA();   // getCourseRecords -> handshake.Em
     await v_umgAccount.MA();   // getCharaStates -> handshake.On.nm
-    scope.v_Ns_28014.fA();     // 清掉可能残留的游客标志
+    // 只在**已经处于游客态**时才清标志。注意 fA() 不是「清游客标志」:
+    // 非游客时会走 v_Xt_27648.Ry() 把刚登好的账号登出(那正是以前一直游客的原因之一)。
+    if (scope.v_Ns_28014.wA && scope.v_Ns_28014.wA()) await scope.v_Ns_28014.fA();
     console.log("[umg][native] 宿主直登成功: " + scope.handshake.rm.om);
     return { ok: true, name: scope.handshake.rm.om };
   } catch (v_umgErr) {

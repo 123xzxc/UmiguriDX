@@ -51,6 +51,7 @@ const REQUIRED = [
   ["原生联机开关", "__umgServer"],
   ["刷卡虚拟按钮钩子", "__umgSwipe"],
   ["宿主直登后门", "__umgHostLogin"],
+  ["游客兜底(vA 守卫)", "__umgGuestGuard"],
   ["官方服务端回退地址", "d.umgr-serv.inonote.jp"],
 ];
 
