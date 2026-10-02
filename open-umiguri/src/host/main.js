@@ -31,7 +31,7 @@ import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
 import { installLauncher } from './keypanel/launcher.js';
 import { installOnlineUI, openOnlineUI } from './online/ui.js';
-import { installNativeServer } from './online/native.js';
+import { installNativeServer, nativeStatus } from './online/native.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
 // 见 tauri#14707 / #15216。因此凡会触发 invoke 的初始化(含游戏启动)一律推迟到
@@ -243,7 +243,9 @@ whenPageReady(async () => {
     if (info) {
       diagLog(`[umg][native] 联机服务端 ${info.host}:${info.port} (卡 ${info.card.slice(0, 4)}…${info.card.slice(-4)})`);
     } else {
-      diagLog('[umg][native] 未接原生联机(保持单机)');
+      // 把缺哪一项写清楚: 少了原生联机, 游戏里就是游客登录 + 成绩不上传。
+      const st = nativeStatus(onlineCfg);
+      diagLog('[umg][native] 未接原生联机(游戏会是单机 + 游客登录): ' + (st.reasons.join('; ') || '未知原因'));
     }
   } catch (e) {
     diagLog('[umg][native] 注入失败: ' + ((e && e.message) || e));

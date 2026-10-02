@@ -216,7 +216,7 @@ function handleAuthed(req, res, path, body, s) {
           updatedAt: Number(d.updatedAt) || 0
         });
       } else {
-        putRecord(s.user_id, {
+        const saved = putRecord(s.user_id, {
           musicId: d.musicId,
           musicDiff: Number(d.musicDiff) || 0,
           score: Number(d.score) || 0,
@@ -224,6 +224,13 @@ function handleAuthed(req, res, path, body, s) {
           playCount: Number(d.playCount) || 0,
           updatedAt: Number(d.updatedAt) || 0
         });
+        // 战绩一律打一行: 玩家反馈「打完歌服务端没记录」时, 这行能一眼分清是
+        // 「游戏根本没上报」(游戏在单机/游客模式, 见宿主日志 [umg][native])还是
+        // 「上报了但没存住」。
+        console.log(
+          "[native] 成绩: user#" + s.user_id + " " + saved.musicId + " 难度" + saved.musicDiff +
+            " " + saved.score + " 次" + saved.playCount
+        );
       }
       sendJson(res, 200, { result: "ok" });
       return;

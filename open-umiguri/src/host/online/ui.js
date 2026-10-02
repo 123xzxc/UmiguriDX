@@ -20,7 +20,7 @@ import {
 } from '../keypanel/uikit.js';
 import { openLauncher } from '../keypanel/launcher.js';
 import { session, setSession, clearSession, normalizeBase, readLS, maskCard, LS_BASE, LS_CARD } from './session.js';
-import { installNativeServer, swipeNow, waitingCard } from './native.js';
+import { installNativeServer, swipeNow, waitingCard, nativeStatus } from './native.js';
 import { diagLog } from '../core/diag.js';
 import { installFloatBall } from '../keypanel/floatball.js';
 import { togglePanel, isPanelVisible } from '../keypanel/panel.js';
@@ -111,6 +111,16 @@ function render() {
   if (u) {
     bodyEl.appendChild(mkInfo('显示名: ' + (u.displayName || '') + '   用户名: ' + (u.username || '')));
     bodyEl.appendChild(mkInfo('卡号: ' + (card ? maskCard(card) : '(未记录)')));
+    // 原生联机(游戏自带的登录/存档/联机通道)到底通没通, 以及不通时缺哪一项。
+    // 少这一行时, 玩家在游戏里看到的是游客登录 + 成绩不上传, 却不知道原因。
+    const nst = nativeStatus();
+    bodyEl.appendChild(
+      mkInfo(
+        nst.reasons.length
+          ? '原生联机: 未接(' + nst.reasons.join('; ') + ')'
+          : '原生联机: ' + nst.host + ':' + nst.port + ' (卡 ' + maskCard(nst.card) + ')'
+      )
+    );
   } else {
     bodyEl.appendChild(mkInfo('未绑定卡号。绑定后进游戏刷一次卡, 就能登录、存成绩、联机。'));
   }

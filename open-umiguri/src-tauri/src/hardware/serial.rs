@@ -298,6 +298,23 @@ const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
             Ok(())
         }
 
+        /// Affine: 唤醒设备 —— 先发一帧 AIR 灯, 再发一帧 32 格白灯。
+        ///
+        /// 为什么探测阶段就要点灯: 实测(Linnea 固件的 Affine 手台, macOS)打开端口之后
+        /// 固件一句不说 —— 什么都不发听 20 秒没有字节, 发开扫描没有字节, 手指按在触摸条上
+        /// 也没有字节; 直到**发出灯光帧的那一刻**才开始持续推帧。也就是固件要收到一帧灯光
+        /// 才算真正启动, 这正是玩家说的「灯亮了才可以连接手台」。
+        ///
+        /// 所以顺序是「点灯 → 再开扫描」: 只发开扫描的话设备根本不看, 探测永远等不到
+        /// AUTO_SCAN 帧, 表现就是连不上(玩家以前要先手工跑一遍 mac-hw-probe.py, 那个脚本
+        /// 恰好会发灯光帧, 于是"跑过就能连上")。
+        ///
+        /// 忽略失败: 不是所有固件都认灯光帧, 不认的那批靠开扫描照样能连。
+        pub fn affine_wake(&self) -> Result<()> {
+            let _ = self.write_air_led_affine([0xFF, 0xFF, 0xFF]);
+            self.write_led_affine(&[0xFFu8; 96])
+        }
+
         /// Affine: 停止主动上报
         pub fn affine_stop_scan(&self) -> Result<()> {
             self.write_cmd(&affine::stop_scan_frame())
@@ -322,6 +339,8 @@ const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
             let mut dec = affine::Decoder::new();
             let deadline = Instant::now() + AFFINE_PROBE_WINDOW;
             let mut next_nudge = Instant::now();
+            // 顺序很关键: 先点灯把固件叫醒, 再开扫描。
+            let _ = self.affine_wake();
             self.affine_start_scan()?;
             let started = Instant::now();
             // 诊断用: 设备到底有没有开口。连不上时这是唯一能分清「没插好/驱动不对」
@@ -331,6 +350,10 @@ const AFFINE_QUIET_LOG_AFTER: Duration = Duration::from_secs(2);
             let mut quiet_logged = false;
             while Instant::now() < deadline {
                 if Instant::now() >= next_nudge {
+                    // 每轮都补一次灯: 设备可能在这一轮才枚举完成/上电完成,
+                    // 错过了开头那一帧灯光就继续装死。整帧约 200 字节(≈17ms@115200),
+                    // 一秒一次可以忽略。
+                    let _ = self.affine_wake();
                     let _ = self.affine_start_scan();
                     next_nudge = Instant::now() + AFFINE_PROBE_NUDGE;
                 }
@@ -475,6 +498,9 @@ mod imp {
             anyhow::bail!("Android 不支持串口手台")
         }
         pub fn affine_start_scan(&self) -> Result<()> {
+            anyhow::bail!("Android 不支持串口手台")
+        }
+        pub fn affine_wake(&self) -> Result<()> {
             anyhow::bail!("Android 不支持串口手台")
         }
         pub fn affine_stop_scan(&self) -> Result<()> {

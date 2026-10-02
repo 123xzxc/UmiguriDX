@@ -66,7 +66,18 @@ export function openLauncher(savedBase) {
   nativeInput.value = nativePort() ? String(nativePort()) : "";
   nativeInput.maxLength = 5;
   box.appendChild(nativeInput);
-  box.appendChild(mkHint("留空 = 不接游戏原生联机(只单机 + 宿主联机面板)。"));
+  // 这一栏留空 = 游戏回到纯单机: 游戏里会走游客登录, 打完的歌也不会上传到服务端
+  // (本地存档还在)。玩家看不出这层因果, 所以状态要说清楚, 并在他清空时给出提醒。
+  const nativeHint = mkHint("");
+  box.appendChild(nativeHint);
+  function updateNativeHint() {
+    const empty = !String(nativeInput.value).trim();
+    nativeHint.textContent = empty
+      ? "留空 = 不接游戏原生联机: 游戏里会是游客登录, 成绩只存本地、不上传。想存到服务端就把端口填回 8101。"
+      : "接游戏原生联机: 游戏内的刷卡登录 / 云存档 / 联机房间都走它。";
+  }
+  nativeInput.addEventListener("input", updateNativeHint);
+  updateNativeHint();
 
   const state = mkHint("");
   box.appendChild(state);

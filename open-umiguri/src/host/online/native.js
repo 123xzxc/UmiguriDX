@@ -57,23 +57,48 @@ export function hostFromBase(base) {
   }
 }
 
+// 「游戏原生联机」到底接上了没有 + 没接上的原因。
+//
+// 为什么要把原因算出来: 少任何一项, 游戏那边就是**纯单机** —— 打歌不上传成绩、进游戏
+// 会走游客登录(玩家看到的是「游客登录」确认框 + 本地存档里的名字, 名字对得上, 所以
+// 容易误以为已经登录成功了)。以前日志只有一句「未接原生联机」, 面板也只说「未启用」,
+// 看不出缺的是哪一项, 玩家只能靠猜。
+export function nativeStatus(sessionCfg) {
+  const cfg = sessionCfg || null;
+  // 启动器跑过(返回了对象)就以它的结果为准: 点「跳过」时 token 是 null,
+  // 这时不能因为 localStorage 里还留着上次的 token 就把玩家拖进联机。
+  // 启动器没跑(nolaunch / 异常)才回退到 localStorage。
+  const logged = cfg ? !!cfg.token : !!readLS(LS_TOKEN);
+  const host = hostFromBase((cfg && cfg.base) || readLS(LS_BASE));
+  const port = nativePort();
+  const card = normalizeCard((cfg && cfg.cardId) || readLS(LS_CARD));
+  const cardBytes = cardToBytes(card);
+  const reasons = [];
+  if (!logged) reasons.push('没有服务端登录态(启动器里点了「跳过」?)');
+  if (!host) reasons.push('没填服务端地址');
+  if (!port) reasons.push('原生服务端端口留空(默认应是 8101)');
+  if (!cardBytes) reasons.push('没绑定卡号(要 20 位、E004 开头的 AIME 卡号)');
+  const live = window.__umgServer || null;
+  return { on: !!live, host, port, card, cardBytes, reasons, live };
+}
+
 // 装配并下发 window.__umgServer。返回 null 表示「这次不接原生联机」(保持单机)。
 export function installNativeServer(sessionCfg, nwToken) {
   try {
-    const cfg = sessionCfg || {};
-    // 启动器跑过(返回了对象)就以它的结果为准: 点「跳过」时 token 是 null,
-    // 这时不能因为 localStorage 里还留着上次的 token 就把玩家拖进联机。
-    // 启动器没跑(nolaunch / 异常)才回退到 localStorage。
-    const logged = sessionCfg ? !!cfg.token : !!readLS(LS_TOKEN);
-    const host = hostFromBase(cfg.base || readLS(LS_BASE));
-    const port = nativePort();
-    const card = normalizeCard(cfg.cardId || readLS(LS_CARD));
-    const cardBytes = cardToBytes(card);
-    if (!logged || !host || !port || !cardBytes) {
+    const st = nativeStatus(sessionCfg);
+    if (st.reasons.length) {
       delete window.__umgServer;
+      // 原因进诊断日志: 「游戏里变游客登录 / 成绩不上传」八成都是这里。
+      console.warn('[umg][native] 未接原生联机(游戏会是单机 + 游客登录): ' + st.reasons.join('; '));
       return null;
     }
-    const info = { host, port, card, cardBytes, nwToken: String(nwToken || '') };
+    const info = {
+      host: st.host,
+      port: st.port,
+      card: st.card,
+      cardBytes: st.cardBytes,
+      nwToken: String(nwToken || ''),
+    };
     window.__umgServer = info;
     return info;
   } catch (e) {

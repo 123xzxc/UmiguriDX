@@ -258,16 +258,16 @@ fn install(
 ) -> Result<(), String> {
     // 连上就先把灯点亮。
     //
-    // 为什么要有这一步: 手台的点亮是固件真正就绪的标志, 而它需要主机先说话 —— 玩家反馈
-    // 「灯亮了才可以连接手台」, 说的就是这个。以前只有游戏的 LED 服务端推 SetLED 时才会
-    // 点亮, 于是「连上」和「灯亮」互相等: 灯不亮以为没连上, 没连上就不点灯。
-    // 握手是 1152 字节(96 字节 RGB 在载荷里经 0xFD 转义后翻倍), 写超时可能不够,
-    // 所以忽略错误 —— 灯没亮起来也不该让手台整体不可用。
+    // 为什么要有这一步: 手台的 LED 点亮就是固件真正就绪的标志 —— 实测它**要收到一帧
+    // 灯光才会开始推帧**(见 serial.rs 的 affine_wake)。玩家反馈的「灯亮了才可以连接
+    // 手台」说的就是这个; 以前只有游戏的 LED 服务端推 SetLED 时才点灯, 于是「连上」和
+    // 「灯亮」互相等: 灯不亮以为没连上, 没连上就不点灯。
+    //
+    // 灯光帧是全 0xFF 时最长(96 个 0xFF 每个转义成 2 字节, 约 200 字节 ≈ 17ms@115200),
+    // 写返回时可能还有小半在系统缓冲里, 所以 input_loop 会先等一会儿再读。
+    // 这里忽略写错误: 点不亮不该让手台整体不可用。
     let primed = match kind {
-        Kind::Affine => {
-            let _ = conn.write_air_led_affine([0xFF, 0xFF, 0xFF]); // AIR(侧)灯常亮
-            conn.write_led_affine(&[0xFFu8; 96]).is_ok() // 32 格白灯
-        }
+        Kind::Affine => conn.affine_wake().is_ok(),
         Kind::Chu2Board => conn.write_led(&[0xFFu8; 96]).is_ok(),
     };
     *st.conn.lock().unwrap() = Some(conn);
@@ -287,9 +287,9 @@ fn install(
 
 /// 输入轮询: 按协议读输入 → 映射成 38 个档位 → 有变化才通知 JS。
 fn input_loop(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>, kind: Kind, primed: bool) {
-    // 握手的灯光帧是 1152 字节, 串口那点发送缓冲装不下, 写返回时大概还有大半在途。
-    // 立刻开始读会跟它抢锁, 所以先等一小会儿, 让帧发完 —— 这也顺便让读者不会读到
-    // 设备对握手的回包而把刚建立的解码器弄乱。
+    // 唤醒用的灯光帧最长约 200 字节(≈17ms@115200), 写返回时还有一段在系统缓冲里。
+    // 先等 60ms 让帧出完再开始读: 避免读写抢同一把锁, 也避免把设备对握手的回包
+    // 喂进刚建立的解码器。
     if primed {
         thread::sleep(Duration::from_millis(60));
     }

@@ -301,6 +301,16 @@ mod tests {
         assert_eq!(frame.len(), 101); // sync+cmd+size+97+校验
     }
 
+    /// 唤醒帧(全白)的长度: 96 个 0xFF 每个都要转义成 2 字节。
+    /// 这个数字要钉住 —— 探测时每秒发一次, 长度失控会拖慢探测。
+    #[test]
+    fn wake_frames_have_expected_size() {
+        // sync + cmd + size + (0x28 + 96 字节全转义) + 校验
+        assert_eq!(set_led(&[0xFFu8; 96]).len(), 197);
+        // sync + cmd + size + 3 字节全转义 + 校验
+        assert_eq!(set_air_led([0xFF, 0xFF, 0xFF]).len(), 10);
+    }
+
     #[test]
     fn decoder_round_trips_all_commands() {
         let mut rgb = [0u8; 96];
