@@ -146,6 +146,8 @@ open-umiguri/
    `/dev/cu.usbserial-*`。只有一个 `Bluetooth-Incoming-Port` 就说明问题在系统/硬件这一侧:
    线是纯充电线、USB 口/集线器供电不足, 或者缺这颗 USB 串口芯片的驱动
    (CH34x / CP210x / FTDI 在 macOS 上可能要自己装)。这种情况宿主怎么改都没用。
+   手台在 USB 里的名字是 `Linnea ...`、`idVendor = 0xAFF1`(`0x52A4` 旧版 / `0x52A7` C 版),
+   `system_profiler SPUSBDataType` 或「系统信息 → USB」里能直接看到 —— 看不到就是没认出来。
 2. **macOS 上 `tty.*` 与 `cu.*` 是同一个口的两个名字**: 宿主只留 `cu.*` —— `tty.*`
    在载波(DCD)为低时会卡住打开/读取, 是「Windows 能连、macOS 连不上」的常见原因。
    `hardware.port` 也请写 `/dev/cu.*`。
@@ -155,8 +157,15 @@ open-umiguri/
 4. **不放心自动探测就手动指定**(`/config/game.json` 的 `hardware` 段):
    `"port": "/dev/cu.usbmodem103"`, 需要的话再加 `"protocol": "affine"`。
 5. **先用脚本分清是哪一层**: `open-umiguri/tools/mac-hw-probe.py`(只用 Python 标准库,
-   几十秒出结果)会按「不动控制线 / DTR / DTR+RTS」三种开法各试一遍, 把串口上收到的原始字节
-   打成十六进制: 一个字节都没回就是线/驱动/固件这一层, 回了字节就是协议这一层。
+   几十秒出结果)。它会依次打印: 系统枚举到的串口、**USB 设备树**(手台到底在不在总线上、
+   VID/PID/序列号对得上吗)、**AppleUSBCDCACMData 把哪个 `/dev/cu.*` 挂在哪个 USB 设备上**、
+   内核日志里跟 USB 串口有关的报错; 然后对每个候选口: 静听 → 发 `AUTO_AIR_START` +
+   `AUTO_SCAN_START` → **提示你用一根手指在手台上左右来回划 12 秒**并统计收到的字节
+(收到就顺手按协议拆帧) → 发一帧灯光(顺便看灯带变不变色) → 关掉重开再听一遍。据此分清:
+   - USB 树里没有手台 / 候选口选错了 → 系统这一层就没认出来(线、口、集线器、驱动);
+   - 树里有, 但出现 `!! 读失败 EIO(...)` → macOS 自带 CDC 驱动这一层收不了数据;
+   - 树里有、读口干净、摸着手台也不发 → 设备侧不发数据: 把同一台手台插到 Windows 机器上
+     用 Affine_IO Releases 里的 `chuni_test.exe` 对照, 就能确定是手台本身还是 macOS 兼容性。
    用法 `python3 tools/mac-hw-probe.py`(自动挑 usbmodem/usbserial 口, 也可以直接把端口名传进去)。
 6. 报问题时把 `[umg][hw] 未连接手台…` 那一行发出来: 里面列了系统枚举到的每个串口、各自的结论,
    以及**设备到底回了什么字节**。
