@@ -3548,9 +3548,14 @@ scope.v_Rs_28007.prototype = {
   hS: function () {},
   _S: function (v_t_33746) {},
   R9: async function () {
-    // 桌面没有 AM 读卡器: 宿主(启动器)已经把卡号转成 10 字节放在 __umgServer.cardBytes,
-    // 这里直接当作一次刷卡返回, 其余行为(键盘 Ctrl+F9~F12 假卡)完全不变。
-    return this.US = scope.v_Ps_28006, window.__umgServer && window.__umgServer.cardBytes ? window.__umgServer.cardBytes : new Promise(v_t_33747 => {
+    // 桌面没有 AM 读卡器: 宿主(启动器)已经把卡号转成 10 字节放在 __umgServer.cardBytes。
+    // 只当一次刷卡(街机也是一次刷卡一次登录), 用完立刻清掉 —— 否则服务端连不上时
+    // 会「登录失败 -> 回标题 -> 立刻又读到卡」死循环, 玩家永远进不去游客模式。
+    if (window.__umgServer && window.__umgServer.cardBytes) {
+      var v_umgHostCard = window.__umgServer.cardBytes;
+      return window.__umgServer.cardBytes = null, this.US = scope.v_Ps_28006, v_umgHostCard;
+    }
+    return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
       this.Z9 = v_t_33747;
     });
   },

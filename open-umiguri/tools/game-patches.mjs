@@ -246,7 +246,10 @@ export function applyGamePatches(ast) {
     },
   });
 
-  // 2) 刷卡桩: 宿主已把卡号转成 10 字节(见 host/online/native.js), 直接当一次刷卡。
+  // 2) 刷卡桩(没接 AM 读卡器时游戏会退到 v_Ls_28008): 宿主把卡号转成 10 字节放在
+  //    __umgServer.cardBytes, 这里把整个 R9 换掉, 优先返回它一次。
+  //    必须「一次用完就清」: 否则服务端连不上时是
+  //    「登录失败 -> 回标题(自动读卡) -> 又失败」的死循环, 玩家进不去游客模式。
   traverse(ast, {
     AssignmentExpression(path) {
       const left = path.node.left;
@@ -261,12 +264,9 @@ export function applyGamePatches(ast) {
         (pr) => t.isObjectProperty(pr) && t.isIdentifier(pr.key, { name: 'R9' }) && t.isBlockStatement(pr.value.body)
       );
       if (!r9) return;
-      const ret = r9.value.body.body[0];
-      if (!t.isReturnStatement(ret) || !t.isSequenceExpression(ret.argument)) return;
-      if (ret.argument.expressions.length !== 2) return;
-      const swipe = ret.argument.expressions[1];
-      if (t.isConditionalExpression(swipe) && JSON.stringify(swipe.test).includes('__umgServer')) return; // 幂等
-      ret.argument.expressions[1] = parser.parseExpression(NATIVE_SWIPE);
+      const first = r9.value.body.body[0];
+      if (t.isIfStatement(first) && JSON.stringify(first.test).includes('__umgServer')) return; // 幂等
+      r9.value.body.body = parser.parse(NATIVE_SWIPE_BODY, { sourceType: 'script', allowReturnOutsideFunction: true }).program.body;
       nativePatched++;
     },
   });
@@ -282,8 +282,16 @@ const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new scop
 const NATIVE_SOCK_HOST = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.host : "d.umgr-serv.inonote.jp"';
 const NATIVE_SOCK_PORT = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.port || 8101 : 8101';
 
-// 2) 刷卡桩: 宿主给了卡号就直接返回那 10 个字节, 否则沿用原来的「等键盘假卡」
-const NATIVE_SWIPE = 'window.__umgServer && window.__umgServer.cardBytes ? window.__umgServer.cardBytes : new Promise(v_t_33747 => { this.Z9 = v_t_33747; })';
+// 2) 刷卡桩的整个函数体: 宿主给了卡号就用掉一次(并清掉), 否则沿用原来的「等键盘假卡」
+const NATIVE_SWIPE_BODY = `
+if (window.__umgServer && window.__umgServer.cardBytes) {
+  var v_umgHostCard = window.__umgServer.cardBytes;
+  return window.__umgServer.cardBytes = null, this.US = scope.v_Ps_28006, v_umgHostCard;
+}
+return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
+  this.Z9 = v_t_33747;
+});
+`;
 
 
 // gameCore 私有的游玩状态/控制桥(注入在模块 return 之前; 名字在该模块作用域内可见)。
