@@ -21,6 +21,53 @@ on:
       - 'v*'
 
 jobs:
+  # ---------------- 服务端: 语法 + 全链路测试 ----------------
+  # 卡号登录、TOTP 面板、发卡/吊销、房间与实时对手分数都靠这一关守住。
+  # 服务端零第三方依赖, 跑起来只要几十秒, 不需要 npm install。
+  server-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # 必须 >= 22.5: 服务端用 node:sqlite, 低版本直接起不来
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      # -print0 + read -d "" 逐条读: 路径带空格时不会被拆成两个词。
+      # 服务端现在没有这种路径, 但加测试文件很容易踩到, 提前堵住。
+      - name: 语法检查
+        working-directory: umiguri-server
+        run: |
+          fail=0
+          while IFS= read -r -d "" f; do
+            node --check "$f" || fail=1
+          done < <(find src test tools -type f \( -name "*.js" -o -name "*.mjs" \) -print0)
+          exit $fail
+      - name: 冒烟测试(卡号 / TOTP / 面板 / 房间 / 实时分数)
+        working-directory: umiguri-server
+        env:
+          UMIGURI_JWT_SECRET: ci-test-secret
+          UMIGURI_ADMIN_TOKEN: ci-admin-token
+        run: node test/smoke.mjs
+
+  # ---------------- 服务端: 打包可部署产物 ----------------
+  server-pack:
+    runs-on: ubuntu-latest
+    needs: server-test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: 打包
+        working-directory: umiguri-server
+        run: node tools/pack.mjs
+      # 产物自带 DEPLOY.md, 解包即可跑, 无需 npm install
+      - uses: actions/upload-artifact@v5
+        with:
+          name: umiguri-server
+          path: umiguri-server/dist/*.tar.gz
+          if-no-files-found: error
+
   # ---------------- 桌面: Windows ----------------
   windows:
     runs-on: windows-latest
