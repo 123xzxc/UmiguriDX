@@ -13,7 +13,7 @@
     "build": "npm run build:assets && npm run build:host && npm run build:game",
     "build:esm": "npm run build:assets && npm run build:host -- --obfuscate && npm run build:game:esm -- --obfuscate",
     "assemble:game": "node build/assemble-game.mjs",
-    "check": "node build/check.mjs && node build/contract-check.mjs && node build/freevar-check.mjs",
+    "check": "node build/check.mjs && node build/contract-check.mjs && node build/freevar-check.mjs && node tools/verify-online-bundle.mjs",
     "extract:game": "node tools/split-game.mjs",
     "modularize": "node tools/modularize-game.mjs",
     "build:game:esm": "node build/bundle-game-esm.mjs",
@@ -26,7 +26,8 @@
     "icon": "tauri icon src-tauri/app-icon.json",
     "ios:build": "tauri ios build --no-sign",
     "ios:dev": "tauri ios dev",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "verify:online": "node tools/verify-online-bundle.mjs"
   },
   "devDependencies": {
     "@babel/generator": "^7.24.0",

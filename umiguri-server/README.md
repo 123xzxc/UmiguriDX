@@ -56,6 +56,37 @@ npm start
 ## 测试
 
 ```bash
+node test/smoke.mjs   # 或 npm test
+```
+
+覆盖 卡号登录 / TOTP 面板 / 发卡与吊销 / 资料 / 记录 / 排行榜 / 房间与实时分数同步
+的 53 项断言。测试每次使用干净的 `data/smoke.db`, 可重复运行。
+
+## 打包部署
+
+```bash
+node tools/pack.mjs   # 或 npm run pack
+```
+
+产出 `dist/umiguri-server-<版本>.tar.gz`。服务端零第三方依赖, 所以包里只有
+`src/` + `package.json` + `README.md` + `DEPLOY.md`, 解包后直接 `node src/index.js`,
+**不需要** `npm install`。
+
+## CI
+
+`.github/workflows/online.yml` 负责联机版构建(手动触发或推 `v*` 标签):
+
+| job | 内容 |
+| --- | --- |
+| `server-test` | 语法检查 + 53 项冒烟断言 |
+| `server-pack` | 产出可部署的 tar.gz |
+| `client-check` | 客户端混淆构建 + 契约/自由变量检查 + 联机链路校验 |
+| `desktop` | 联机版客户端(Windows / macOS x86_64+aarch64 / Linux) |
+
+客户端产物**不预置服务端地址** —— 用户首次启动时在登录器里填, 因此一份包
+可以连任意服务器。
+
+```bash
 node test/smoke.mjs
 ```
 
