@@ -3,12 +3,17 @@
 // 但抽成小函数, 免得每个面板各自重复一遍 cssText。
 export const FONT = 'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;';
 
+// 覆盖层: 铺满视口, 内容贴着**上边**放。
+// 为什么不居中: 虚拟按键面板(panel.js, z-index 99999)固定在最下方, 它的按键与 AIR 条都是
+// pointer-events:auto —— 覆盖层(z-index 60000, 故意低于它, 这样键盘还能用来打字)里落在
+// 底部那条带子上的按钮会被键盘吃掉, 点了没反应。所以底部预留 28vh(见下面的 padding),
+// 配合 mkBox 的 max-height, 保证面板自己的按钮永远在键盘区之上。
 export function mkOverlay(id, z) {
   const el = document.createElement('div');
   el.id = id;
   el.style.cssText =
-    'position:fixed;inset:0;z-index:' + (z || 60000) + ';display:flex;align-items:center;justify-content:center;' +
-    'box-sizing:border-box;padding:3vmin;background:rgba(0,0,0,0.72);' +
+    'position:fixed;inset:0;z-index:' + (z || 60000) + ';display:flex;align-items:flex-start;justify-content:center;' +
+    'box-sizing:border-box;padding:3vmin 3vmin 28vh;background:rgba(0,0,0,0.72);' +
     'pointer-events:auto;touch-action:none;color:#fff;' + FONT +
     'user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;';
   el.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -19,7 +24,7 @@ export function mkBox() {
   const el = document.createElement('div');
   el.style.cssText =
     'display:flex;flex-direction:column;align-items:stretch;' +
-    'width:min(46em,92vw);max-height:92vh;overflow:auto;' +
+    'width:min(46em,92vw);max-height:64vh;overflow:auto;' +
     'padding:clamp(20px,3.4vmin,40px) clamp(24px,4vmin,56px);border-radius:1em;' +
     'background:rgba(18,18,18,0.94);border:1px solid rgba(255,255,255,0.18);' +
     'box-shadow:0 0 2em rgba(0,0,0,0.6);';

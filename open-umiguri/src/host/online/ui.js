@@ -151,12 +151,16 @@ function render() {
 
 // 桌面没有 AM 读卡器, 游戏停在「请刷卡」时这个按钮就是那块读卡器。
 // 只在真的读卡时露出来, 平时不挡游戏画面。
+//
+// 位置贴在**右上角**: 左下是虚拟键盘的功能键区(Test/Service/FN/联机), 下方一整条是按键与
+// AIR 条(pointer-events:auto, z-index 99999)—— 放那儿会被键盘吃掉点击, 点不动。
+// z-index 取 100010(高于虚拟键盘 99999, 低于错误横幅), 免得被谁盖住。
 function buildFloat() {
   if (floatBtn || !document.body) return;
   floatBtn = document.createElement('div');
   floatBtn.textContent = '刷卡';
   floatBtn.style.cssText =
-    'position:fixed;right:3vmin;bottom:14vmin;z-index:59999;display:none;' +
+    'position:fixed;right:2vmin;top:6vmin;z-index:100010;display:none;' +
     'align-items:center;justify-content:center;min-width:4.6em;padding:0.7em 1.4em;border-radius:0.6em;' +
     'color:#fff;background:rgba(20,20,20,0.72);border:1px solid rgba(255,255,255,0.6);' +
     'box-shadow:0 0 1em rgba(0,0,0,0.5);' + FONT +
@@ -171,9 +175,15 @@ function buildFloat() {
 }
 
 function refreshFloat() {
-  if (!floatBtn) buildFloat();
+  // 游戏或别的东西重建过 DOM 时按钮可能被摘掉, 这里补一次。
+  if (!floatBtn || !floatBtn.isConnected) {
+    floatBtn = null;
+    buildFloat();
+  }
   if (!floatBtn) return;
-  floatBtn.style.display = (nativeServer() && waitingCard()) ? 'flex' : 'none';
+  // 联机面板开着时不显示(面板里也有一个「刷卡」)。
+  const want = !open && nativeServer() && waitingCard();
+  floatBtn.style.display = want ? 'flex' : 'none';
 }
 
 // ---- 动作 ----
