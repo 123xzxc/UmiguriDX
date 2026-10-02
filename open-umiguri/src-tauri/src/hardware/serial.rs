@@ -10,6 +10,8 @@
 //! Android/iOS 无串口 API(serialport 在移动端不可用), 因此本模块在移动端为桩实现。
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 
 use crate::hardware::Kind;
 
@@ -62,6 +64,19 @@ impl std::fmt::Display for RxTrace {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod imp {
     pub const BAUD_RATE: u32 = 115_200;
+
+/// Affine 探测窗口: 开扫描之后等多久才认输。
+///
+/// 为什么给足 8 秒, 而不是「够用就好」的 1.2 秒: 2026-10 有玩家反馈「必须先在终端跑一遍
+/// mac-hw-probe.py, 游戏里的宿主才连得上手台」。那个脚本第 [0] 步会什么都不发、最多听 20 秒,
+/// 而宿主的窗口只有 1.2 秒 —— 也就是说设备要好几秒才开口, 宿主每一轮都提前放弃了。
+/// 自动重连虽然会一直重试(前 12 次每 5s), 但每轮都只有 1.2 秒, 于是永远连不上。
+/// 窗口给足之后, 慢启动的设备第一轮就能连上, 玩家也不必再去跑脚本。
+const AFFINE_PROBE_WINDOW: Duration = Duration::from_secs(8);
+
+/// 探测期间补发开扫描的间隔。设备刚上电/DTR 刚拉高时可能还在初始化, 或者会丢掉第一次
+/// AUTO_SCAN_START, 所以要反复喊醒它 —— 但别太密, 免得设备忙着回命令顾不上推帧。
+const AFFINE_PROBE_NUDGE: Duration = Duration::from_secs(1);
     use super::RxTrace;
     use std::time::Duration;
     use anyhow::{Context, Result};
@@ -292,18 +307,17 @@ mod imp {
         /// Affine 探测: 开扫描后收到 AUTO_SCAN(0x01) 或 AUTO_AIR(0x05) 帧即认定是 Affine 手台。
         /// 官方/chu2board 固件会把非 0xFF 开头的字节直接丢掉, 所以探测是安全的。
         ///
-        /// 窗口给到 ~1.2s 并且中途补发扫描命令, 是因为: 刚上电/DTR 刚拉高时固件可能还在
-        /// 初始化, 头几百毫秒不作声; 个别固件还会丢掉第一次 AUTO_SCAN_START。
+        /// 窗口长度与补发节奏见 `AFFINE_PROBE_WINDOW` / `AFFINE_PROBE_NUDGE` 的说明。
         pub fn affine_probe(&self) -> Result<bool> {
             self.drain();
             let mut dec = affine::Decoder::new();
-            let deadline = Instant::now() + Duration::from_millis(1200);
+            let deadline = Instant::now() + AFFINE_PROBE_WINDOW;
             let mut next_nudge = Instant::now();
             self.affine_start_scan()?;
             while Instant::now() < deadline {
                 if Instant::now() >= next_nudge {
                     let _ = self.affine_start_scan();
-                    next_nudge = Instant::now() + Duration::from_millis(400);
+                    next_nudge = Instant::now() + AFFINE_PROBE_NUDGE;
                 }
                 let Some(b) = self.read_byte(Duration::from_millis(20))? else {
                     continue;

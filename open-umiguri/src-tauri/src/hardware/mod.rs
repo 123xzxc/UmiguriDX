@@ -412,7 +412,12 @@ fn input_loop_stream(app: AppHandle, conn: SharedConn, running: Arc<AtomicBool>)
     }
 }
 
-/// 重试节奏(秒): 前 12 次每 5s, 之后每 60s。
+/// 重试节奏(秒): 前 6 次每 2s, 接着 6 次每 5s, 之后每 60s。
+///
+/// 头几轮特意压到 2 秒: 设备(尤其刚上电的那次)往往要几秒才开口, 早期多试几次能让
+/// 它赶在玩家还盯着启动画面时就连上, 而不是等满一整轮。
+const AUTOCONNECT_BURST_TRIES: u32 = 6;
+const AUTOCONNECT_BURST_WAIT: u64 = 2;
 const AUTOCONNECT_FAST_TRIES: u32 = 12;
 const AUTOCONNECT_FAST_WAIT: u64 = 5;
 const AUTOCONNECT_SLOW_WAIT: u64 = 60;
@@ -455,13 +460,15 @@ fn probe_until_connected(app: &AppHandle, st: &HardwareState) {
                 attempt += 1;
                 eprintln!("[umg][hw] 未连接手台(第 {attempt} 次尝试): {e:#}");
                 // 第一次失败时把状态推给前端诊断日志(hw-status 里带完整串口列表),
-                // 之后不再推, 免得每 5s 刷一行。
+                // 之后不再推, 免得每隔几秒刷一行。
                 if attempt == 1 {
                     let _ = app.emit("umg-hw-status", status(st));
                 }
             }
         }
-        let wait = if attempt < AUTOCONNECT_FAST_TRIES {
+        let wait = if attempt <= AUTOCONNECT_BURST_TRIES {
+            AUTOCONNECT_BURST_WAIT
+        } else if attempt < AUTOCONNECT_FAST_TRIES {
             AUTOCONNECT_FAST_WAIT
         } else {
             AUTOCONNECT_SLOW_WAIT
