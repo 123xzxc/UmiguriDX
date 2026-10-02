@@ -180,7 +180,11 @@ scope.boardLanes = null;
 scope.boardAir = null;
 scope.v_D_27646 = null;
 scope.v_F_27647 = null;
-scope.v_Xt_27648 = window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null;
+// 账号客户端**不能**在这里创建: scope.v_Bs_28013.prototype 是后面整块替换的
+// (见下面 "scope.v_Bs_28013.prototype = {…}"), 早于它 new 出来的实例挂在旧原型上,
+// .Fy/.Dy 全是 undefined —— 表现为「宿主直登失败 / 登录画面卡住」。
+// 真正的创建放在静态方法链(scope.v_Bs_28013.IA = …)之后。
+scope.v_Xt_27648 = null;
 // 宿主直登后门: 宿主在 loadMain() 之前用绑定卡号直接完成登录(见 tools/game-patches.mjs
 // 的 HOST_LOGIN_BRIDGE)。游戏进「GuestLogin」按钮后的 v_k_28809 是个只认读卡器的循环,
 // 桌面没读卡器时极难走通 —— 玩家点宿主悬浮球的「刷卡」也进不去, 最后只能游客,
@@ -3888,6 +3892,9 @@ scope.v_Bs_28013.prototype = {
 }, scope.v_Bs_28013.IA = function (v_t_33806) {
   return v_t_33806 >> 16 & 15;
 };
+// 账号客户端: 到这里 v_Bs_28013 的 prototype/静态方法都装好了, 现在 new 才拿得到
+// Fy/Dy/Ly/… (原型是整体替换的, 早 new 会挂在旧原型上)。
+scope.v_Xt_27648 = window.__umgServer && window.__umgServer.host ? new scope.v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null;
 scope.v_Ns_28014 = createV_Ns_28014(scope);
 scope.v_Hs_28017.prototype = {
   sx: function () {

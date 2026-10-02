@@ -224,23 +224,37 @@ export function applyGamePatches(ast) {
   //   成绩也不上传。
   //
   // 锚点(重命名前形态):
-  //   1) `v_Xt_27648 = null`              —— 联机账号客户端(云存档/资料/房间令牌)
+  //   1) `v_Bs_28013.IA = …`(静态链末尾)—— 联机账号客户端(云存档/资料/房间令牌)
+  //      ⚠ 不能挂在 `v_Xt_27648 = null` 那行上: 原型是整体替换的, 早 new 的实例
+  //        没有 .Fy/.Dy(见下面 AssignmentExpression 的注释)。
   //   2) `v_Ls_28008.prototype = {...}`   —— 无 AM 读卡器时的读卡桩(含 R9)
   //   3) `v_oe_27649 = new v_Hs_28017`    —— 房间/心跳客户端(/sock), 端口写死 8101
   let nativePatched = 0;
 
   // 1) 联机账号客户端: 原本恒为 null(所以游戏里所有联机分支都是死代码)。
-  //
-  // 这里用 VariableDeclaration 级的 visitor: 后门要插在**整条声明语句之后**,
-  // 而不是 VariableDeclarator 之后 —— 后者会让片段变成裸语句序列。
-  // 游戏语句 2 是 `var …, v_Xt_27648 = null, v_oe_27649 = null, …` 的大声明,
-  // 所以插到声明之后、下一句之前, 位置就在 bootstrap 的同一层。
+  //    宿主直登后门(__umgHostLogin)也挂在同一处, 用 VariableDeclaration 级 visitor:
+  //    后门要插在**整条声明语句之后**而不是 VariableDeclarator 之后, 否则片段会变成
+  //    裸语句序列。游戏语句 2 是 `var …, v_Xt_27648 = null, …,` 的大声明。
   let hostLoginInserted = 0;
   traverse(ast, {
-    VariableDeclarator(path) {
-      if (!t.isIdentifier(path.node.id, { name: 'v_Xt_27648' })) return;
-      if (!t.isNullLiteral(path.node.init)) return; // 幂等: 打过之后是三元
-      path.node.init = parser.parseExpression(NATIVE_ACCOUNT);
+    // 账号客户端**必须等 v_Bs_28013.prototype 装好之后再 new**: 原型是整体替换的
+    // (v_Bs_28013.prototype = { ...Qy/Fy/Dy... }), 早于它创建的实例会挂在旧原型上,
+    // 于是 .Fy / .Dy 全是 undefined —— 实测日志:
+    //   [umg][native] 宿主直登失败: _0x5a3ae['Fy'] is not a function
+    //   REJECTION v_Xt_27648['Dy'] is not a function  (登录画面卡住)
+    // 所以锚点选在静态方法链的最后一条 v_Bs_28013.IA = ... 之后插入赋值语句。
+    AssignmentExpression(path) {
+      const left = path.node.left;
+      if (!t.isMemberExpression(left) || left.computed) return;
+      if (!t.isIdentifier(left.object, { name: 'v_Bs_28013' })) return;
+      if (!t.isIdentifier(left.property, { name: 'IA' })) return;
+      // IA 是 `prototype = {...}, By = .., .., IA = ..` 这条逗号序列的最后一项,
+      // 所以父节点是 SequenceExpression, 要往上找到整条语句再插到它后面。
+      let stmt = path.parentPath;
+      while (stmt && !stmt.isStatement()) stmt = stmt.parentPath;
+      if (!stmt || !stmt.isExpressionStatement()) return;
+      if (JSON.stringify(stmt.node).includes('__umgServer')) return; // 幂等
+      stmt.insertAfter(parser.parse(NATIVE_ACCOUNT_ASSIGN, { sourceType: 'script' }).program.body);
       nativePatched++;
     },
     VariableDeclaration(path) {
@@ -337,7 +351,10 @@ export function applyGamePatches(ast) {
 }
 
 // 1) 联机账号客户端(HTTP: /1/user/login, /1/umiguri/*)
-const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null';
+// 1) 联机账号客户端(HTTP: /1/user/login, /1/umiguri/*)。
+// 只在这里赋值(v_Xt_27648 原来是 null, 游戏自己从不赋值); 位置必须晚于
+// v_Bs_28013.prototype 的整体替换, 见上面 AssignmentExpression 锚点的注释。
+const NATIVE_ACCOUNT_ASSIGN = 'v_Xt_27648 = window.__umgServer && window.__umgServer.host ? new v_Bs_28013(window.__umgServer.host, window.__umgServer.port || 8101, window.__umgServer.nwToken || "") : null;';
 
 // 宿主直登: 把「刷卡登录」这件事从游戏的读卡窗口里搬出来。
 //
