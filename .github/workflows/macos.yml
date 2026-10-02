@@ -1,0 +1,80 @@
+name: macos
+
+# 只编译 macOS 的快速通道: 改完手台/联机/宿主代码后不用等整条 release 流水线
+# (windows/linux/ios/android + 服务端测试) 全跑一遍。
+#
+# 手动触发(Actions → macos → Run workflow), 可只编一个架构:
+#   - 默认 x86_64-apple-darwin: Intel Mac 用这个, 比 aarch64 快一半左右。
+#   - 需要 Apple Silicon 包时把 arch 选成 aarch64, 或选 both。
+# 只上传 artifact, 不建 Release、不打标签; 要正式发版仍走 release.yml。
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 编译哪个架构
+        required: true
+        default: x86_64
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+          - both
+
+permissions:
+  contents: read
+
+jobs:
+  # 把 arch 选项翻译成矩阵: both -> 两个架构, 其余单个。
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        run: |
+          case "${{ inputs.arch || 'x86_64' }}" in
+            both) echo 'matrix={"include":[{"target":"aarch64-apple-darwin","suffix":"aarch64"},{"target":"x86_64-apple-darwin","suffix":"x86_64"}]}' >> "$GITHUB_OUTPUT" ;;
+            aarch64) echo 'matrix={"include":[{"target":"aarch64-apple-darwin","suffix":"aarch64"}]}' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'matrix={"include":[{"target":"x86_64-apple-darwin","suffix":"x86_64"}]}' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+  macos:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: open-umiguri/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: open-umiguri/src-tauri -> target
+          key: ${{ matrix.target }}
+      - name: 安装前端依赖
+        working-directory: open-umiguri
+        run: npm ci
+      # 只构建 + 上传 artifact: 显式传空的 tagName/releaseName, 避免建 Release
+      # (正式发版走 release.yml)。
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: open-umiguri
+          args: --target ${{ matrix.target }}
+          tagName: ''
+          releaseName: ''
+      - uses: actions/upload-artifact@v5
+        with:
+          name: UMIGURI-macos-${{ matrix.suffix }}
+          path: |
+            open-umiguri/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*
+            open-umiguri/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*
+          if-no-files-found: warn
