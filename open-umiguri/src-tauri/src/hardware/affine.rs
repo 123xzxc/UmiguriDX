@@ -102,9 +102,21 @@ pub struct Frame {
 }
 
 /// 流式拆帧: 逐字节喂入, 收满一帧且校验通过时返回。
+///
+/// 校验和认两种约定(结构必须对: `0xFF` 同步 + cmd + size):
+///
+///   A. **逻辑和**: 未转义后的整帧(含 sync)字节和 == 0 —— 本模块 `encode()` 与
+///      Affine 参考实现 `serialslider.c` 发送侧用的算法;
+///   B. **线上和**: 连 `0xFD` 转义前缀一起算的线上原始字节和 == 0。
+///
+/// 之所以两种都认: Affine 的参考宿主收侧**从不校验**校验和, 所以固件用哪种都能用;
+/// 实测手台(Linnea 固件, 帧是 `cmd=0x01 size=33`)的帧只满足 B —— 逻辑和不为 0。
+/// 只认 A 的话会「明明每 100ms 都在推帧, 宿主却一帧都不认」, 报成
+/// 「未收到 Affine 扫描帧」。两种都对不上才算坏帧。
 #[derive(Default)]
 pub struct Decoder {
     buf: Vec<u8>,
+    wire: Vec<u8>,
     escape: bool,
 }
 
@@ -113,27 +125,35 @@ impl Decoder {
         Self::default()
     }
 
+    /// 开始/重开一帧: 逻辑缓冲与线上缓冲都只留这个 sync 字节
+    fn restart(&mut self, byte: u8) {
+        self.buf.clear();
+        self.wire.clear();
+        self.buf.push(byte);
+        self.wire.push(byte);
+        self.escape = false;
+    }
+
     pub fn push(&mut self, byte: u8) -> Option<Frame> {
         if self.buf.is_empty() {
             // 未同步: 丢弃直到出现 sync(官方 slider_frame_sync 同义)
             if byte != SYNC {
                 return None;
             }
-            self.buf.push(SYNC);
-            self.escape = false;
+            self.restart(byte);
             return None;
         }
         if byte == SYNC {
             // 帧内再遇 sync: 视为(上一帧丢失后)新帧起点
-            self.buf.clear();
-            self.buf.push(SYNC);
-            self.escape = false;
+            self.restart(byte);
             return None;
         }
+        self.wire.push(byte);
         let value = if byte == ESC {
             if self.escape {
                 // 连续两个转义前缀: 帧损坏, 重新同步
                 self.buf.clear();
+                self.wire.clear();
                 self.escape = false;
                 return None;
             }
@@ -153,17 +173,20 @@ impl Decoder {
         let nbytes = self.buf[2] as usize;
         if nbytes > MAX_PAYLOAD {
             self.buf.clear();
+            self.wire.clear();
             return None;
         }
         if self.buf.len() < nbytes + 4 {
             return None;
         }
 
-        let ok = self.buf.iter().fold(0u8, |a, &b| a.wrapping_add(b)) == 0;
+        let logical_sum = self.buf.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        let wire_sum = self.wire.iter().fold(0u8, |a, &b| a.wrapping_add(b));
         let cmd = self.buf[1];
         let payload = self.buf[3..3 + nbytes].to_vec();
         self.buf.clear();
-        if ok {
+        self.wire.clear();
+        if logical_sum == 0 || wire_sum == 0 {
             Some(Frame { cmd, payload })
         } else {
             None
@@ -315,6 +338,40 @@ mod tests {
             }
         }
         assert_eq!(got.map(|f| f.cmd), Some(CMD_AUTO_SCAN_START));
+    }
+
+    /// 线上和规则(连 0xFD 转义字节一起算)的帧也要认 —— 手台固件就是这么算的
+    #[test]
+    fn decoder_accepts_wire_rule_checksum() {
+        let payload = [0xFFu8, 0xFD, 0x00];
+        let mut wire = vec![SYNC];
+        for &b in [CMD_AUTO_SCAN, payload.len() as u8].iter().chain(payload.iter()) {
+            if b == SYNC || b == ESC {
+                wire.push(ESC);
+                wire.push(b - 1);
+            } else {
+                wire.push(b);
+            }
+        }
+        // 校验和按「线上字节」算(this payload 凑出来是 0x09, 不用再转义)
+        let sum = wire.iter().fold(0u8, |a, &b| a.wrapping_add(b));
+        let chk = 0u8.wrapping_sub(sum);
+        assert_ne!(chk, SYNC);
+        assert_ne!(chk, ESC);
+        wire.push(chk);
+        // 逻辑和不为 0 —— 只认旧规则的实现会把这帧判成坏帧
+        assert_ne!(unstuff(&wire).iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
+
+        let mut dec = Decoder::new();
+        let mut got = None;
+        for b in wire {
+            if let Some(f) = dec.push(b) {
+                got = Some(f);
+            }
+        }
+        let f = got.expect("线上和规则的帧应该被接受");
+        assert_eq!(f.cmd, CMD_AUTO_SCAN);
+        assert_eq!(f.payload, payload.to_vec());
     }
 
     #[test]
