@@ -100,18 +100,20 @@ impl Default for LedOrder {
     }
 }
 
-/// 把 UMIGURI SetLED 载荷(亮度 + 16 档 RGB + 15 间隔 RGB)转成手台 96 字节(32 格 RGB)。
+/// 把 UMIGURI SetLED 载荷转成手台 96 字节(32 格 RGB)。
 ///
 /// 载荷布局(与 chu2board 的 UMIGURI LED 服务端一致):
-///   [0] 亮度 0..255; [1 + i*3 .. ] 16 个档位灯(左→右);
-///   [49 + i*3 ..] 15 个档间灯
+///   [0] 协议常量 `0x28`(官方滑块板 `led_unk`); [1 + i*3 ..] 16 个档位灯(左→右);
+///   [49 + i*3 ..] 15 个档间灯; [94..] 3 组侧灯
+///
+/// ⚠ 第 0 字节**不是亮度**, 是协议里恒定的 `0x28`(=40)。以前这里把它当亮度做
+/// `v * payload[0] / 255` 的缩放, 等于把每个通道都压到 40/255 ≈ 15.7% —— 实机表现
+/// 就是「灯的亮度很低」。第三方宿主都不做这层缩放, 这里也把颜色原样透传。
 pub fn build_led_frame(payload: &[u8], order: LedOrder) -> Option<[u8; 96]> {
-    // 亮度(1) + 16 档(48) + 15 间隔(45) = 94 字节
+    // 常量(1) + 16 档(48) + 15 间隔(45) = 94 字节
     if payload.len() < 94 {
         return None;
     }
-    let brightness = payload[0] as u16;
-    let scale = |v: u8| ((v as u16 * brightness) / 255) as u8;
 
     let mut led = [0u8; 96];
     let mut set = |cell1: usize, rgb: [u8; 3]| {
@@ -128,7 +130,7 @@ pub fn build_led_frame(payload: &[u8], order: LedOrder) -> Option<[u8; 96]> {
     // 16 个档位灯(左→右) → 各档上排灯的通道
     for i in 0..16 {
         let b = 1 + i * 3;
-        let rgb = [scale(payload[b]), scale(payload[b + 1]), scale(payload[b + 2])];
+        let rgb = [payload[b], payload[b + 1], payload[b + 2]];
         if let Some(cell) = channel_of_umiguri_index(2 * i) {
             set(cell, rgb);
         }
@@ -136,7 +138,7 @@ pub fn build_led_frame(payload: &[u8], order: LedOrder) -> Option<[u8; 96]> {
     // 15 个间隔灯 → 嵌在相邻两键之间的格子(不是本档自己的后通道, 见 gap_cell_of_lane)
     for i in 0..15 {
         let b = 49 + i * 3;
-        let rgb = [scale(payload[b]), scale(payload[b + 1]), scale(payload[b + 2])];
+        let rgb = [payload[b], payload[b + 1], payload[b + 2]];
         if let Some(cell) = gap_cell_of_lane(i) {
             set(cell, rgb);
         }
@@ -147,18 +149,13 @@ pub fn build_led_frame(payload: &[u8], order: LedOrder) -> Option<[u8; 96]> {
 /// UMIGURI SetLED 载荷尾部的「侧灯/AIR 灯」: 3 组 RGB(共 9 字节, 偏移 94)。
 ///
 /// Affine 手台的 AIR 灯整条只有一个颜色, 取第 1 组作为它的颜色。
+/// 与 `build_led_frame` 一样: 颜色原样透传, 不做亮度缩放(见那里的说明)。
 pub fn air_led_of(payload: &[u8], order: LedOrder) -> Option<[u8; 3]> {
-    // 亮度(1) + 16 档(48) + 15 间隔(45) + 3 组侧灯(9) = 103 字节
+    // 常量(1) + 16 档(48) + 15 间隔(45) + 3 组侧灯(9) = 103 字节
     if payload.len() < 103 {
         return None;
     }
-    let brightness = payload[0] as u16;
-    let scale = |v: u8| ((v as u16 * brightness) / 255) as u8;
-    Some(order.apply([
-        scale(payload[94]),
-        scale(payload[95]),
-        scale(payload[96]),
-    ]))
+    Some(order.apply([payload[94], payload[95], payload[96]]))
 }
 
 #[cfg(test)]
@@ -199,17 +196,35 @@ mod tests {
         assert_eq!(&f[29 * 3..29 * 3 + 3], &[0, 0, 255]);
     }
 
+    /// 回归: 第 0 字节是协议常量 `0x28`, 不是亮度 —— 曾经把它当亮度做乘算,
+    /// 结果每个通道只剩 40/255 ≈ 15.7%, 实机就是「灯很暗」。
+    #[test]
+    fn payload_first_byte_is_not_brightness() {
+        let mut p = vec![0u8; 103];
+        p[1] = 255;
+        p[2] = 128;
+        p[3] = 64;
+        for v in [0x28u8, 0, 128, 255] {
+            p[0] = v;
+            let f = build_led_frame(&p, LedOrder::Rgb).unwrap();
+            // lane0 = 格子 30; rgb 顺序透传, 不随 payload[0] 变
+            assert_eq!(&f[30 * 3..30 * 3 + 3], &[255, 128, 64], "payload[0]={v}");
+        }
+    }
+
     #[test]
     fn air_led_uses_first_side_color() {
         let mut p = vec![0u8; 103];
-        p[0] = 255;
+        p[0] = 0x28; // 协议常量, 不是亮度
         p[94] = 255; // 侧灯 0 = 纯红
         assert_eq!(air_led_of(&p, LedOrder::Rgb), Some([255, 0, 0]));
         // 默认字节序是 brg: 红 -> [0,255,0]
         assert_eq!(air_led_of(&p, LedOrder::default()), Some([0, 255, 0]));
-        // 亮度 128 时减半
-        p[0] = 128;
-        assert_eq!(air_led_of(&p, LedOrder::Rgb), Some([128, 0, 0]));
+        // 第 0 字节不参与运算: 无论它是多少(0x28 / 0 / 255)颜色都原样透传。
+        for v in [0u8, 40, 128, 255] {
+            p[0] = v;
+            assert_eq!(air_led_of(&p, LedOrder::Rgb), Some([255, 0, 0]), "payload[0]={v}");
+        }
         // 载荷不足(只有 94 字节的旧格式)则不发 AIR 灯
         assert_eq!(air_led_of(&p[..94], LedOrder::Rgb), None);
     }
