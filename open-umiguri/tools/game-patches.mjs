@@ -250,6 +250,10 @@ export function applyGamePatches(ast) {
   //    __umgServer.cardBytes, 这里把整个 R9 换掉, 优先返回它一次。
   //    必须「一次用完就清」: 否则服务端连不上时是
   //    「登录失败 -> 回标题(自动读卡) -> 又失败」的死循环, 玩家进不去游客模式。
+  //
+  //    另外把「等刷卡」时的 resolver 挂到 globalThis.__umgSwipe: 桌面没有 AM 读卡器
+  //    也没有键盘假卡的提示, 宿主据此在右下角显示一个「刷卡」虚拟按钮 —— 玩家点一下
+  //    就等于刷了一次卡(登录失败/换号后能重试, 不会永远卡在「请刷卡」)。
   traverse(ast, {
     AssignmentExpression(path) {
       const left = path.node.left;
@@ -282,14 +286,27 @@ const NATIVE_ACCOUNT = 'window.__umgServer && window.__umgServer.host ? new scop
 const NATIVE_SOCK_HOST = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.host : "d.umgr-serv.inonote.jp"';
 const NATIVE_SOCK_PORT = 'window.__umgServer && window.__umgServer.host ? window.__umgServer.port || 8101 : 8101';
 
-// 2) 刷卡桩的整个函数体: 宿主给了卡号就用掉一次(并清掉), 否则沿用原来的「等键盘假卡」
+// 2) 刷卡桩的整个函数体: 宿主给了卡号就用掉一次(并清掉); 否则进入「等刷卡」并把
+//    resolver 挂到 __umgSwipe(宿主右下角的虚拟刷卡按钮点它), 键盘假卡 Ctrl+F9~F12
+//    的路径也不变(Z9 即这个 resolver)
 const NATIVE_SWIPE_BODY = `
 if (window.__umgServer && window.__umgServer.cardBytes) {
   var v_umgHostCard = window.__umgServer.cardBytes;
   return window.__umgServer.cardBytes = null, this.US = scope.v_Ps_28006, v_umgHostCard;
 }
 return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
-  this.Z9 = v_t_33747;
+  var v_umgSelf = this;
+  var v_umgDone = false;
+  var v_umgSwipe = function (v_umgBytes) {
+    if (v_umgDone) return false;
+    v_umgDone = true;
+    globalThis.__umgSwipe = null;
+    v_umgSelf.Z9 = void 0;
+    v_t_33747(v_umgBytes);
+    return true;
+  };
+  this.Z9 = v_umgSwipe;
+  globalThis.__umgSwipe = v_umgSwipe;
 });
 `;
 

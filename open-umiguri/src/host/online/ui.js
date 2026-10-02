@@ -1,83 +1,44 @@
-// 游戏内联机面板: 账号 / 房间 / 对手实时分数 / 对局上报。
+// 游戏内联机面板: 绑定卡号 + 刷卡 + 原生联机状态。
 //
-// 为什么在宿主层做:
-//   游戏前端保留了 openCoop / coopLobby 的 UI 资源与文案, 但实现代码在反混淆
-//   时丢了 —— 联机客户端实例 scope.v_Xt_27648 全库只有 `= null` 一处赋值, 因此
-//   游戏自身的联机分支永远走不到(详见 ONLINE.md 第一节)。与其去补一套二进制
-//   协议, 不如在宿主这一层把同一套能力补回来。
+// 面板只做「进联机所需的最小动作」, 其余全部交给游戏自带的能力:
+//   绑定 —— 填 AIME 卡号(经 /auth/card 校验后记在本机)。一张卡一个账号, 与街机一致。
+//   刷卡 —— 把绑定的卡交给**游戏自己的读卡器**(host/online/native.js 的 swipeNow),
+//           之后的登录、云存档、房间全部由游戏走原生协议(umiguri-native-server)。
+//   状态 —— 服务端地址 / 原生服务端 / 游戏是否正停在读卡界面。
 //
-// 面板做什么:
-//   账号   —— 显示登录态, 换卡/登出(复用启动器 keypanel/launcher.js)
-//   房间   —— 6 位数字房间号, 创建/加入/准备/开始/离开
-//   分数   —— 对局中把 {score, progress} 上报 /rooms/:code/progress,
-//             同时按 1s 轮询 /rooms/:code/state 拿对手分数
-//   记录   —— 对局结束(play -> result)后上报 /plays
+// 为什么房间不放在面板里: 游戏本身就带联机大厅与 6 位房间号输入(原生 /sock 协议),
+// 面板再实现一套只会互相打架(两边各记一份房间状态)。对手实时分数同理, 游戏自己会画。
+// 战绩也不用面板上报 —— 游戏的原生记录会自动镜像进面板读的 plays 表。
+//
+// 桌面没有 AM 读卡器, 所以游戏停在「请刷卡」时右下角会浮出一个「刷卡」按钮:
+// 点一下就等于刷了一次卡。登录失败/换号后也能靠它重试, 不会永远卡在请刷卡。
 //
 // 打开方式: Cmd/Ctrl+Shift+O, 或控制台 window.umgOnline.open()。
 import {
-  mkOverlay, mkBox, mkTitle, mkLabel, mkInput, mkBtn, mkRow, mkHint, mkCol, onTap, setBtnDisabled,
+  FONT, mkOverlay, mkBox, mkTitle, mkBtn, mkRow, mkHint, mkCol, onTap, setBtnDisabled,
 } from '../keypanel/uikit.js';
 import { openLauncher } from '../keypanel/launcher.js';
-import { session, api, setSession, clearSession, normalizeBase, readLS, maskCard } from './session.js';
-import { installNativeServer } from './native.js';
+import { session, setSession, clearSession, normalizeBase, readLS, maskCard, LS_BASE, LS_CARD } from './session.js';
+import { installNativeServer, swipeNow, waitingCard } from './native.js';
 import { diagLog } from '../core/diag.js';
 
-const POLL_MS = 1000;
+const TICK_MS = 1000;
 
 let overlay = null;
 let bodyEl = null;
 let statusEl = null;
+let swipeBtn = null;
+let floatBtn = null;
 let open = false;
-let room = null;
-let version = 0;
 let busy = false;
-// 对局跟踪: 只在 play -> result 那一刻上报一次
-let play = { scene: '', musicId: null, difficulty: null, reported: true, lastTick: 0 };
+let wasWaiting = false;
 
 function log(msg) {
   diagLog('[umg][online] ' + msg);
 }
 
-function fmtScore(n) {
-  const v = Number(n) || 0;
-  return v.toLocaleString('en-US');
-}
-
-// ---- 服务端调用 ----
-
-async function call(method, path, body) {
-  const r = await api(method, path, body, true);
-  if (!r.ok) {
-    const msg = r.status === 0 ? '连不上服务端: ' + (r.error || '') : (r.error || '请求失败');
-    setStatus(msg);
-    return null;
-  }
-  return r.data;
-}
-
-function applyRoom(next) {
-  if (!next || next.unchanged) return false;
-  room = next;
-  version = next.version || 0;
-  return true;
-}
-
-// ---- 界面 ----
-
 function setStatus(text) {
   if (statusEl) statusEl.textContent = text || '';
-}
-
-// 重新把「原生联机」信息下发给游戏(window.__umgServer)。
-// 游戏侧刷卡读的就是它, 而且卡是一次性的(cardBytes 读完即清空) —— 登录/换卡后
-// 必须重下发, 否则游戏里还拿着旧卡、甚至根本没卡, 表现就是「已经登录了,
-// 游戏内却仍然提示刷卡」。
-function pushNativeServer(cfg) {
-  const hs = (window.umgr_elc && window.umgr_elc._) || null;
-  const info = installNativeServer(cfg || {}, (hs && hs.fe) || '');
-  if (info) log('原生联机 -> ' + info.host + ':' + info.port + ' 卡 ' + maskCard(info.card));
-  else log('原生联机未启用(要已登录 + 服务端地址 + 20 位 E004 卡号)');
-  return info;
 }
 
 function mkSection(title) {
@@ -95,23 +56,22 @@ function mkInfo(text) {
   return el;
 }
 
-function mkPlayerRow(p, me) {
-  const row = document.createElement('div');
-  row.style.cssText = 'display:flex;align-items:center;gap:0.6em;padding:0.35em 0;' +
-    'font-size:clamp(13px,2.1vmin,18px);' + (me ? 'color:#9fe0ff;' : 'color:rgba(255,255,255,0.88);');
-  const name = document.createElement('div');
-  name.textContent = (p.seat + 1) + '. ' + (p.displayName || '???') + (me ? ' (我)' : '');
-  name.style.cssText = 'flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-  const ready = document.createElement('div');
-  ready.textContent = p.ready ? '已准备' : '未准备';
-  ready.style.cssText = 'flex:0 0 auto;color:' + (p.ready ? '#8ef0a0' : 'rgba(255,255,255,0.5)') + ';';
-  const score = document.createElement('div');
-  score.textContent = fmtScore(p.score);
-  score.style.cssText = 'flex:0 0 6em;text-align:right;font-variant-numeric:tabular-nums;';
-  row.appendChild(name);
-  row.appendChild(ready);
-  row.appendChild(score);
-  return row;
+// 当前下发给游戏的原生联机配置(window.__umgServer); 没接时是 null。
+function nativeServer() {
+  const srv = window.__umgServer;
+  return srv && srv.host ? srv : null;
+}
+
+// 重新把「原生联机」信息下发给游戏(window.__umgServer)。
+// 绑定/换卡后必须重下发: 卡是一次性的(cardBytes 读完即清), 而且游戏 bootstrap
+// 就会读它建联机客户端 —— 不重下发, 游戏里还拿着旧卡甚至根本没卡,
+// 表现就是「已经绑好了, 游戏内却仍然提示刷卡」。
+function pushNativeServer(cfg) {
+  const hs = (window.umgr_elc && window.umgr_elc._) || null;
+  const info = installNativeServer(cfg || {}, (hs && hs.fe) || '');
+  if (info) log('原生联机 -> ' + info.host + ':' + info.port + ' 卡 ' + maskCard(info.card));
+  else log('原生联机未启用(要绑定卡号 + 服务端地址 + 20 位 E004 卡号)');
+  return info;
 }
 
 function build() {
@@ -119,7 +79,7 @@ function build() {
   overlay = mkOverlay('ugv_online', 60000);
   const box = mkBox();
   overlay.appendChild(box);
-  box.style.width = 'min(52em,94vw)';
+  box.style.width = 'min(44em,94vw)';
   box.appendChild(mkTitle('联机'));
   bodyEl = mkCol();
   box.appendChild(bodyEl);
@@ -141,92 +101,96 @@ function render() {
   build();
   while (bodyEl.firstChild) bodyEl.removeChild(bodyEl.firstChild);
 
-  // ---- 账号 ----
+  // ---- 账号(卡号绑定) ----
   bodyEl.appendChild(mkSection('账号'));
   const u = session.user;
+  const card = readLS(LS_CARD) || '';
   if (u) {
     bodyEl.appendChild(mkInfo('显示名: ' + (u.displayName || '') + '   用户名: ' + (u.username || '')));
-    bodyEl.appendChild(mkInfo('服务端: ' + (session.base || readLS('umg_online_base') || '(未设置)')));
+    bodyEl.appendChild(mkInfo('卡号: ' + (card ? maskCard(card) : '(未记录)')));
   } else {
-    bodyEl.appendChild(mkInfo('未登录。卡号登录后才会记录成绩、才能加入房间。'));
-    bodyEl.appendChild(mkInfo('服务端: ' + (session.base || readLS('umg_online_base') || '(未设置)')));
+    bodyEl.appendChild(mkInfo('未绑定卡号。绑定后进游戏刷一次卡, 就能登录、存成绩、联机。'));
   }
+  bodyEl.appendChild(mkInfo('服务端: ' + (session.base || readLS(LS_BASE) || '(未设置)')));
+
   const accRow = mkRow();
-  const loginBtn = mkBtn(u ? '换卡登录' : '登录', !u);
+  const bindBtn = mkBtn(u ? '换卡绑定' : '绑定卡号', !u);
   const logoutBtn = mkBtn('登出', false);
   setBtnDisabled(logoutBtn, !u);
-  onTap(loginBtn, () => doLogin());
+  onTap(bindBtn, () => doBind());
   onTap(logoutBtn, () => doLogout());
-  accRow.appendChild(loginBtn);
+  accRow.appendChild(bindBtn);
   accRow.appendChild(logoutBtn);
   bodyEl.appendChild(accRow);
 
-  // ---- 房间 ----
-  bodyEl.appendChild(mkSection('房间'));
-  if (!u) {
-    bodyEl.appendChild(mkInfo('先登录再创建或加入房间。'));
-    return;
+  // ---- 原生联机 ----
+  bodyEl.appendChild(mkSection('原生联机'));
+  const srv = nativeServer();
+  if (srv) {
+    bodyEl.appendChild(mkInfo('服务端: ' + srv.host + ':' + srv.port + '    卡号 ' + maskCard(srv.card || '')));
+    bodyEl.appendChild(mkInfo(waitingCard()
+      ? '游戏正停在读卡界面 —— 点下面的「刷卡」即可。'
+      : '游戏没在等刷卡(已经登录, 或还没走到刷卡界面)。'));
+  } else {
+    bodyEl.appendChild(mkInfo('未接原生联机: 先在上面「绑定卡号」里填好服务端地址与卡号。'));
+    bodyEl.appendChild(mkInfo('原生服务端端口默认 8101(与游戏写死的端口一致), 留空则不接。'));
   }
-  if (!room) {
-    bodyEl.appendChild(mkInfo('未加入房间。房间号为 6 位数字, 由房主创建后告知。'));
-    const createRow = mkRow();
-    const createBtn = mkBtn('创建房间', true);
-    onTap(createBtn, () => doCreate());
-    createRow.appendChild(createBtn);
-    bodyEl.appendChild(createRow);
-    bodyEl.appendChild(mkLabel('房间号'));
-    const codeInput = mkInput('6 位数字');
-    codeInput.maxLength = 6;
-    codeInput.inputMode = 'numeric';
-    bodyEl.appendChild(codeInput);
-    const joinRow = mkRow();
-    const joinBtn = mkBtn('加入', true);
-    onTap(joinBtn, () => doJoin(normalizeCode(codeInput.value)));
-    joinRow.appendChild(joinBtn);
-    bodyEl.appendChild(joinRow);
-    return;
-  }
+  bodyEl.appendChild(mkInfo('房间号、准备、对手实时分数都用游戏自带的联机功能, 面板不再重复一套。'));
 
-  const meId = u.id;
-  bodyEl.appendChild(mkInfo('房间号 ' + room.code + '   状态 ' + room.status +
-    (room.musicId ? '   曲目 ' + room.musicId + ' / 难度 ' + room.difficulty : '')));
-  for (const p of room.players || []) bodyEl.appendChild(mkPlayerRow(p, p.userId === meId));
+  const swRow = mkRow();
+  swipeBtn = mkBtn('刷卡', true);
+  setBtnDisabled(swipeBtn, !srv);
+  onTap(swipeBtn, () => doSwipe());
+  swRow.appendChild(swipeBtn);
+  bodyEl.appendChild(swRow);
 
-  const actRow = mkRow();
-  const mine = (room.players || []).find((p) => p.userId === meId);
-  const isHost = room.hostId === meId;
-  const readyBtn = mkBtn(mine && mine.ready ? '取消准备' : '准备', false);
-  onTap(readyBtn, () => doReady(!(mine && mine.ready)));
-  actRow.appendChild(readyBtn);
-  const startBtn = mkBtn('开始', true);
-  setBtnDisabled(startBtn, !isHost);
-  onTap(startBtn, () => doStart());
-  actRow.appendChild(startBtn);
-  const leaveBtn = mkBtn('离开房间', false);
-  onTap(leaveBtn, () => doLeave());
-  actRow.appendChild(leaveBtn);
-  bodyEl.appendChild(actRow);
+  wasWaiting = waitingCard();
 }
 
-function normalizeCode(v) {
-  return String(v || '').replace(/\D/g, '').slice(0, 6);
+// ---- 悬浮「刷卡」按钮 ----
+
+// 桌面没有 AM 读卡器, 游戏停在「请刷卡」时这个按钮就是那块读卡器。
+// 只在真的读卡时露出来, 平时不挡游戏画面。
+function buildFloat() {
+  if (floatBtn || !document.body) return;
+  floatBtn = document.createElement('div');
+  floatBtn.textContent = '刷卡';
+  floatBtn.style.cssText =
+    'position:fixed;right:3vmin;bottom:14vmin;z-index:59999;display:none;' +
+    'align-items:center;justify-content:center;min-width:4.6em;padding:0.7em 1.4em;border-radius:0.6em;' +
+    'color:#fff;background:rgba(20,20,20,0.72);border:1px solid rgba(255,255,255,0.6);' +
+    'box-shadow:0 0 1em rgba(0,0,0,0.5);' + FONT +
+    'font-weight:700;font-size:clamp(15px,2.4vmin,22px);line-height:1.2;cursor:pointer;touch-action:none;' +
+    'box-sizing:border-box;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;';
+  floatBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    doSwipe();
+  });
+  document.body.appendChild(floatBtn);
+}
+
+function refreshFloat() {
+  if (!floatBtn) buildFloat();
+  if (!floatBtn) return;
+  floatBtn.style.display = (nativeServer() && waitingCard()) ? 'flex' : 'none';
 }
 
 // ---- 动作 ----
 
-async function doLogin() {
+// 绑定/换卡: 界面与流程都在启动器里(地址 + 卡号), 这里只负责接上原生联机。
+async function doBind() {
   if (busy) return;
   busy = true;
   try {
     const prev = session.user;
-    const cfg = await openLauncher(normalizeBase(session.base || readLS('umg_online_base')));
+    const cfg = await openLauncher(normalizeBase(session.base || readLS(LS_BASE)));
     if (cfg && cfg.user) {
       setSession(cfg);
       pushNativeServer(cfg);
+      setStatus('已绑定 ' + maskCard(cfg.cardId || readLS(LS_CARD)));
     }
     if (cfg && cfg.user && (!prev || prev.id !== cfg.user.id)) {
-      room = null;
-      version = 0;
       log('换号为 ' + cfg.user.displayName + ' (游戏内名字重启后刷新)');
     }
     render();
@@ -235,121 +199,34 @@ async function doLogin() {
   }
 }
 
-async function doLogout() {
-  if (room) await doLeave();
+function doLogout() {
   clearSession();
   pushNativeServer(null); // 登出后撤掉, 免得游戏继续用旧卡/旧服
-  setStatus('已登出');
+  setStatus('已登出(卡号绑定已清除, 游戏回到单机)');
   render();
 }
 
-async function doCreate() {
-  const data = await call('POST', '/rooms', {});
-  if (!data) return;
-  applyRoom(data.room);
-  log('已创建房间 ' + (data.room && data.room.code));
+function doSwipe() {
+  if (swipeNow()) {
+    setStatus('已刷卡, 游戏正在登录…');
+    log('手动刷卡');
+  } else {
+    setStatus('刷卡失败: 先在「绑定卡号」里填好服务端地址与 E004 卡号');
+  }
   render();
 }
 
-async function doJoin(code) {
-  if (code.length !== 6) return setStatus('房间号必须是 6 位数字');
-  const data = await call('POST', '/rooms/' + code + '/join', {});
-  if (!data) return;
-  applyRoom(data.room);
-  setStatus('');
-  render();
-}
-
-async function doReady(ready) {
-  const data = await call('POST', '/rooms/' + room.code + '/ready', { ready: !!ready });
-  if (data) applyRoom(data.room);
-  render();
-}
-
-async function doStart() {
-  const data = await call('POST', '/rooms/' + room.code + '/start', {});
-  if (data) applyRoom(data.room);
-  render();
-}
-
-async function doLeave() {
-  if (room) await call('POST', '/rooms/' + room.code + '/leave', {});
-  room = null;
-  version = 0;
-  setStatus('');
-  render();
-}
-
-// ---- 对局: 上报进度与成绩 ----
-
-function playState() {
-  const api2 = window.__umgPlay;
-  if (!api2) return null;
+// ---- 轮询(只为了「是否在等刷卡」这一件事) ----
+function tick() {
   try {
-    return api2.state;
-  } catch (e) {
-    return null;
-  }
-}
-
-function onPlayTick() {
-  const st = playState();
-  if (!st) return;
-  const scene = st.practice ? 'practice' : st.scene;
-
-  if (scene === 'play') {
-    if (play.scene !== 'play') {
-      // 新的一局: 记下曲目信息, 准备结束时上报
-      play = { scene: 'play', musicId: st.musicId || null, difficulty: st.difficulty, reported: false, lastTick: 0 };
-    }
-    if (st.musicId) play.musicId = st.musicId;
-    if (st.difficulty !== null && st.difficulty !== undefined) play.difficulty = st.difficulty;
-    // 房间内: 1s 上报一次自己的分数(对手读的是同一份快照)
-    const now = Date.now();
-    if (room && !play.reported && now - play.lastTick >= POLL_MS) {
-      play.lastTick = now;
-      api('POST', '/rooms/' + room.code + '/progress', {
-        score: st.score | 0,
-        progress: Math.round(st.progress || 0)
-      }, true).catch(() => {});
-    }
-    return;
-  }
-
-  if (play.scene === 'play' && scene !== 'play' && !play.reported) {
-    play.reported = true;
-    reportPlay(play.musicId, play.difficulty, st.score);
-  }
-  play.scene = scene;
-}
-
-async function reportPlay(musicId, difficulty, score) {
-  if (!session.token || !musicId) return;
-  const diff = Number(difficulty) || 0;
-  const data = await call('POST', '/plays', {
-    musicId: String(musicId),
-    difficulty: diff,
-    score: Number(score) || 0,
-    playedAt: Date.now()
-  });
-  if (data) log('成绩已上报 ' + musicId + ' / ' + diff + ' -> ' + (Number(score) || 0));
-}
-
-// ---- 轮询 ----
-
-// setInterval 里的 async 若抛异常会变成 unhandledrejection, 这里一并吞掉。
-async function tick() {
-  try {
-    onPlayTick();
-    if (!room || !session.token) return;
-    const data = await api('GET', '/rooms/' + room.code + '/state?since=' + version, null, true);
-    if (!data || !data.ok || !data.data) return;
-    if (applyRoom(data.data.room) && open) render();
+    refreshFloat();
+    const now = waitingCard();
+    if (open && now !== wasWaiting) render();
+    else if (open && swipeBtn) setBtnDisabled(swipeBtn, !nativeServer());
   } catch (e) {}
 }
 
 // ---- 开关 ----
-
 function show() {
   build();
   open = true;
@@ -376,17 +253,25 @@ export function installOnlineUI() {
       toggle();
     }
   });
-  setInterval(tick, POLL_MS);
+  buildFloat();
+  setInterval(tick, TICK_MS);
   window.umgOnline = {
     open: show,
     close: close,
     toggle: toggle,
     refresh: render,
+    swipe: doSwipe,
     get state() {
-      return { logged: !!session.user, user: session.user, base: session.base, room: room };
+      return {
+        bound: !!session.user,
+        user: session.user,
+        base: session.base,
+        card: readLS(LS_CARD) || '',
+        native: nativeServer(),
+        waitingCard: waitingCard()
+      };
     }
   };
 }
 
 export { show as openOnlineUI, close as closeOnlineUI };
-

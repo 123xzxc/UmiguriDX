@@ -3555,8 +3555,22 @@ scope.v_Rs_28007.prototype = {
       var v_umgHostCard = window.__umgServer.cardBytes;
       return window.__umgServer.cardBytes = null, this.US = scope.v_Ps_28006, v_umgHostCard;
     }
+    // 等刷卡: resolver 同时挂到 globalThis.__umgSwipe, 宿主的「刷卡」虚拟按钮点它
+    // (桌面没有读卡器; 键盘假卡 Ctrl+F9~F12 走的就是 this.Z9, 路径不变)。
+    // 刷卡成功/被取消后立刻摘掉钩子, 宿主据此判断「游戏是否正停在读卡界面」。
     return this.US = scope.v_Ps_28006, new Promise(v_t_33747 => {
-      this.Z9 = v_t_33747;
+      var v_umgSelf = this;
+      var v_umgDone = false;
+      var v_umgSwipe = function (v_umgBytes) {
+        if (v_umgDone) return false;
+        v_umgDone = true;
+        globalThis.__umgSwipe = null;
+        v_umgSelf.Z9 = void 0;
+        v_t_33747(v_umgBytes);
+        return true;
+      };
+      this.Z9 = v_umgSwipe;
+      globalThis.__umgSwipe = v_umgSwipe;
     });
   },
   iS: async function () {

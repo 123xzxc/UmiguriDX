@@ -9,8 +9,14 @@
 //
 // 三件事必须一起给, 缺一不可:
 //   host / port —— 服务端地址(默认端口 8101, 游戏里写死的那个)
-//   cardBytes   —— 卡号转成读卡器吐的 10 字节: 桌面没有 AM 读卡器, 用启动器里
-//                  填的卡号当作一次刷卡(游戏自带键盘假卡是 Ctrl+F9~F12)
+//   cardBytes   —— 卡号转成读卡器吐的 10 字节: 桌面没有 AM 读卡器, 用绑定的卡号
+//                  当作一次刷卡(游戏自带键盘假卡是 Ctrl+F9~F12)
+//
+// 刷卡有两条路, 都走游戏自己的读卡器(R9):
+//   1. 进游戏前下发 cardBytes —— 游戏第一次读卡就拿到, 「开箱即用」;
+//   2. 游戏停在「请刷卡」时由宿主喂进去 —— swipeNow(), 见下。
+// 为什么不一直自动重刷: 卡是一次性的(读完即清), 否则服务端连不上会「登录失败 ->
+// 回标题 -> 又自动刷卡」死循环, 玩家连游客模式都进不去。
 //   nwToken     —— 装置号(握手 fe), 服务端用它识别「同一台机器」
 import { LS_BASE, LS_CARD, LS_TOKEN, normalizeCard, readLS, writeLS } from './session.js';
 
@@ -73,4 +79,27 @@ export function installNativeServer(sessionCfg, nwToken) {
   } catch (e) {
     return null;
   }
+}
+
+// 游戏此刻是否停在「请刷卡」界面。
+// 补丁(v_Ls_28008.prototype.R9)在等刷卡时把 resolver 挂到 globalThis.__umgSwipe,
+// 刷卡成功或被取消后立刻摘掉 —— 所以它就是个可靠的「在读卡」标志, 宿主的悬浮
+// 「刷卡」按钮只在它为真时露出来。
+export function waitingCard() {
+  return typeof window.__umgSwipe === 'function';
+}
+
+// 手动刷卡: 把绑定的卡号交给游戏自己的读卡器, 与街机刷卡是同一条路径。
+//   游戏正等着  -> 直接喂进去(之后的登录/云存档/联机都由游戏走原生协议)
+//   游戏还没等  -> 放进 __umgServer.cardBytes, 下一次读卡就能拿到
+// 返回 false = 没接原生联机 / 没有可用的卡号。
+export function swipeNow() {
+  const srv = window.__umgServer;
+  if (!srv || !srv.host) return false;
+  const bytes = cardToBytes(normalizeCard(srv.card || readLS(LS_CARD)));
+  if (!bytes) return false;
+  const hook = window.__umgSwipe;
+  if (typeof hook === 'function' && hook(bytes) !== false) return true;
+  srv.cardBytes = bytes;
+  return true;
 }

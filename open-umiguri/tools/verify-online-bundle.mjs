@@ -49,6 +49,7 @@ const REQUIRED = [
   // window.__umgServer 时才把联机客户端指向自建服务端(umiguri-native-server)。
   // 属性名不参与混淆重命名, 所以能直接在产物里数。
   ["原生联机开关", "__umgServer"],
+  ["刷卡虚拟按钮钩子", "__umgSwipe"],
   ["官方服务端回退地址", "d.umgr-serv.inonote.jp"],
 ];
 

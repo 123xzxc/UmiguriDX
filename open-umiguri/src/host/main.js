@@ -59,7 +59,7 @@ installUmgrElc(); // window.umgr_elc
 installNativeInput(); // kbd*/di8Kbd*/串口桩
 installKeyPanelApi(); // window.umgKeyPanel
 installPauseMenu(); // 游玩暂停菜单(三键替换为暂停按钮)
-installOnlineUI(); // 游戏内联机面板(Cmd/Ctrl+Shift+O): 账号/房间/对手实时分数
+installOnlineUI(); // 游戏内联机面板(Cmd/Ctrl+Shift+O): 绑定卡号/刷卡/原生联机状态
 setOnlineButtonHandler(() => openOnlineUI()); // 左下角「联机」虚拟按钮 -> 同一个面板
 setupWindowDragPause(); // 拖动暂停 RAF
 installDxtSoftwareDecode(); // DXT 软解

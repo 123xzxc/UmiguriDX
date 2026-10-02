@@ -1,7 +1,9 @@
-// 联机登录器: 游戏加载前弹出的卡号输入界面。
+// 绑定卡号: 游戏加载前弹出的卡号输入界面。
 //
-// 游戏端登录只认卡号, 没有密码 —— 与街机刷卡一致。卡号由网页面板
-// (/panel, 用账号 + Google 验证器登录)注册, 一张卡绑一个账号。
+// 游戏端登录只认卡号, 没有密码 —— 与街机刷卡一致。卡号由服务端发卡
+// (/admin-panel 用管理员令牌发, /panel 用账号 + Google 验证器绑到账号上)。
+// 这里只把「服务端地址 + 卡号」记在本机: 真正刷卡发生在游戏里
+// (桌面没有 AM 读卡器, 见 host/online/native.js 与 ui.js 的悬浮「刷卡」按钮)。
 //
 // 与账号有关的写入全部集中在 host/online/session.js(setBase/setSession),
 // 免得启动器、游戏内面板两处各写一遍(这里只负责界面与流程)。
@@ -45,12 +47,12 @@ export function openLauncher(savedBase) {
   overlay.appendChild(box);
   document.body.appendChild(overlay);
 
-  box.appendChild(mkTitle("联机登录"));
-  box.appendChild(mkHint("输入卡号即可登录。卡号在网页面板注册, 无需密码。"));
-  box.appendChild(mkHint("端口 8787 是网页面板/启动器用的 REST 服务端; 8101 是游戏原生协议服务端(umiguri-native-server), 游戏内联机走它。"));
+  box.appendChild(mkTitle("绑定卡号"));
+  box.appendChild(mkHint("填服务端地址 + AIME 卡号即完成绑定。一张卡一个账号, 无需密码。"));
+  box.appendChild(mkHint("地址填 umiguri-native-server 即可: 它同时提供游戏原生联机(8101)与启动器/面板要的 REST。"));
 
   box.appendChild(mkLabel("服务端地址"));
-  const baseInput = mkInput("http://127.0.0.1:8787");
+  const baseInput = mkInput("http://127.0.0.1:8101");
   baseInput.value = savedBase || "";
   box.appendChild(baseInput);
 
@@ -70,13 +72,13 @@ export function openLauncher(savedBase) {
   box.appendChild(state);
 
   const row = mkRow();
-  const loginBtn = mkBtn("登录", true);
+  const loginBtn = mkBtn("绑定", true);
   const skipBtn = mkBtn("跳过", false);
   row.appendChild(loginBtn);
   row.appendChild(skipBtn);
   box.appendChild(row);
 
-  const panelHint = mkHint("还没有卡号? 打开服务端的 /panel 页面注册。");
+  const panelHint = mkHint("还没有卡号? 用管理员令牌打开服务端 /admin-panel 发一张, 再在 /panel 绑到账号上。");
   box.appendChild(panelHint);
 
   function setState(text) {
@@ -97,13 +99,13 @@ export function openLauncher(savedBase) {
     if (!base) return setState("请填写服务端地址");
     if (!isValidCard(cardId)) return setState("卡号格式不对: 应为 20 位、E004 开头");
     setBtnDisabled(loginBtn, true);
-    setState("登录中…");
+    setState("绑定中…");
     setBase(base);
     setNativePort(nativeInput.value);
     const r = await api("POST", "/auth/card", { cardId }, false);
     setBtnDisabled(loginBtn, false);
     if (!r.ok) {
-      setState(r.status === 0 ? "连不上服务端: " + (r.error || "") : (r.error || "登录失败"));
+      setState(r.status === 0 ? "连不上服务端: " + (r.error || "") : (r.error || "绑定失败"));
       return;
     }
     const cfg = { base, cardId, token: r.data.token, user: r.data.user };

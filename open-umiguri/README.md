@@ -129,6 +129,9 @@ open-umiguri/
 行为:
 
 - 输入不走键位映射:Rust 端把 38 个档位(32 触摸 + 6 air)直接写进 `window.__umgLanes`,有变化才通知。
+- **力度(压力值)只用来判断「这一格按没按下」**(`touch[i] > 0`),不参与游戏逻辑:38 个档位是 0/1
+  的开关量,UMIGURI 与街机版一样只认「按下/松开」。所以「灯和按键都认、力度没反应」是**正常**的 ——
+  设备推的那 32 个字节是触摸判定的原始读数,不是给游戏用的力度值。
 - 灯光:游戏自带 `ledOutput` 连 `ws://localhost:<led_controller.port>`(默认 8090),
   宿主把 SetLED 载荷转成手台灯光帧;Affine 手台还额外驱动整条 AIR(侧)灯(自定义命令 0x07)。
 - 帧格式与官方参考实现一致(segatools `board/slider-frame.c`),帧内的 `0xFF`/`0xFD` 按规范转义;
