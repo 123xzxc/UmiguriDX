@@ -165,9 +165,37 @@ export function swipeNow() {
   // 不变量显式可见(游戏侧 Py 也做了同样的归一化, 两边互为保险)。
 
   const hook = window.__umgSwipe;
-  if (typeof hook === 'function' && hook(bytes) !== false) return true;
+  if (typeof hook === 'function') {
+    // 读卡桩真的接下了这次刷卡(它自己会把钩子摘掉): 顺手清掉「在等刷卡」探针。
+    if (hook(bytes) !== false) {
+      window.__umgSwipeResolved = false;
+      return true;
+    }
+  }
   srv.cardBytes = bytes;
   return true;
+}
+
+// 游戏侧读卡桩当前处于什么状态 —— 判断「刷卡」按钮该不该露、以及诊断用。
+//
+//   inLoginScreen  __umgLoginScreen: 游戏**正停在登录画面**(v_k_28809 的循环里),
+//                  这是唯一会消费「刷卡」/卡片的位置。
+//   waiting        __umgSwipe 挂着: 读卡桩正等一次刷卡(桌面没有 AM 读卡器时,
+//                  游戏第一次探卡就会走到这里)。
+//   pendingCard    还有一次「已下单、没被消费」的刷卡: armed 时间窗内, 或宿主自己
+//                  还留着没送出去的 cardBytes。登录画面第一次探卡没被 armed 挡下的话
+//                  会直接消费它, 所以它存在就说明「接下来一定能刷上」。
+//
+// 为什么要暴露它: 7.34 之前, 登录画面的循环因为「没 armed 拿不到卡」直接 return,
+// 刷卡按钮只在 __umgSwipe 挂着时才露 —— 而那条路径根本走不到, 于是玩家看到的是
+// 「明明绑了卡, 却只有『游客登录』可点」。宿主可以据此在登录画面里就把按钮亮出来。
+export function cardScreen() {
+  const srv = window.__umgServer || null;
+  return {
+    inLoginScreen: window.__umgLoginScreen === true,
+    waiting: typeof window.__umgSwipe === 'function',
+    pendingCard: (typeof window.__umgArmCardSwipe === 'function' && window.__umgArmCardSwipe()) || !!(srv && srv.cardBytes),
+  };
 }
 
 // 宿主直接登录(不依赖游戏那个只认读卡器的登录窗口)。

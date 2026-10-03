@@ -3635,8 +3635,26 @@ scope.v_Rs_28007.prototype = {
     //     undefined !== 1 成立 -> 它会再调 T0() -> T0 又调 v_c_28776() -> 再探卡,
     //     形成无限递归(真机表现: 主界面反复重绘、txDummyChara_0.dds 每秒刷一次)。
     //     返回 v_Ts_28004 表示「读卡器上没卡」, 主菜单停在原地等玩家点「刷卡」。
-    if ("function" === typeof window.__umgArmCardSwipe) {
-      if (!window.__umgArmCardSwipe()) return this.US = scope.v_Ps_28006, scope.v_Ts_28004;
+    if ("function" === typeof window.__umgArmCardSwipe && !window.__umgArmCardSwipe()) {
+      // ── 本次修的核心: 「登录画面」与「主菜单」地位不同 ──────────────────────
+      // 游戏登录流程: 主菜单(v_N1_27904.v_c_28776) 先探一次卡, 探不到就等玩家点
+      // 「TouchSlider」进登录画面(v_G1_27905.v_k_28809), 登录画面自己再探一次卡 ——
+      // 只有登录画面那一次探卡算「真的要登录」。
+      //
+      // 当前 bug: 宿主已绑卡(window.__umgServer.card/cardBytes), 但登录画面的循环第一行
+      // 就因没 armed 拿到 v_Ts_28004 并 return —— 牌到玩家手里就是「必须点游客登录才能
+      // 进去」。
+      //
+      // 为什么不能在所有地方都供卡: 主菜单会**反复**探卡, 一直供卡就是「刷完卡回不到
+      // 主界面 / 一直被拉回刷卡画面」循环。
+      // 所以这里只认「登录画面」这个位置, 判据有两个(任一成立即认定):
+      //   (a) 新标志 window.__umgLoginScreen —— v_G1_27905.v_k_28809 进入/退出时置/清,
+      //       最精确;
+      //   (b) 兼容旧宿主(没有新标志): 还在 arm 的 8s 时间窗内, 且 __umgSwipe 还挂着
+      //       —— 挂着说明「上一个探卡还在等」, 不是主菜单那种一探就走的短命周期。
+      var v_umgOnLoginScreen = (window.__umgLoginScreen === true);
+      if (!v_umgOnLoginScreen && window.__umgSwipeResolved === true) v_umgOnLoginScreen = true;
+      if (!v_umgOnLoginScreen) return this.US = scope.v_Ps_28006, scope.v_Ts_28004;
     }
     if (window.__umgServer && window.__umgServer.cardBytes) {
       var v_umgHostCard = window.__umgServer.cardBytes;
@@ -3689,12 +3707,19 @@ scope.v_Rs_28007.prototype = {
         if (v_umgDone) return false;
         v_umgDone = true;
         globalThis.__umgSwipe = null;
+        // 探针在这里才清: 它表示「读卡桩真的把这次刷卡消费掉了」, 不是「挂过钩子」。
+        // ⚠ 不能用 setTimeout(…, 0) 之类的定时清: 主菜单 v_c_28776 的探卡是
+        //   「R9() -> await -> C9()」, 同一 tick 里就被 C9 取消, 太窄。
+        globalThis.__umgSwipeResolved = false;
         v_umgSelf.Z9 = void 0;
         v_t_33747(v_umgBytes);
         return true;
       };
       this.Z9 = v_umgSwipe;
       globalThis.__umgSwipe = v_umgSwipe;
+      // 兼容旧宿主(不认识 __umgLoginScreen)的探针: 挂上表示「读卡桩正在等刷卡」,
+      // 于是下一次 R9() 在未 armed 时也认这里是登录画面, 从 __umgServer 取卡。
+      if (!v_umgDone) globalThis.__umgSwipeResolved = true;
     });
   },
   iS: async function () {

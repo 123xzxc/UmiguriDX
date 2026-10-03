@@ -190,6 +190,11 @@ export function createV_G1_27905(scope) {
     await scope.renderer.C7(scope.v_Ge_28204(15)), scope.menuSystem.It(!0), scope.menuSystem.T9(scope.v_Ge_28204(20)), scope.sceneManager.ft(new scope.v_M1_27898(v_g_28805, void 0)), scope.sceneManager.ri(30), scope.sceneManager.ti();
   }
   async function v_k_28809(v_t_28862) {
+    // 告诉宿主/读卡桩「现在是登录画面」: R9() 只在这个位置才(在未 armed 时)自己从
+    // __umgServer 取卡 —— 主菜单反复探卡时不供卡, 避开「一直被拉回刷卡画面」循环。
+    // 两个 return 之前都要清掉, 否则标志留着会让下一次主菜单探卡也供卡。
+    window.__umgLoginScreen = true;
+    try {
     let v_i_28863 = v_t_28862;
     if (v_i_28863 && v_i_28863 !== scope.v_Is_28005 && v_i_28863 !== scope.v_Ts_28004) v_p_28808(v_t_28862);else {
       v_d_28802(v_o_28798), v_u_28793.e8(8, void 0, 25), scope.menuSystem.dt();
@@ -225,7 +230,7 @@ export function createV_G1_27905(scope) {
         }, scope.v_Ge_28204(30));
       }, void 0)), scope.sceneManager.ri(30), scope.sceneManager.ti();;) {
         var v_e_28864 = v_i_28863 || (await scope.v_D_27646.R9());
-        if (v_i_28863 = void 0, v_e_28864 === scope.v_Ts_28004) return;
+        if (v_i_28863 = void 0, v_e_28864 === scope.v_Ts_28004) return void (window.__umgLoginScreen = false);
         // 桌面语义(见 index.js 的 R9): 没 armed 时探卡返回 v_Ts_28004(读卡超时/没卡),
         // 上面那行 `=== v_Ts_28004` 已经 return, 不会走到这里, 也不会被当成「读到卡了」
         // 去登录 —— 否则每次回到主界面都会被自动拉回刷卡画面(循环)。
@@ -235,6 +240,11 @@ export function createV_G1_27905(scope) {
         }
         await new Promise(v_t_28873 => scope.v_Te_27911.Ai(scope.v_Ue_28209("amReaderErrorFatal"), scope.v_N0_27771 | scope.v_U0_27775, 1500, v_t_28873));
       }
+    }
+    } finally {
+      // 这里一定会跑到(上面那个提前 return 自带了一次清零), 作用是异常退出
+      // (断网/卡号被拒/读卡器报错)时也把标志清干净。
+      window.__umgLoginScreen = false;
     }
   }
   function v_b_28810() {

@@ -31,7 +31,7 @@ import { setKeyLayoutFromFe } from './keypanel/config.js';
 import { refreshKeyPanelLayout } from './keypanel/panel.js';
 import { installLauncher } from './keypanel/launcher.js';
 import { installOnlineUI, openOnlineUI } from './online/ui.js';
-import { installNativeServer, nativeStatus, autoHostLogin } from './online/native.js';
+import { installNativeServer, nativeStatus, autoHostLogin, armCardSwipe } from './online/native.js';
 
 // Tauri v2 在 csp:null 时会拦截「页面加载阶段」的 IPC(fetch ipc://localhost),
 // 见 tauri#14707 / #15216。因此凡会触发 invoke 的初始化(含游戏启动)一律推迟到
@@ -249,6 +249,18 @@ whenPageReady(async () => {
     }
   } catch (e) {
     diagLog('[umg][native] 注入失败: ' + ((e && e.message) || e));
+  }
+
+  // 开箱即用: 启动器跑完(已登录 + 已绑卡 + 已下发 __umgServer)就立刻置一次
+  // 「刷卡」令牌(8s 时间窗), 让游戏进入登录画面后第一次探卡(R9)就能拿到卡
+  // —— 否则 R9 在未 armed 时返回 v_Ts_28004(没卡), 登录画面的循环会直接 return,
+  // 玩家只能点「游客登录」才能进去(本次修的就是这个)。
+  // 只在真的接上了原生联机时置: 没接联机时游戏连 R9 都不会调, 置了也没人消费。
+  if (!onlineCfg || !onlineCfg.user) {
+    diagLog('[umg][online] 启动器未登录, 不自动刷卡(游戏里可点「刷卡」或「游客登录」)');
+  } else if (window.__umgServer && window.__umgServer.card) {
+    armCardSwipe();
+    diagLog('[umg][online] 开箱即用: 已为登录画面靠前一次刷卡');
   }
 
   // 宿主直接登录: 必须晚于 loadMain() —— 游戏侧后门 globalThis.__umgHostLogin 是

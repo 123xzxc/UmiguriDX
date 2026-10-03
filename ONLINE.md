@@ -1516,3 +1516,77 @@ v_i_29944 && scope.v_oe_27649.Px && (… v_s_29948.Rx = scope.v_oe_27649.Px …)
 **改动**: `open-umiguri/src/game-esm/index.js`(`jC` 用 `ix` 重建 + `umgCancelIP`)、
 `open-umiguri/src/game-esm/modules/v_nr_27925/index.js`(去掉 20s 超时, 131/129 调
 `umgCancelIP`), 三处版本号 2.9.29。**只需更新客户端。**
+
+### 7.34 「必须点游客登录才能登录」+「明明绑了卡却只有游客可点」+ 2.9.30
+
+**现象**: 桌面版启动后停在登录画面, 玩家必须点「游客登录」才能进去; 已经绑了卡、
+启动器也显示已登录, 但游戏里的刷卡一次都没发生。
+
+**根因(客户端一处, 宿主一处)**:
+
+1. 游戏登录流程其实有两次探卡。第一次在主菜单 `v_N1_27904.v_c_28776`; 探不到就
+   等玩家点「TouchSlider」进登录画面 `v_G1_27905.v_k_28809`, 进去后再探一次:
+
+       var v_e_28864 = v_i_28863 || (await scope.v_D_27646.R9());
+       if (v_i_28863 = void 0, v_e_28864 === scope.v_Ts_28004) return;   // 没卡 -> 退出
+
+2. 而桌面侧的 `R9()` 为了修「一直自动刷卡 -> 回不到主界面」那个循环, 做成了
+   只在 armed(玩家点过「刷卡」)时才供卡:
+
+       if (typeof window.__umgArmCardSwipe === "function" && !window.__umgArmCardSwipe())
+         return this.US = scope.v_Ps_28006, scope.v_Ts_28004;
+
+   登录画面第一次探卡时没人 arm 过(读卡桩的 `__umgSwipe` 落回分支也擦不到 ——
+   刷卡按钮只在 `__umgSwipe` 挂着时才露, 而那条路径根本走不到), 于是循环第一行就拿到
+   `v_Ts_28004` 并 `return`。玩家眼前只剩「游客登录」。
+
+   注意 `v_p_28808` 里早就有「用 `__umgServer.cardBytes` 自愈补卡」的逻辑(7.19 加的),
+   但根本走不到它 —— 循环在 `R9()` 那一步就退出了。
+
+**修法(客户端 + 宿主, 各一处, 都按「场景」而不是「一直放开」)**:
+
+* 客户端 `v_G1_27905.v_k_28809`: 进入时置 `window.__umgLoginScreen = true`, 两个
+  `return` 之前清零, 外面再套 `finally` 兜异常退出。
+
+* 客户端 `index.js` 的 `R9()`: armed 判定改成
+
+      if (typeof window.__umgArmCardSwipe === "function" && !window.__umgArmCardSwipe()) {
+        var onLoginScreen = (window.__umgLoginScreen === true);
+        if (!onLoginScreen && window.__umgSwipeResolved === true) onLoginScreen = true;
+        if (!onLoginScreen) return this.US = scope.v_Ps_28006, scope.v_Ts_28004;
+      }
+
+  即只认「登录画面」这个位置再自己从 `__umgServer` 取卡(取完照旧走 `Py()` 归一化)。
+  主菜单那一次探卡没有标志, 行为一个字没变 —— 7.22「循环进入刷卡界面」的修法完全保留。
+
+  第二个判据 `__umgSwipeResolved` 是给旧宿主留的兼容: 读卡桩落回「等刷卡」时把它置真,
+  真被消费(或取消)时清掉。主菜单那种「一探就走、同一 tick 就被 `C9()` 取消」的探卡
+  即使置了真, 也会在同一个 tick 里被清掉, 不会被下一次探卡看见。
+
+* 宿主 `main.js`: 启动器跑完(已登录 + 已绑卡 + `installNativeServer` 已下发
+  `window.__umgServer`)就 `armCardSwipe()` 置一次 8s 的刷卡令牌 —— 这是「开箱即用」
+  的那一次刷卡(与 7.19 注释里说的「进游戏前下发 cardBytes」同一件事, 只是从「等游戏
+  来取」改成「主动下单, 登录画面一来就能取到」)。没接原生联机时不置。
+
+* 宿主 `native.js`: 新增 `cardScreen()`, 给「刷卡」按钮一个可靠判据:
+
+      { inLoginScreen, waiting, pendingCard }
+      pendingCard = armed 时间窗内, 或 srv.cardBytes 还在(还没被消费)
+
+  旧判据是 `waiting = typeof window.__umgSwipe === 'function'`, 登录画面这次探卡已经变成
+  「自己供卡」, 反而不一定会挂 `__umgSwipe` 了 —— 只用它会出现「有卡可刷却不显示按钮」,
+  所以补上 `pendingCard`。`swipeNow()` 真的喂进读卡桩时顺手把 `__umgSwipeResolved` 清掉。
+
+**回归用**:
+
+* 绑卡 + 接了原生联机, 启动 -> 进登录画面不点任何按钮就应自动刷卡进主界面, 名字是自己的
+  (不是游客), 之后成绩能上传。
+* 打完歌回主界面不应被自动拉回刷卡画面(7.22 的回归项)。
+* 手动点宿主悬浮球的「刷卡」仍然能刷(登录画面 / 主菜单两条路径)。
+* 没绑卡 / 没接原生联机时, 行为与之前一致: 停在登录画面, 「游客登录」照常可用。
+
+**改动**: `open-umiguri/src/game-esm/index.js`(`R9` 加登录画面分支 + `__umgSwipeResolved`
+探针)、`open-umiguri/src/game-esm/modules/v_G1_27905/index.js`(`__umgLoginScreen` 标志)、
+`open-umiguri/src/host/main.js`(开箱即用 arm 一次)、`open-umiguri/src/host/online/native.js`
+(`cardScreen()` + 探针清理), 三处版本号 2.9.30。客户端与宿主都要更新(宿主单独换也能靠
+`__umgSwipeResolved` 走通, 但只换客户端就没有「开箱即用」那一次 arm)。
