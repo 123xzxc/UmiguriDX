@@ -935,3 +935,35 @@ v_t_28780 !== scope.v_Ts_28004 && (... scope.v_N1_27904.T0(v_t_28780) ...);
 
 **改动**: `open-umiguri/tools/game-patches.mjs`、`open-umiguri/src/game-esm/index.js`、
 `open-umiguri/src/game-esm/modules/v_G1_27905/index.js`。**只需更新客户端。**
+### 7.20 点了「刷卡」卡死在主菜单: armed 是「消费一次」+ 自愈补卡走了 armed 的 R9 + 2.9.17
+
+7.19 修完死循环后, 真机出现新的卡死: 点「刷卡」后日志只有
+
+```
+[umg][card] 本次没读到卡, 尝试从宿主补一张
+[umg][card] 宿主也没有可用卡, 保持当前状态(不登出/不降级游客)
+```
+
+然后就停在主菜单不动了。两处问题叠在一起:
+
+**(a) armed 做成「消费一次」太窄。** 主菜单 `v_N1_27904.v_c_28776()` 总会先探一次卡,
+把结果传给 `v_G1_27905.v_k_28809()`; 登录流程内部(`v_p_28808` 的自愈补卡、`v_k_28809`
+的探卡循环)还会**再探一次**。旧的「返回 true 就 `swipeArmed -= 1`」语义下, 第一次探卡
+就把令牌吃掉, 第二次探卡拿到「没卡」, 于是 `v_p_28808` 判定失败直接 `return` ——
+界面停在中间态(卡死)。
+
+**修法**: 改成**时间窗**(`host/online/native.js`, `SWIPE_ARM_MS = 8000`): 点一次「刷卡」
+后 8 秒内所有 `R9()` 探卡都供卡。既覆盖同一轮里的多次探卡, 又不会长期供卡(窗一过自动
+失效, 不会回到「自动进刷卡画面」的循环)。
+
+**(b) `v_p_28808` 的自愈补卡走了 armed 的 `R9()`。** 它是 `await scope.v_D_27646.R9()`,
+在没 armed 时只会拿到 `v_Ts_28004`, 等于补了个空。改成**直接读常驻的
+`window.__umgServer.cardBytes`**(10 字节直接喂 `Py`, 否则回退到 `card` 卡号字符串) ——
+这张卡是宿主长期持有的绑定卡, 与 armed 无关。
+
+**注意**: `tools/game-patches.mjs` 的 `NATIVE_SWIPE_BODY` 是 `src/game-esm/` 的生成源,
+两处语义要保持一致。
+
+**改动**: `open-umiguri/src/host/online/native.js`(时间窗)、
+`open-umiguri/src/game-esm/modules/v_G1_27905/index.js`(自愈补卡直接读 cardBytes)、
+`open-umiguri/tools/game-patches.mjs`(注释同步)。**只需更新客户端。**

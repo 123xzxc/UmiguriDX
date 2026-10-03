@@ -138,8 +138,16 @@ export function createV_G1_27905(scope) {
       // 补得到就当真卡继续登录(自愈), 补不到就保持现状什么都不做。
       if (void 0 === v_t_28842 || null === v_t_28842 || v_t_28842 === scope.v_Ts_28004) {
         console.log("[umg][card] 本次没读到卡, 尝试从宿主补一张");
-        if (window.__umgServer && (window.__umgServer.cardBytes || window.__umgServer.card)) {
-          v_t_28842 = await scope.v_D_27646.R9();
+        // ⚠ 这里**必须直接读 __umgServer.cardBytes**, 不能再调 R9() 去补:
+        //   R9() 现在只在 armed(玩家点过「刷卡」)时才供卡, 主菜单这条路径没 armed,
+        //   调它只会拿到 v_Ts_28004 —— 补卡补了个空, 下面判定失败直接 return,
+        //   界面就停在中间态(真机表现: 点了「刷卡」进不去, 卡死在主菜单)。
+        //   cardBytes 是宿主长期持有的绑定卡, 与 armed 无关, 直接取来喂给 Py 即可。
+        var v_umgHostCb = window.__umgServer && window.__umgServer.cardBytes;
+        if (v_umgHostCb && v_umgHostCb.buffer && 10 === v_umgHostCb.byteLength) {
+          v_t_28842 = v_umgHostCb;
+        } else if (window.__umgServer && window.__umgServer.card) {
+          v_t_28842 = window.__umgServer.card;
         }
       }
       if (void 0 === v_t_28842 || null === v_t_28842 || v_t_28842 === scope.v_Ts_28004) {

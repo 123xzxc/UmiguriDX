@@ -122,17 +122,23 @@ export function installNativeServer(sessionCfg, nwToken) {
 // 「刷卡」按钮只在它为真时露出来。
 // 放行**一次**游戏侧的探卡。游戏 R9() 每次探卡都会调它, 返回 true 就消耗掉这次放行。
 // 做成「一次性令牌」而不是布尔: 主菜单会反复探卡, 布尔置真会导致连续自动刷卡。
-let swipeArmed = 0;
+// 设计: 点一次「刷卡」后开一个**时间窗**(默认 8s), 窗内所有探卡都供卡。
+//   为什么不是「消费一次」: 主菜单(v_N1_27904.v_c_28776)总会先探一次卡, 再把结果
+//   传给登录流程(v_G1_27905.v_k_28809); 登录流程内部还会再探一次。
+//   「消费一次」的语义下, 第一次探卡就吃掉令牌, 第二次探卡拿到的是「没卡」,
+//   于是 v_p_28808 走到「宿主也没有可用卡」直接 return —— 界面停在中间态,
+//   真机表现就是「点了刷卡, 卡死在主菜单」。
+//   时间窗既能覆盖同一轮的所有探卡, 又不会长期供卡(窗一过自动失效, 不会循环)。
+const SWIPE_ARM_MS = 8000;
+let swipeArmedUntil = 0;
 export function armCardSwipe() {
-  swipeArmed = 1;
+  swipeArmedUntil = Date.now() + SWIPE_ARM_MS;
 }
 
 // 游戏侧读卡器 R9() 会调这个全局(见 tools/game-patches.mjs 注入与 game-esm/index.js)。
 function installArmHook() {
   window.__umgArmCardSwipe = function () {
-    if (swipeArmed <= 0) return false;
-    swipeArmed -= 1;
-    return true;
+    return Date.now() < swipeArmedUntil;
   };
 }
 
