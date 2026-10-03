@@ -762,6 +762,39 @@ let guestB = 0;
   ok(stReplayA.u32() > 0, "重播同时发给房主自己(带对局号)");
 }
 
+// 状态回退到 1 时必须清掉选曲并广播 133(回归)。
+//   真机: 一局打完房主结算回大堂, 非房主却回不到选歌/主菜单 —— 因为服务端
+//   还留着上一局的 selection, 下一局/中途进房的人立刻收到 PICK 补发, 状态机错开。
+{
+  const chartBack = {
+    w0: "music_back",
+    lf: "回退测试",
+    C5: "composer",
+    y5: "pop",
+    m5: 1.5,
+    S5: 120.5,
+    A5: 3,
+    meta: [null, null, { b5: "author", k5: "3", T5: "n.json" }, null, null, null]
+  };
+  // 选曲(建立 selection, 服务端会把状态置 1), 再把状态推到对局中, 最后回退到 1。
+  const backReq = new Writer().u16(0).u16(3);
+  writeChart(backReq, chartBack);
+  await a.request(4, backReq);
+  await b.nextPush(132);
+  await a.request(19, new Writer().u16(3).u16(0));
+  await b.nextPush(137);
+  b.pushes.set(133, []);
+  b.pushes.set(137, []);
+  const rBack = await a.request(19, new Writer().u16(1).u16(0));
+  eq(rBack.body.u16(), 0, "回退到状态 1 结果码 0");
+  // 500ms 重播可能插进来旧帧, 这里只断言「确实降下来了」(不再停在 3)。
+  let stBack137 = await b.nextPush(137, 3000);
+  if (stBack137.u16() >= 3) stBack137 = await b.nextPush(137, 3000);
+  ok(stBack137.u16() < 3, "137 从 3 回退到 1(不再停在已开局状态)");
+  const unpick = await b.nextPush(133, 3000);
+  ok(unpick.u32() >= 0, "回退到 1 时广播了 133(带局号)");
+  eq(unpick.u16(), 0, "133 的状态位是 0(与 OP_UNPICK 一致)");
+}
 // op=6「开局」必须把房间状态从 1 推到 2(回归)。
 //   真机: 房主点开始只走 xx(true)=op=19 状态 1, 非房主进对局等的是 Tx(3) 那一档,
 //   而 2/3 只有 Lx 会上报、在自建服务端上不一定落到线上 —— 房间状态永远停在 1,

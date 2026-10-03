@@ -967,3 +967,31 @@ v_t_28780 !== scope.v_Ts_28004 && (... scope.v_N1_27904.T0(v_t_28780) ...);
 **改动**: `open-umiguri/src/host/online/native.js`(时间窗)、
 `open-umiguri/src/game-esm/modules/v_G1_27905/index.js`(自愈补卡直接读 cardBytes)、
 `open-umiguri/tools/game-patches.mjs`(注释同步)。**只需更新客户端。**
+### 7.21 「玩家2回不到主菜单」: 结算回退没上报 + 服务端没清选曲 + 2.9.18
+
+7.18～7.20 修的是「进不去对局」, 这条是反方向: 一局打完, 房主回大堂了, 玩家 2 却卡在
+结算/对局界面回不到主菜单。两个原因:
+
+**(a) 客户端 `uC(false)` 的回退上报被 `GC` 门槛挡住。**
+`open-umiguri/src/game-esm/index.js` 的 `uC`(进入/退出对局)里, 退出分支写的是
+
+```js
+if (v_t_33867) this.GC = this.Px;
+else if (this.GC) { ... this.LC.XC(scope.v_ha_28044, 0); }
+```
+
+`this.GC` 是座位槽: 房主结算离开时它可能已经是 0(从没入座/上一轮已清), 于是这条
+「回退到状态 1」的上报**永远不发**, 服务端 `room.state` 停在 5, 玩家 2 收不到 137,
+没有任何理由自己走回选歌/主菜单。改成退出分支**无条件上报一次 1**(有座位就顺手清掉)。
+
+**(b) 服务端回退时没清 `selection`。**
+`umiguri-native-server/src/sock.js` 的 `pushState` 现在在「状态从 >= 2 掉回 1」时
+把上一局的 `room.selection` 清掉并广播 **133**(`PUSH_UNPICK`, 载荷 `{yx, u16 0}`,
+与 `OP_UNPICK` 同一格式)。否则服务端还留着上一局的选曲, 下一局/中途进房的人会立刻
+收到 `PICK`(132)补发, 两边状态机错开。
+
+**回归用例**: `native-smoke.mjs` 新增「状态回退到 1 时清选曲并广播 133」,
+**250 项全过**。
+
+**改动**: `open-umiguri/src/game-esm/index.js`、`umiguri-native-server/src/sock.js`、
+`umiguri-native-server/test/native-smoke.mjs`。**客户端与服务端都要更新。**

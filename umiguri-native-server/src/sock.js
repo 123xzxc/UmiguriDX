@@ -521,9 +521,22 @@ function pushState(room, from, n1) {
   //   (客户端的等待语义是「挂上 waiter 之后再收一帧 137 才醒」, 见下方注释)。
   const next = n1 | 0;
   const changed = next !== room.state;
+  const prev = room.state;
   room.state = next;
   // 回到 0(重开/清场)就别再重播了, 否则会朝空房间一直发。
   if (!(next > 0)) clearStateReplay(room);
+  // 结算/回大堂: 状态从「对局中(>=2)」掉回 1 时, 把这局的选曲清掉并广播 133。
+  //   非房主结算后要回到选歌界面靠两件事: 137(sP 从 5 降回 1) + 本地选曲状态复位。
+  //   若服务端还留着上一局 selection, 下一局/中途进房的人会立刻收到 PICK 补发,
+  //   两边状态机错开, 真机表现「玩家2回不到选歌/主菜单」。
+  if (prev >= 2 && next === 1 && room.selection) {
+    room.selection = null;
+    const uw = new Writer();
+    uw.u32(room.yx).u16(0);
+    const upayload = uw.bytes();
+    for (const m of room.members.values()) push(m.conn, PUSH_UNPICK, upayload);
+    trace("房间 #" + room.id + " 状态回退到 1, 已清选曲并广播 133");
+  }
   const w = new Writer();
   // 客户端 iT 的 137 分支先 v3() 读一个 u32 局号, 再读 u16 状态 ——
   // 少写这个 u32 会让状态错位成高半字, 表现为「联机状态永远对不上」。

@@ -4071,9 +4071,14 @@ scope.v_Hs_28017.prototype = {
     //   选歌界面等的 Tx(1) 就能醒来(见 0063 的 await v_oe_27649.Tx(v_ha_28044))。
     //   同时它也把「座位被占用」清掉(uC(true) 分支下 this.GC = this.Px)。
     if (v_t_33867) this.GC = this.Px;
-    else if (this.GC) {
+    else {
+      // ⚠ 这里的守卫不能是 `else if (this.GC)`: 房主结算离开时 GC(座位槽)可能已经是 0
+      //   (比如他从没入座 / 上一轮已清), 那样**这条回退上报就永远不发** —— 服务端
+      //   room.state 停在 5, 非房主收不到「回到 1」的 137, 回不到选歌/主菜单。
+      //   真机表现: 「玩家2回不到主菜单」。改成只要在联机里(且曾经入过座或正在对局)
+      //   就无条件上报一次 1(幂等, 服务端允许回退)。
       var v_umgPrev = this.GC;
-      this.GC = 0, this.ZC(v_umgPrev);
+      if (v_umgPrev) { this.GC = 0, this.ZC(v_umgPrev); }
       console.log("[umg][coop] 退出对局 -> 上报状态 1 (离开座位 slot=" + v_umgPrev + ")");
       try {
         this.Gi() && this.LC && this.LC.XC(scope.v_ha_28044, 0);
