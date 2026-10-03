@@ -264,6 +264,15 @@ class Sock {
     });
   }
 
+  // 取出并清空某个 op 已经压下的全部帧, 返回它们。用来在「队列里可能有重播残留」时
+  // 只看「某个动作之后」新产生的帧 —— 服务端有 500ms 状态重播, nextPush 的 FIFO
+  // 语义会先吐残留帧, 断言很容易读到过期的那个值。
+  drainPush(op) {
+    const list = this.pushes.get(op) || [];
+    this.pushes.set(op, []);
+    return list;
+  }
+
   nextPush(op, timeoutMs = 3000) {
     const list = this.pushes.get(op);
     if (list && list.length) return Promise.resolve(list.shift());
@@ -738,6 +747,14 @@ let guestB = 0;
   //   高状态放行, 两边状态机错开: 真机表现「房主点跳过/Next, 其他人回不到选歌界面」。
   //   同时每次上报都仍要**回一帧** 137(客户端是「挂上 waiter, 再收一帧才醒」)。
   b.pushes.set(137, []); // 排空历史上压下的 137, 只看这次请求触发的那一帧
+  // ⚠ 先让 B 也到过「对局中(3)」再回退。回退保护(见 sock.js pushState 的
+  //   staleRollback)要求「只有确实进过对局的那条连接才能把房间从 >=2 打回 1」。
+  //   从没到过 2 的连接上报的 1 是陈旧的(点开始后卡在「等待房主」分支的一方会
+  //   被 137 重播反复唤醒、反复上报状态 1), 那种不能允许 —— 否则开局方永远等不到 3。
+  b.pushes.set(137, []);
+  await b.request(19, new Writer().u16(3).u16(0));
+  await b.nextPush(137);
+  b.pushes.set(137, []);
   const r2 = await b.request(19, new Writer().u16(1).u16(0));
   eq(r2.body.u16(), 0, "B 上报更小状态也成功");
   const stBack = await b.nextPush(137);
@@ -746,6 +763,47 @@ let guestB = 0;
   a.pushes.set(137, []);
   const stBackA = await a.nextPush(137);
   eq(stBackA.u16(), 1, "回退的 137 也广播给房主自己");
+  // ⚠ 新回归(2026-10-03 真机「点开始后双方卡在进歌界面」): 已经开局(>=2)的房间,
+  //   不能被「从没进过对局」的连接打回 1 —— 否则开局方在 gameCore 里等的
+  //   Tx(3)/Lx(3) 永远等不到。这里模拟点开始后卡在等待分支、被 137 重播反复
+  //   唤醒而反复上报状态 1 的一方。
+  {
+    const c = new Sock(port);
+    await c.connect();
+    const rc = await c.request(2, enterPayload(roomId, "", "nw-stale", "STALE"));
+    eq(rc.body.u16(), 0, "陈旧回退用例的连接进房成功");
+    rc.body.u32();
+    rc.body.u32();
+    await c.nextPush(130);
+    await c.nextPush(137);
+    await c.nextPush(141);
+    // 先把房间推回「对局中」, 再让 C(最高只到过 1) 上报状态 1。
+    a.pushes.set(137, []);
+    b.pushes.set(137, []);
+    await a.request(19, new Writer().u16(3).u16(0));
+    await a.nextPush(137);
+    await b.nextPush(137);
+    c.drainPush(137);
+    const rStale = await c.request(19, new Writer().u16(1).u16(0));
+    eq(rStale.body.u16(), 0, "陈旧上报同样返回结果码 0");
+    // 陈旧上报也会广播一帧 137(客户端的等待语义要求「有帧才醒」), 但状态读回来
+    // 必须是 3 —— 也就是这次回退被忽略, 房间仍停在「对局中」。
+    // 用 drainPush 排掉「进房补发 / 重播」在请求之前压下的帧, 只读这次动作之后的值。
+    // 等一帧重播周期过去, 让「这次请求是否真的改变了房间状态」在后续重播里显形。
+    //   (服务端有 500ms 状态重播; 请求前后各自可能压着若干帧, 直接读 FIFO 会读到旧值。)
+    await new Promise((v) => setTimeout(v, 650));
+    c.drainPush(137);
+    a.drainPush(137);
+    b.drainPush(137);
+    await new Promise((v) => setTimeout(v, 650));
+    const steady = c.drainPush(137);
+    ok(steady.length > 0, "重播仍在继续(房间状态非 0)");
+    // ⚠ 137 的载荷是 [u32 局号][u16 状态], 断言前必须先跳掉局号。
+    steady[steady.length - 1].u32();
+    eq(steady[steady.length - 1].u16(), 3, "从未进过对局的连接上报状态 1 不能把已开局的房间打回 1(重播仍是 3)");
+    c.close();
+    await new Promise((v) => setTimeout(v, 50));
+  }
   // 把状态推回 3(上一段刚降到 1), 后面这句才是「同一状态重复上报也要回帧」的回归。
   await b.request(19, new Writer().u16(3).u16(0));
   b.pushes.set(137, []);

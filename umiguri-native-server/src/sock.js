@@ -110,6 +110,14 @@ class Member {
     this.ready = 0;
     this.score = 0;
     this.flags = 0;
+    // 这条连接自己报告过的**最高**对局状态。用来区分两种「回退到 1」:
+    //   * 打完一局的人结算回大堂(他确实到过 5 -> 合法, 必须允许);
+    //   * 从没进过对局的人(比如点开始后走「等待房主」分支、被 137 重播反复
+    //     唤醒的那一方)反复上报状态 1(陈旧, **不能**把已经开局的房间打回去)。
+    //   不加这个判据时真机表现: 一方 op=6 开局把房间推到 2, 另一方每 500ms
+    //   上报一次状态 1 又把它打回 1, 开局方的 Tx(3) 永远等不到 -> 双方卡在
+    //   「进歌界面」。(2026-10-03 真机日志: state=1 无限重播 + 双方都没有 op=19 状态3)
+    this.maxState = 0;
   }
 
   // PUSH_JOIN(130) 载荷布局 —— 客户端 iT 里 v_js_28019 分支的读法:
@@ -417,6 +425,9 @@ function dispatch(conn, frame) {
       const n1 = body.u16();
       body.u16(); // 客户端把曲目序号写了两遍, 这里不用(局号以 room.selection 为准)
       member.state = n1;
+      // 记录这条连接到过的最高状态(见 Member.maxState 的说明)。只在前进时更新,
+      // 这样「结算回退到 1」不会把历史抹掉。
+      if ((n1 | 0) > member.maxState) member.maxState = n1 | 0;
       respond(conn, op, seq, 0);
       pushState(room, member, n1);
       return;
@@ -520,9 +531,16 @@ function dispatch(conn, frame) {
         const sw = new Writer();
         sw.u32(room.selection ? room.selection.yx : room.yx).u16(1);
         const sp = sw.bytes();
-        room.state = 1;
+        // ⚠ 已经开局(>=2)时**只补帧、不改房间状态**(2026-10-03 真机「点开始后
+        //   双方卡在进歌界面」的第二个根因)。以前这里无条件 `room.state = 1`:
+        //   对局已经开始, 但某个成员(通常是从没进过对局、被 137 重播反复唤醒的
+        //   那一方)又发了一次 op=22 收尾, 房间状态就被 3/4/5 打回 1, 开局方在
+        //   gameCore 里等的 Tx(3)/Lx(3) 永远等不到, 双方都停在进歌界面。
+        //   补帧本身必须保留(非房主的 Tx(1) 要靠一帧 137 才醒), 所以只把
+        //   「改状态」这一步限制在还没开局的时候。
+        if (room.state < 2) room.state = 1;
         forEachOther(room, member, (m) => push(m.conn, PUSH_STATE, sp));
-        trace("房间 #" + room.id + " 房主收尾(op=22), 已向非房主广播 137 状态 1");
+        trace("房间 #" + room.id + " 房主收尾(op=22), 已向非房主广播 137 状态 1" + (room.state >= 2 ? "(房间已开局, 不改状态)" : ""));
       }
       return;
     }
@@ -619,16 +637,26 @@ function pushState(room, from, n1) {
   //   现在按「最后一个上报者的状态」走, 并把每次上报都原样广播一遍
   //   (客户端的等待语义是「挂上 waiter 之后再收一帧 137 才醒」, 见下方注释)。
   const next = n1 | 0;
-  const changed = next !== room.state;
   const prev = room.state;
-  room.state = next;
+  // ⚠ 陈旧回退保护(2026-10-03 真机「点开始后双方卡在进歌界面」的根因):
+  //   房间已经开局(>=2)时, **只有确实进过对局的那条连接**才能把它打回 1。
+  //   点开始之后, 走了「等待房主」分支的一方并不知道对局已经开始, 它会每收到
+  //   一帧 137 重播就再上报一次状态 1(见客户端 v_nr_27925 的 ready 分支:
+  //   `xx(true, 曲目)` + `await Tx(1)` 被重播反复唤醒)。以前这里无条件接受,
+  //   于是房间状态被 2 -> 1 打回, 开局方的 Tx(3)/Lx(3) 永远等不到, 双方都停在
+  //   进歌界面, 服务端日志只有 `状态重播 -> 1` 刷屏、一条推进都没有。
+  //   判据用 from.maxState(这条连接到过的最高状态): 打完一局回大堂的人到过 5,
+  //   依然允许回退; 从没到过 2 的人上报的 1 是陈旧的, 忽略它的回退副作用。
+  const staleRollback = next === 1 && prev >= 2 && (from ? (from.maxState | 0) : 0) < 2;
+  const changed = !staleRollback && next !== room.state;
+  if (!staleRollback) room.state = next;
   // 回到 0(重开/清场)就别再重播了, 否则会朝空房间一直发。
   if (!(next > 0)) clearStateReplay(room);
   // 结算/回大堂: 状态从「对局中(>=2)」掉回 1 时, 把这局的选曲清掉并广播 133。
   //   非房主结算后要回到选歌界面靠两件事: 137(sP 从 5 降回 1) + 本地选曲状态复位。
   //   若服务端还留着上一局 selection, 下一局/中途进房的人会立刻收到 PICK 补发,
   //   两边状态机错开, 真机表现「玩家2回不到选歌/主菜单」。
-  if (prev >= 2 && next === 1 && room.selection) {
+  if (!staleRollback && prev >= 2 && next === 1 && room.selection) {
     room.selection = null;
     const uw = new Writer();
     uw.u32(room.yx).u16(0);
@@ -643,7 +671,7 @@ function pushState(room, from, n1) {
   w.u16(room.state);
   const payload = w.bytes();
   for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);
-  trace("房间 #" + room.id + " 状态 -> " + room.state + (changed ? "" : "(未变化, 但仍广播)") + " (来自 " + from.name + ")");
+  trace("房间 #" + room.id + " 状态 -> " + room.state + (staleRollback ? "(忽略陈旧回退: 该连接最高只到 " + (from ? from.maxState : "?") + ")" : changed ? "" : "(未变化, 但仍广播)") + " (来自 " + from.name + ")");
   ensureStateReplay(room);
 }
 

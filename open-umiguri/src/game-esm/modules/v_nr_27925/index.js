@@ -410,6 +410,7 @@ export function createV_nr_27925(scope) {
                     v_e_29924 = v_s_29921.On.te;
                   scope.v_Fe_28101(async () => {
                     if (scope.v_oe_27649.Gi()) if (v_t_29922) {
+                      console.log("[umg][coop] 选歌进入: Gi=" + scope.v_oe_27649.Gi() + " kx=" + v_t_29922 + " (kx!=0 -> 走「加入已有人选的这局」; kx==0 -> 走房主 Ux/开局)");
                       if (!(await async function (v_t_29925, v_i_29926) {
                         if (!scope.v_oe_27649.Gi()) return !0;
                         scope.menuSystem.Ct(!0);
@@ -458,6 +459,7 @@ export function createV_nr_27925(scope) {
               if (scope.v_Ae_27892.dn("menu_back"), scope.v_Ae_27892.dn("menu_enter"), v_s_29921.Fi >= v_q_29721 && v_s_29921.Fi <= v_x_29722) v_U_29780("presets", v_w_29776);else if (1 === v_G_29762.Ni) v_U_29780("chara", v_w_29776);else if (4 === v_G_29762.Ni) v_U_29780("masvol", v_w_29776);else if (v_s_29921.Fi === v_S_29718) return void (v_s_29921.On.S0 || async function () {
                 let v_t_29943 = v_F_29756.ready.Jn[0].Bi[2].On.te,
                   v_i_29944 = scope.v_oe_27649.Gi();
+                console.log("[umg][coop] 点开始: Gi=" + v_i_29944 + " Px=" + scope.v_oe_27649.Px + " Ox=" + scope.v_oe_27649.Ox.length + " sP=" + scope.v_oe_27649.sP + " 曲目=" + v_B_29757.w0 + " kx=" + v_B_29757.kx);
                 // ⚠ Ix.get(Px) 在 Px 为空(0/null, 也就是「自己还没选曲」)时是 undefined,
                 //   直接 .Mx 会抛 TypeError 把整个 async 流程打断 —— 那样后面发送状态、等
                 //   Tx(1) 全部不执行, 服务端一条 op=19 都收不到, 双方卡在进歌界面。
@@ -472,7 +474,9 @@ export function createV_nr_27925(scope) {
                   scope.menuSystem.ft(), scope.menuSystem.vt("cancel", "Cancel", 14, 2, scope.v_si_27792, !1, !1, !1, "", function (v_t_29953, v_i_29954) {
                     "down" === v_t_29953 && (scope.v_oe_27649.xx(!1, 0), scope.v_oe_27649.Cx(scope.v_ha_28044));
                   }), scope.v_V1_27912.T0(100), scope.menuSystem.wt("cancel", !0), await scope.v_oe_27649.xx(!0, v_t_29943);
+                  console.log("[umg][coop] 点开始: 已上报状态1, 开始等 Tx(1) (sP=" + scope.v_oe_27649.sP + ")");
                   var v_e_29945 = await scope.v_oe_27649.Tx(scope.v_ha_28044);
+                  console.log("[umg][coop] 点开始: Tx(1) 返回 " + v_e_29945 + " (sP=" + scope.v_oe_27649.sP + ")");
                   if (scope.v_V1_27912.XS(), scope.menuSystem.wt("cancel", !1), scope.menuSystem._t(), !v_e_29945) return;
                 }
                 scope.v_Ae_27892.dn("musicSelectStart"), scope.v_oe_27649.hx(v_Rt_29789), v_c_29746.e8(0), v_c_29746.Jt = !0, v_v_29772(scope.v_gi_27815);
@@ -482,7 +486,7 @@ export function createV_nr_27925(scope) {
                 for (let v_t_29955 = 0; v_t_29955 < v___29747.We.length; ++v_t_29955) (v_r_29947 = v___29747.We[v_t_29955]).rn(scope.v_Vo_28136, scope.v_Uo_28131, 20, 0), v_r_29947.rn(scope.v_Wo_28137, scope.v_Uo_28131, 20, 0), v_r_29947.rn(scope.v_Xo_28138, scope.v_Uo_28131, 20, 0), v_r_29947.rn(scope.v_zo_28139, scope.v_Uo_28131, 20, 0), v_r_29947.rn(scope.v_Ko_28140, scope.v_Uo_28131, 20, 0), v_r_29947.$e(0, -104), v_r_29947.ln(1, 1), v_r_29947.nn(scope.v_Ko_28140), v_r_29947.an(1), v_r_29947.an(0), v_h_29749.Ze(v_r_29947);
                 v___29747.tn(), v_h_29749.Ze(v_n_29946), v_n_29946.rn(scope.v_Vo_28136, scope.v_Uo_28131, 20, 0), v_n_29946.rn(scope.v_Wo_28137, scope.v_Uo_28131, 20, 0), v_n_29946.$e(0, -104), v_M_29750.g0.Be = !1, scope.playerInfoBoard.ii(), v_M_29750.wn.Be = !1, v_M_29750.pn.Be = !1, v_M_29750.Ji.Be = !1, v_M_29750.Oi.Be = !1, v_L_29745.e8(27), v_L_29745.e8(12, v_M_29750.h0), scope.menuSystem.It(!1), scope.sceneManager.ni(), scope.sceneManager.ii(), scope.handshake.On.q.ee = v_B_29757.w0, scope.handshake.On.q.te = v_G_29762.l0, scope.handshake.On.q.ie = v_G_29762.ie, scope.handshake.On.q.ne = v_F_29756.music.Jn[v_F_29756.music.Wn].Fi === v_p_29712, scope.handshake.On.q.HP = v_F_29756.music.Jn[v_F_29756.music.Wn].Fi === v_k_29713, scope.handshake.On.im = v_N_29758.w0, scope.handshake.On.nI = scope.v_Dr_27956(scope.handshake.On.im), scope.v_Ns_28014.uA(), scope.v_Ns_28014.pA();
                 let v_s_29948 = new scope.v_ar_27928();
-                v_s_29948.ee = v_B_29757.w0, v_s_29948.AR = v_B_29757.w0, v_s_29948.te = v_t_29943, v_s_29948._0 = v_G_29762._0, v_s_29948.k0 = v_u_29760.k0 && !v_u_29760.J6, v_s_29948.J6 = v_u_29760.J6, v_s_29948.y0 = scope.v_Ns_28014.mA(v_s_29948.ee, v_s_29948.te), v_i_29944 && (v_e_29945 = scope.v_oe_27649.Ix.get(scope.v_oe_27649.Px)) && (v_s_29948.Rx = scope.v_oe_27649.Px, v_s_29948.k0 = !1, v_s_29948.J6 = !1, v_s_29948.bx = !v_e_29945.Mx, v_s_29948.AR = v_e_29945.ng.w0);
+                v_s_29948.ee = v_B_29757.w0, v_s_29948.AR = v_B_29757.w0, v_s_29948.te = v_t_29943, v_s_29948._0 = v_G_29762._0, v_s_29948.k0 = v_u_29760.k0 && !v_u_29760.J6, v_s_29948.J6 = v_u_29760.J6, v_s_29948.y0 = scope.v_Ns_28014.mA(v_s_29948.ee, v_s_29948.te), console.log("[umg][coop] 点开始: 准备入座 Rx, i_29944=" + v_i_29944 + " Px=" + scope.v_oe_27649.Px + " picked=" + !!scope.v_oe_27649.Ix.get(scope.v_oe_27649.Px)), v_i_29944 && (v_e_29945 = scope.v_oe_27649.Ix.get(scope.v_oe_27649.Px)) && (v_s_29948.Rx = scope.v_oe_27649.Px, v_s_29948.k0 = !1, v_s_29948.J6 = !1, v_s_29948.bx = !v_e_29945.Mx, v_s_29948.AR = v_e_29945.ng.w0);
                 v_s_29948._0 && (v_s_29948._0.Qu |= scope.v_Ie_27966.$c("autoPlay"));
                 v_s_29948.C0 = v_N_29758.w0;
                 var v_a_29949 = scope.v_be_27857.Np.find(v_t_29956 => v_t_29956.C0 === v_s_29948.C0),
@@ -660,6 +664,7 @@ export function createV_nr_27925(scope) {
   async function v_Pt_29788(v_t_30007, v_i_30008) {
     if (!scope.v_oe_27649.Gi() || null !== scope.v_oe_27649.Nx) return !0;
     scope.menuSystem.Ct(!0);
+    console.log("[umg][coop] 房主开局: 调 Ux(曲目=" + v_t_30007 + " 难度=" + v_i_30008 + ")");
     v_t_30007 = await scope.v_oe_27649.Ux(v_t_30007, v_i_30008);
     return scope.menuSystem.Ct(!1), v_O_29802(), v_t_30007 !== scope.v_Ms_28009 ? await new Promise(v_t_30009 => scope.v_Te_27911.Ai(scope.v_Ue_28209("errorNetworkError"), scope.v_ei_27773 | scope.v_U0_27775, 2e3, v_t_30009)) : await new Promise(v_t_30010 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copPlaySessionOpened"), scope.v_N0_27771, 5e3, v_t_30010)), v_t_30007 === scope.v_Ms_28009;
   }
