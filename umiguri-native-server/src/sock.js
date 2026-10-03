@@ -162,6 +162,16 @@ class Member {
   }
 }
 
+// enter(op=2/tT) 失败时回的结果码。客户端 v_Hs_28017.NC() 只认这三个:
+//   1  -> QC(-2)    -> 弹「请升级客户端」(copRequireLatestVersion)
+//   16 -> QC(-11)   -> 卡号/凭据问题
+//   17 -> QC(-10)   -> 重复登录
+//   其它 -> QC(-1)  -> 加入场景下弹「房间不存在」(copRoomNotFound)
+// ⚠ 所以「房间号不存在/已满」**绝不能**回 1 —— 那会被当成「版本太旧, 请升级客户端」。
+//   回 0 以外的任何非 1/16/17 值, 都会落到 QC(-1), 选歌界面就会正确提示「房间不存在」。
+export const ENTER_OK = 0;
+export const ENTER_FAIL = 2; // 通用失败 -> QC(-1) -> 「房间不存在」
+
 // 房间: 一个选曲 + 一张实时榜。id 取 16 位(客户端把它当 u16 用, 见 OP_QUERY)。
 function pickRoom(conn, wantRoom) {
   if (!wantRoom) return { room: null, error: null };
@@ -873,8 +883,11 @@ function handleEnter(conn, seq, body) {
   // 先校验目标房间, 通过了再离开当前房间 —— 加入失败不该把人从原来的房里踢出去。
   const picked = pickRoom(conn, wantRoom);
   if (picked.error) {
-    trace("enter: 房间 #" + wantRoom + " 进不去(" + picked.error + ")");
-    respond(conn, OP_ENTER, seq, 1);
+    // ⚠ 这里**不能**回 1: 客户端的 NC() 把 1 翻译成 -2(版本不符), 于是「房间号输错」
+    //   会弹「请升级客户端」而不是「房间不存在」。回一个非 1/16/17 的码(这里用 2)
+    //   就会落到 QC(-1), 加入场景下正确弹「房间不存在」。
+    trace("enter: 房间 #" + wantRoom + " 进不去(" + picked.error + ") -> 结果码 " + ENTER_FAIL + "(客户端会显示「房间不存在」)");
+    respond(conn, OP_ENTER, seq, ENTER_FAIL);
     return;
   }
   if (conn.member) leaveRoom(conn, "换房间");

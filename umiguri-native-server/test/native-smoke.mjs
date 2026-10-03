@@ -622,10 +622,16 @@ let guestB = 0;
 // (客户端把 6 位数字拼成 u32 交给 tT, 服务端 pickRoom 用 0 表示「建房」。)
 {
   const r = await b.request(2, enterPayload(4242, "nw-b", "", "BBB"));
-  eq(r.body.u16(), 1, "加入不存在的房间被拒绝(非 0)");
+  // ⚠ 失败码**不能是 1**: 客户端 NC() 把 1 翻译成 -2(版本不符) -> 弹「请升级客户端」。
+  //   这里必须是「非 0 且非 1/16/17」的码, 客户端才会落到 QC(-1) 弹「房间不存在」。
+  const rejectA = r.body.u16();
+  eq(rejectA, 2, "加入不存在的房间被拒绝(码 2)");
+  ok(rejectA !== 1, "拒绝码不为 1(不会误报「请升级客户端」)");
 
   const missing = await joiner.request(2, enterPayload(60000, "nw-j", "", "JJJ"));
-  eq(missing.body.u16(), 1, "60000 号不存在 -> 依然拒绝(不会被当成建房)");
+  const rejectJ = missing.body.u16();
+  ok(rejectJ !== 0, "60000 号不存在 -> 依然拒绝(不会被当成建房)");
+  ok(rejectJ !== 1, "拒绝码同样不为 1(不误报版本不符)");
 
   const rejoin = await joiner.request(2, enterPayload(roomId, "nw-j", "", "JJJ"));
   eq(rejoin.body.u16(), 0, "用 A 的房间号加入 -> 结果码 0");
