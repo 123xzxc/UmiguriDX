@@ -4133,7 +4133,19 @@ scope.v_Hs_28017.prototype = {
       });
     } else if (v_i_33880 === scope.v_aa_28037) v_e_33881.nx !== scope.v_oe_27649.sx() && this.iR(v_e_33881.nx);else if (v_i_33880 === scope.v_Vs_28021) {
       v_t_33882 = new scope.v_Gs_28015();
-      v_t_33882.nx = v_e_33881.nx, v_t_33882.yx = v_e_33881.yx, v_t_33882.ng = v_e_33881.ng, v_t_33882.Jx = "cjkt:" + v_t_33882.yx, v_t_33882.Mx = v_e_33881.nx === scope.v_oe_27649.sx(), this.Ix.set(v_t_33882.yx, v_t_33882), v_e_33881.nx === scope.v_oe_27649.sx() ? (this.Px = v_e_33881.yx, this.jC(), this.nT(v_t_33882.nx)) : (scope.renderer.Yt.Zt[v_t_33882.Jx] = scope.renderer.Yt.Mf["textures\\txDummyJacket.dds"], this.eR(v_t_33882.yx));
+      v_t_33882.nx = v_e_33881.nx, v_t_33882.yx = v_e_33881.yx, v_t_33882.ng = v_e_33881.ng, v_t_33882.Jx = "cjkt:" + v_t_33882.yx, v_t_33882.Mx = v_e_33881.nx === scope.v_oe_27649.sx(), this.Ix.set(v_t_33882.yx, v_t_33882),
+      // ⚠ 132(PUSH_PICK) 是「房间当前曲目」的广播, 但原版只在「选曲的人是自己」时才写 Px。
+      //   联机 2 人时房主选了曲、非房主没选 -> 非房主的 Px 一直是 0, 于是:
+      //     * 点开始那一下 v_nr_27925 里 `Ix.get(Px).Mx` -> Ix.get(0) 是 undefined,
+      //       `.Mx` 直接抛 TypeError: undefined is not an object, 整个 async 流程中断;
+      //     * 后面的 `Rx = Px` 也没设上, gameCore 的 `v_E_30309()` 恒假,
+      //       进歌链路上那几处 `Lx(3)/Tx(3)`、`Lx(4)/Tx(4)`、`Lx(5)/Tx(5)` 全部被跳过。
+      //   真机表现: 点开始后 sP 永远停在 1, 服务端一条 op=19 都收不到, 双方卡在进歌界面。
+      //   服务端 OP_PICK 只保留**一首**(room.selection 会被覆盖), 所以「房间当前曲目」是唯一的,
+      //   联机时非房主的 Px 也该对齐到它 —— 这样两边 Px 指向同一首, 进歌链路才走得通。
+      //   (Px 为空(0/null) 才补; 自己选过曲的保持自己的选择不动。)
+      scope.v_oe_27649.Gi() && !scope.v_oe_27649.Px && !v_t_33882.Mx && (this.Px = v_e_33881.yx),
+      v_e_33881.nx === scope.v_oe_27649.sx() ? (this.Px = v_e_33881.yx, this.jC(), this.nT(v_t_33882.nx)) : (scope.renderer.Yt.Zt[v_t_33882.Jx] = scope.renderer.Yt.Mf["textures\\txDummyJacket.dds"], this.eR(v_t_33882.yx));
     } else if (v_i_33880 === scope.v_Xs_28023) this.GC !== v_e_33881.yx && (this.nT(v_e_33881.nx), this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te), v_e_33881.nx === scope.v_oe_27649.sx()) && (this.Px = v_e_33881.yx);else if (v_i_33880 === scope.v_zs_28024) this.GC !== v_e_33881.yx && this.sT(v_e_33881.nx);else if (v_i_33880 === scope.v_Zs_28028) this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te);else if (v_i_33880 === scope.v_Ys_28026) this.sP = v_e_33881.n1, console.log("[umg][coop] 137 收到: 房状态 sP=" + this.sP + " (本地 137 等待值 DC=" + this.DC + ")"), this.DC === v_e_33881.n1 && (console.log("[umg][coop] 137 唤醒了等 " + v_e_33881.n1 + " 的人"), v_e_33881.n1 === scope.v_ha_28044 && this.aT(), this.FC) && (this.FC(!0), this.FC = void 0);else if (v_i_33880 === scope.v_Qs_28030) this.aP = v_e_33881.n1, console.log("[umg][coop] 141 收到: 准备 aP=" + this.aP + " (本地 iP 等待值 nP=" + this.nP + ")"), this.nP === v_e_33881.n1 && this.rP && (console.log("[umg][coop] 141 唤醒了等 " + v_e_33881.n1 + " 的 iP"), this.rP(!0), this.rP = void 0);else if (v_i_33880 === scope.v_qs_28027) {
       this.aC = v_e_33881.oT;
       for (var v_n_33883 of v_e_33881.lT) {
