@@ -113,24 +113,28 @@ class Member {
   }
 
   // PUSH_JOIN(130) 载荷布局 —— 客户端 iT 里 v_js_28019 分支的读法:
-  //   u32 nx, str om, u32 lm, u32 CC, u32 lx, str ox, str TC, u32 MC, str RC
+  //   u32 nx, str om, u16 lm, u16 CC, u16 lx, str ox, str TC, u16 MC, str RC
   //   nx=玩家id om=显示名 lm=rating CC=等级 lx=称号稀有度 ox=称号文本
   //   TC=名牌文本 MC=名牌稀有度 RC=场墙文本
   //
-  // ⚠ rating / 等级 / 称号稀有度 / 名牌稀有度 客户端都是按 u32 读的(v3), 只有名字和
-  //   文本是 str。以前这里写成 u16(), 于是整条帧从第一个 u16 起就全部错位:
-  //   客户端会把「rating 的 u16 + 等级的 u16」拼成一个 u32 当 rating, 后面等级/稀有度
-  //   继续读到别人的字节, 末尾还会多出 4 个字节。真机表现就是大厅里玩家的
-  //   rating/等级 乱掉、房内状态机错位(进不了选歌界面)。
+  // ⚠ **四个数值字段是 u16, 不是 u32。** 客户端源码那一行原文是:
+  //     nx = v3()  om = Ic()  lm = u3()  CC = u3()  lx = u3()
+  //     ox = Ic()  TC = Ic()  MC = u3()  RC = Ic()
+  //   v3 = u32, u3 = u16 —— 名字/文本是 str, 其余四个是 u16。
+  //
+  //   曾经(2.9.19)误判成 u32 并「修」了一遍, 结果整条帧从第 13 字节起错位 2 字节:
+  //   客户端把 rating/等级该读的 2 字节当成 4 字节, 后面 str 的长度字段全部错位,
+  //   末尾多出的字节被当字符串长度 -> "Length out of range of buffer"。
+  //   真机表现就是「一进房间就卡死」。**这里的 u16 才是与客户端一致的写法。**
   writeJoin(w) {
     w.u32(this.userId);
     w.str(this.name);
-    w.u32(this.rating);
-    w.u32(this.level);
-    w.u32(this.titleRarity);
+    w.u16(this.rating);
+    w.u16(this.level);
+    w.u16(this.titleRarity);
     w.str(this.titleText);
     w.str(this.nameplateText);
-    w.u32(this.nameplateRarity);
+    w.u16(this.nameplateRarity);
     w.str(this.fieldWallText);
   }
 

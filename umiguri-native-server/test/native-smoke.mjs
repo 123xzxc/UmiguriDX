@@ -558,15 +558,16 @@ let roomId = 0;
   const joinSelf = await a.nextPush(130);
   eq(joinSelf.u32(), userId, "130 里的 nx 是自己");
   eq(joinSelf.str(), "AAA", "130 里的名字来自进房请求");
-  // ⚠ rating / 等级 / 称号稀有度 / 名牌稀有度 客户端都是按 u32(v3) 读的, 只有名字和
-  //   文本是 str。这里必须与 src/sock.js 的 Member.writeJoin 保持同宽, 否则整条 130
-  //   会从第一个字段起错位(真机表现: 大厅 rating/等级 乱掉、房内进不了选歌)。
-  eq(joinSelf.u32(), 1000, "130 里的 rating 来自进房请求(档案里是 0, 用请求值兜底)");
-  eq(joinSelf.u32(), 7, "130 里的等级取自云档案(setProfile 写进去的 7)");
-  eq(joinSelf.u32(), 1, "130 里的称号稀有度");
+  // ⚠ 这四个数值字段客户端是按 **u16**(u3) 读的, 只有名字和文本是 str。
+  //   必须与 src/sock.js 的 Member.writeJoin 同宽 —— 曾误改成 u32, 整条帧从第 13 字节
+  //   起错位 2 字节, 真机表现为「一进房间就卡死」(Length out of range of buffer)。
+  //   客户端源码那一行: lm = u3(), CC = u3(), lx = u3(), MC = u3()。
+  eq(joinSelf.u16(), 1000, "130 里的 rating 来自进房请求(档案里是 0, 用请求值兜底)");
+  eq(joinSelf.u16(), 7, "130 里的等级取自云档案(setProfile 写进去的 7)");
+  eq(joinSelf.u16(), 1, "130 里的称号稀有度");
   eq(joinSelf.str(), "TITLE", "130 里的称号文本");
   eq(joinSelf.str(), "PLATE", "130 里的名牌文本");
-  eq(joinSelf.u32(), 2, "130 里的名牌稀有度");
+  eq(joinSelf.u16(), 2, "130 里的名牌稀有度");
   eq(joinSelf.str(), "WALL", "130 里的场墙文本");
   eq(joinSelf.remaining, 0, "130 的字段宽度与客户端读法完全对齐(无剩余字节)");
   eq((await a.nextPush(140)).u16(), roomId, "140 推送的房间号与响应一致");
