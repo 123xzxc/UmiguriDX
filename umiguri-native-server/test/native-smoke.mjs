@@ -578,6 +578,10 @@ let guestB = 0;
   eq(r.body.u16(), 0, "B 加入已有房间结果码 0");
   guestB = r.body.u32();
   ok(guestB > 0, "B 拿到一个游客号");
+  // ⚠ 游客号必须是「普通的小号」, 不能是 0xF0000000 这类高位掩码。
+  //   客户端拿 nx 做有序比较(sx() < 对端 nx)来定 WebRTC 主叫方, 游客号一旦恒大于
+  //   所有真实玩家, 那两处比较永远为 false, 头像/角色那条 P2P 通道就建不起来。
+  ok(guestB < 0x7fffffff, "游客号落在普通整数范围(不占用高位, 比较不会错)" + " (实际 " + guestB + ")");
   eq(r.body.u32(), roomId, "B 进的是 A 的房间");
 
   const bFirst = await b.nextPush(130);

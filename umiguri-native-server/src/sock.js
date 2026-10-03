@@ -56,7 +56,20 @@ export const PUSH_CHAT_LOBBY = 145;  // {tL, nx, yx, _L, iL, MI} 大厅消息
 const ROOM_ID_MAX = 65534;
 
 const rooms = new Map();
-let nextGuestId = 0xf0000000;
+// 游客号(没带有效 token 进房的人)。
+//
+// ⚠ 必须是一个**普通的、小范围的**用户号, 不能拿高位当「这是游客」的标记。
+//   客户端把这个 nx 当成「玩家 id」到处用, 其中两处是有序比较, 决定了 WebRTC 的
+//   主叫/被叫分配:
+//       v_Ia_28059.LI = sx() < 对端 nx        (谁是 offer 方)
+//       信令里 v_s_33974 = sx() < this.YC     (同上, 面向每个对端)
+//   真实玩家号是 users.id(AUTOINCREMENT, 从 1 开始的小整数)。原来游客固定从
+//   0xf0000000 起发 —— 游客的 sx() 恒**大于**所有真实玩家, 于是
+//       sx() < 对端 nx  永远为 false
+//   游客永远选不上主叫方, 双方信令状态机对不上, 头像/角色那条 P2P 通道建不起来,
+//   真机表现就是「读取不到头像和角色」, 严重时整房卡死在进房那一刻。
+//   现在改成从 100000 起的小号段: 远高于任何现实中的自增用户号, 又不会让比较溢出。
+let nextGuestId = 100000;
 let feedSeq = 1;
 let rankSeq = 0; // 136 的批次号(u16 循环)
 

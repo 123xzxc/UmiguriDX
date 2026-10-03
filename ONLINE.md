@@ -1064,3 +1064,39 @@ JS ERROR RangeError: Length out of range of buffer @ undefined:1
 以后再遇到同类问题, 日志里直接就能定位到是哪一帧第几个字段错位。
 
 **改动**: `open-umiguri/src/game-esm/index.js`(仅 `Ic`)。**需重新编译客户端。**
+
+### 7.24 游客号用了 0xF0000000: 游客的 nx 恒大于所有真实玩家 -> 进房卡死 + 2.9.21
+
+接 7.22/7.23。「进房间会卡死」在重启服务端后仍然复现, 于是这次不再看日志猜, 直接在
+本地起服务端 + 按客户端 `tT` 的写序造一帧真实 ENTER, 把回包逐字段 dump 出来对照。
+
+**根因**: `umiguri-native-server/src/sock.js`
+
+```js
+let nextGuestId = 0xf0000000;   // 没带 token 的玩家从这里起发号
+```
+
+游客拿到的 `nx` = `0xF0000000` = 4026531840。而客户端把这个 `nx` 当**玩家 id**
+到处用, 其中两处是**有序比较**, 决定 WebRTC 的主叫/被叫分配:
+
+```js
+scope.v_Ia_28059.LI = function (nx) { return scope.v_oe_27649.sx() < nx; }  // 谁是 offer 方
+// 信令里:  v_s_33974 = scope.v_oe_27649.sx() < this.YC
+```
+
+真实玩家号是 `users.id`(AUTOINCREMENT, 从 1 开始的小整数)。游客固定从 `0xF0000000` 起发,
+于是游客的 `sx()` **恒大于**所有真实玩家, `sx() < 对端 nx` 永远为 false —— 游客永远选不上
+主叫方, 两边信令状态机对不上, 头像/角色那条 P2P 通道建不起来。配合 7.22 的 130 错位,
+真机就是「一进房间就卡死」以及之前的「读取不到头像和角色」。
+
+**修法**: 游客号改成从 `100000` 起的小号段 —— 远高于任何现实中的自增用户号, 又不占用高位。
+
+**排查方法(这次能定死的原因)**: 不再依赖 trace 日志(`body=` 那行只打前 64 字节, 且对
+带 `code` 的响应帧不跳结果码, 很容易读出「错位 2 字节」的假象)。改成在本地起服务端、
+按客户端 `tT` 的写序编码一帧 ENTER 发进去, 把回包按客户端 `iT` 的读法逐字段解出来 ——
+一眼就能看到 `nx` 是 `0xF0000000` 而不是那个真实/游客号。
+
+**回归用例**: `native-smoke.mjs` 加了 `guestB < 0x7fffffff` 的断言。**252 项全过**。
+
+**改动**: `umiguri-native-server/src/sock.js`、`umiguri-native-server/test/native-smoke.mjs`。
+**只需更新服务端(客户端不用重编译)。**
