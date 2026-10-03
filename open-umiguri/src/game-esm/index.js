@@ -5215,7 +5215,18 @@ scope.v_Po_28121.prototype = {
   },
   Ic: function () {
     var v_t_34421;
-    return null === this.o_ ? "" : (v_t_34421 = this.u3() * this.l_, this.U2 += v_t_34421, this.o_.decode(new Uint8Array(this.s_.buffer, this.s_.byteOffset + this.U2 - v_t_34421, v_t_34421)));
+    // ⚠ 这里必须自己检查长度: 旧写法直接把 (offset, len) 丢给 Uint8Array 构造函数,
+    //   一旦 len 超出缓冲区(典型原因: 对端帧的字段宽度/顺序与本端解码器不一致, 读串前
+    //   已经错位), 抛出来的是引擎内部的 "RangeError: Length out of range of buffer",
+    //   既没有偏移量也没有字段名, 完全看不出是哪一帧哪个字段错了 —— 而这一类错位**不会**
+    //   触发 v3()/o3() 里的越界检查(那些检查的是 this.kg, 与这里按 buffer 对齐后的长度
+    //   不是一回事)。真机表现就是「一进房间就卡死」。这里改成先判再读, 报出可读的错误。
+    if (null === this.o_) return "";
+    v_t_34421 = this.u3() * this.l_;
+    if (v_t_34421 < 0 || this.U2 + v_t_34421 > this.kg) {
+      throw new Error("字符串读取越界: 偏移 " + this.U2 + " 长度 " + v_t_34421 + " > 缓冲 " + this.kg);
+    }
+    return this.U2 += v_t_34421, this.o_.decode(new Uint8Array(this.s_.buffer, this.s_.byteOffset + this.U2 - v_t_34421, v_t_34421));
   },
   xg: function () {
     var v_i_34422 = this.v3();
