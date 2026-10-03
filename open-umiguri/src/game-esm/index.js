@@ -4269,11 +4269,29 @@ scope.v_Hs_28017.prototype = {
   lP: function (v_t_33921) {
     v_t_33921 === this.nP && (this.rP && this.rP(!1), this.rP = void 0);
   },
+  // 取消**任意**挂起的 iP 等待(队友退房/房间解散时用)。
+  //   iP(n) 挂的是「等 141 把 aP 推到 n」, 而对手走了之后服务端只会再把 aP 打成 0 ——
+  //   那个 Promise 就再也等不到 n 了, 房主会永久卡在准备界面。
+  //   lP(n) 只取消「正好在等 n」的那一个, 这里是「不管在等几, 全都取消」。
+  umgCancelIP: function () {
+    this.nP = -1, this.rP && this.rP(!1), this.rP = void 0;
+  },
   aT: function () {
     this.aC = 0, this.oC = 0;
   },
+  // 清空「本局参与者」列表。
+  // ⚠ 原版就是 this.Ox = [] —— 但联机时 ix(房间成员表)是长期存在的, 而 Ox 被
+  //   选曲/开局(Ux/Sx)反复清空: 每次房主点一次曲子, 整个 Ox 就没了, 之后 132 只会
+  //   把「选曲的人自己」加回来 —— 于是另一边的玩家列表(matchingPanelPlayersBox)
+  //   渲染时遍历 Ox 只看到自己(还被跳过), 一个卡都不显示。
+  //   真机表现: 「左边不显示玩家」。
+  //   改成: 清空后**立刻用当前房间成员(ix)重建**, 保证房间里的人始终在列表里;
+  //   133/134/135 之后的对局字段增删仍是唯一来源。
   jC: function (v_t_33922) {
     this.Ox = [];
+    this.Gi && this.Gi() && this.ix && this.ix.forEach((v_umgM) => {
+      v_umgM && void 0 !== v_umgM.nx && this.nT(v_umgM.nx);
+    });
   },
   nT: function (v_t_33923) {
     this.Ox.push({

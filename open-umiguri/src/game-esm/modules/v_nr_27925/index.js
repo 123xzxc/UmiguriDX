@@ -483,12 +483,13 @@ export function createV_nr_27925(scope) {
                   //   房间整体就绪值(全员 ready 才为 1)经 141 回给所有人; 每个成员的 ready 位
                   //   经 139 广播, 选歌界面左下角那块玩家列表据此显示「已准备」。
                   //   取消按钮(上面那条)在 `down` 里做 `xx(false, 0)` + `Cx` 撤销等待。
-                  // 兜底超时: 等 20s 还没全员准备好(对手一直不进选歌界面/掉线), 就别把房主
-                  //   永久卡在准备界面 —— 超时后照常往下走(单人/对手已走的情况)。
-                  var v_umgAllReady = await Promise.race([
-                    scope.v_oe_27649.iP(scope.v_pa_28050),
-                    scope.v_fo_28103(2e4).then(() => { console.log("[umg][coop] 点开始: 等全员准备超时(20s), 继续"); return !0; })
-                  ]);
+                  // ⚠ 必须**一直等**, 不能给个短超时:
+                  //   对手可能还在下载资源(选歌界面的曲绘/音源/角色都是按需拉的), 他根本
+                  //   还没走到能点「准备」的地方 —— 房主 20s 一到就自己开局, 对面就被
+                  //   甩在下载里, 表现就是「另一边还在下载数据, 主机已经进去开玩了」。
+                  //   唯一的提前退出是「对手退房/房间解散」: 那会走 tP(0) -> iP 的 Promise
+                  //   被 lP(0) 拒绝而返回 false(见 index.js 的 lP)。
+                  var v_umgAllReady = await scope.v_oe_27649.iP(scope.v_pa_28050);
                   console.log("[umg][coop] 点开始: 全员准备 iP(1) 返回 " + v_umgAllReady + " (aP=" + scope.v_oe_27649.aP + ")");
                   if (!v_umgAllReady) return;
                   var v_e_29945 = await scope.v_oe_27649.Tx(scope.v_ha_28044);
@@ -690,9 +691,9 @@ export function createV_nr_27925(scope) {
   //   (132/134/135/139 早就带了 v_O_29802(), 这里补上同样的调用即可。)
   async function v_Rt_29789(v_t_30011, v_i_30012) {
     var v_e_30013, v_n_30014;
-    v_t_30011 === scope.v_Js_28018 ? (scope.sceneManager.WS(scope.v_E1_27899), v_O_29802(), v_j_29799(), await new Promise(v_t_30015 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedByHost"), scope.v_N0_27771, 5e3, v_t_30015)), "music" !== v_G_29762.r0 && (scope.v_Ae_27892.dn("menu_back"), v_U_29780("music", v_g_29777)), v_J_29784()) : v_t_30011 === scope.v_Vs_28021 ? v_i_30012.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.nx, v_Et_29792), v_j_29799(), v_J_29784()) : v_t_30011 === scope.v_Ws_28022 ? (v_e_30013 = v_i_30012.yx, (v_n_30014 = scope.v_oe_27649.Ix.get(v_e_30013)) && !v_n_30014.Mx && (scope.v_Fe_28101(() => {
+    v_t_30011 === scope.v_Js_28018 ? (scope.v_oe_27649.umgCancelIP(), scope.sceneManager.WS(scope.v_E1_27899), v_O_29802(), v_j_29799(), await new Promise(v_t_30015 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedByHost"), scope.v_N0_27771, 5e3, v_t_30015)), "music" !== v_G_29762.r0 && (scope.v_Ae_27892.dn("menu_back"), v_U_29780("music", v_g_29777)), v_J_29784()) : v_t_30011 === scope.v_Vs_28021 ? v_i_30012.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.nx, v_Et_29792), v_j_29799(), v_J_29784()) : v_t_30011 === scope.v_Ws_28022 ? (v_e_30013 = v_i_30012.yx, (v_n_30014 = scope.v_oe_27649.Ix.get(v_e_30013)) && !v_n_30014.Mx && (scope.v_Fe_28101(() => {
       v_j_29799(), v_J_29784();
-    }), v_B_29757.kx) && v_e_30013 === v_B_29757.kx && scope.v_oe_27649.Px && (scope.v_oe_27649.Cx(scope.v_ha_28044), scope.v_Te_27911.Li(), await new Promise(v_t_30016 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copPlaySessionClosedByHost"), scope.v_N0_27771 | scope.v_U0_27775, 5e3, v_t_30016)), "music" !== v_G_29762.r0) && (scope.v_Ae_27892.dn("menu_back"), v_U_29780("music", v_g_29777))) : v_t_30011 === scope.v_js_28019 ? v_i_30012.Hx.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.Hx.nx, v_Ft_29794), v_O_29802()) : v_t_30011 === scope.v_Os_28020 ? v_i_30012.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.nx, v_Dt_29793), v_O_29802()) : v_t_30011 === scope.v_Xs_28023 ? v_i_30012.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.nx, v_Mt_29791), v_O_29802()) : v_t_30011 === scope.v_zs_28024 ? (v_Nt_29796(v_i_30012.nx, v_Lt_29790), v_O_29802()) : v_t_30011 !== scope.v_Zs_28028 && v_t_30011 !== scope.v_ta_28031 || v_O_29802();
+    }), v_B_29757.kx) && v_e_30013 === v_B_29757.kx && scope.v_oe_27649.Px && (scope.v_oe_27649.Cx(scope.v_ha_28044), scope.v_Te_27911.Li(), await new Promise(v_t_30016 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copPlaySessionClosedByHost"), scope.v_N0_27771 | scope.v_U0_27775, 5e3, v_t_30016)), "music" !== v_G_29762.r0) && (scope.v_Ae_27892.dn("menu_back"), v_U_29780("music", v_g_29777))) : v_t_30011 === scope.v_js_28019 ? v_i_30012.Hx.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.Hx.nx, v_Ft_29794), v_O_29802()) : v_t_30011 === scope.v_Os_28020 ? v_i_30012.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.nx, v_Dt_29793), v_O_29802(), scope.v_oe_27649.umgCancelIP()) : v_t_30011 === scope.v_Xs_28023 ? v_i_30012.nx !== scope.v_oe_27649.sx() && (v_Nt_29796(v_i_30012.nx, v_Mt_29791), v_O_29802()) : v_t_30011 === scope.v_zs_28024 ? (v_Nt_29796(v_i_30012.nx, v_Lt_29790), v_O_29802()) : v_t_30011 !== scope.v_Zs_28028 && v_t_30011 !== scope.v_ta_28031 || v_O_29802();
   }
   const v_Lt_29790 = 0,
     v_Mt_29791 = 1,
