@@ -201,6 +201,7 @@ function leaveRoom(conn, reason) {
   room.members.delete(member.userId);
   trace("离开房间 #" + room.id + ", 剩 " + room.members.size + " 人 (" + reason + ")");
   if (room.members.size === 0) {
+    clearStateReplay(room);
     rooms.delete(room.id);
     return;
   }
@@ -214,6 +215,7 @@ function leaveRoom(conn, reason) {
       m.conn.room = null;
       push(m.conn, PUSH_ROOM_CLOSED, payload);
     }
+    clearStateReplay(room);
     rooms.delete(room.id);
     console.log("[native] 房间 #" + room.id + " 房主离开, 已解散");
     return;
@@ -507,6 +509,8 @@ function pushState(room, from, n1) {
   const next = n1 | 0;
   const changed = next !== room.state;
   room.state = next;
+  // 回到 0(重开/清场)就别再重播了, 否则会朝空房间一直发。
+  if (!(next > 0)) clearStateReplay(room);
   const w = new Writer();
   // 客户端 iT 的 137 分支先 v3() 读一个 u32 局号, 再读 u16 状态 ——
   // 少写这个 u32 会让状态错位成高半字, 表现为「联机状态永远对不上」。
@@ -515,6 +519,43 @@ function pushState(room, from, n1) {
   const payload = w.bytes();
   for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);
   trace("房间 #" + room.id + " 状态 -> " + room.state + (changed ? "" : "(未变化, 但仍广播)") + " (来自 " + from.name + ")");
+  ensureStateReplay(room);
+}
+
+// 状态重播 —— 解决「房主已经开局, 但非房主那一帧没赶上」的竞态。
+//
+// 客户端的等待语义是「挂 waiter -> 再收一帧 137 才醒」(`Tx(n)` 见 index.js)。
+// 房主按「开始」只发**一次** op=19, 于是广播也只有一帧 137 —— 如果某个非房主
+// 此刻还没挂上 waiter(刚进房、正在切界面、上一帧还在处理), 这一帧就被永久错过,
+// 后面不会再有任何 137 把他唤醒。真机表现: 「房主点开始, 别人进不去选歌界面」。
+//
+// 修法不是让客户端更聪明, 而是让服务端在「非 0 状态」期间每 500ms 重播一次,
+// 直到房间回到 0(解散/重开)。重播是幂等的: 客户端 sP >= n 时直接返回, 不重复入座。
+function clearStateReplay(room) {
+  if (room && room.stateReplayTimer) {
+    clearInterval(room.stateReplayTimer);
+    room.stateReplayTimer = null;
+  }
+}
+
+function ensureStateReplay(room) {
+  if (room.stateReplayTimer) return;
+  if (!(room.state > 0)) return;
+  room.stateReplayTimer = setInterval(() => {
+    // 房间已经清空/回到 0 就停。
+    if (!rooms.has(room.id) || !(room.state > 0) || room.members.size === 0) {
+      clearInterval(room.stateReplayTimer);
+      room.stateReplayTimer = null;
+      return;
+    }
+    const w = new Writer();
+    w.u32(room.selection ? room.selection.yx : room.yx);
+    w.u16(room.state);
+    const payload = w.bytes();
+    for (const m of room.members.values()) push(m.conn, PUSH_STATE, payload);
+    trace("房间 #" + room.id + " 状态重播 -> " + room.state + " (" + room.members.size + " 人)");
+  }, 500);
+  if (room.stateReplayTimer.unref) room.stateReplayTimer.unref();
 }
 
 // op=114/115 信令中继 —— 226 与 227 是两条**语义不同**的通道, 不能混用。
@@ -658,7 +699,7 @@ function handleEnter(conn, seq, body) {
   let room = picked.room;
   if (!room) {
     const id = randomRoomId();
-    room = { id, hostId: conn.userId, members: new Map(), yx: 0, selection: null, scores: new Map(), state: 0, createdAt: Date.now() };
+    room = { id, hostId: conn.userId, members: new Map(), yx: 0, selection: null, scores: new Map(), state: 0, stateReplayTimer: null, createdAt: Date.now() };
     rooms.set(id, room);
     console.log("[native] 新建房间 #" + id + " by " + conn.name);
   }

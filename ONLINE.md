@@ -804,3 +804,36 @@ else if (v_i_33880 === v_Qs_28030) this.aP = v_e_33881.n1,
 - 有「收尾完成, 回调 qS(0)」但界面不动 → 问题已经离开联机层, 去看选歌界面自己。
 
 **改动**: `open-umiguri/src/game-esm/modules/settingsStore/index.js`。**要重编桌面端。**
+
+### 7.17 真凶: 房主点开始只广播**一次** 137, 非房主没赶上就永久卡住 + 2.9.13
+
+用户明确了一下场景: **房主点开始后, 别人进不去**(不是房主自己退房那条路)。
+
+顺着这条链看, 已经排除的:
+
+- 141 正常(7.16 日志里 `141 唤醒了等 1 的 iP` 出现了);
+- `ix` 正常(自己与对手都在, `nx` 没串);
+- 服务端 op=19 -> `pushState` **无条件**广播 137 给所有成员, 单看这一段没问题。
+
+于是只剩一种可能: **那一帧 137 到的时候, 非房主还没挂上 waiter。**
+
+客户端的等待语义是「先挂 waiter, 再收一帧 137 才醒」(见 `v_Hs_28017.Tx`), 而房主按
+「开始」只发 **一次** op=19 —— 广播也就只有一帧。非房主此刻若正在切界面/刚进房/
+还在处理上一帧, 这一帧就被永久错过, 之后不会再有任何 137 把他唤醒。
+
+**修法(服务端为主, 客户端补一道兜底):**
+
+1. `umiguri-native-server/src/sock.js` —— 新增 `ensureStateReplay(room)`:
+   房间状态进入非 0 之后, 每 500ms 重播一次当前 137, 直到状态回到 0 或房间清空。
+   重播是幂等的(客户端 `sP >= n` 时直接返回, 不会重复入座), 因此比「只发一次」
+   健壮得多。房间解散/状态归零时用 `clearStateReplay` 停掉定时器。
+2. `open-umiguri/src/game-esm/index.js` —— `Tx(n)` 补「挂等待前回读一次 sP」:
+   设完 `DC` 后若 `sP` 已达标就直接返回, 不挂 Promise。
+3. `iP(n)` 同样处理(7.15 已加, 这次整理掉了排查用的临时日志)。
+
+**回归用例**: `umiguri-native-server/test/native-smoke.mjs` 新增「没再上报时服务端也会
+重播状态」一项 —— 242 项全过。
+
+**改动**: `umiguri-native-server/src/sock.js`(状态重播),
+`open-umiguri/src/game-esm/index.js`(Tx/iP 回读兜底),
+`umiguri-native-server/test/native-smoke.mjs`。**这一版客户端与服务端都要一起更新。**
