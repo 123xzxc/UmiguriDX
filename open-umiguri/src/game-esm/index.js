@@ -3621,12 +3621,18 @@ scope.v_Rs_28007.prototype = {
   R9: async function () {
     // 桌面没有 AM 读卡器: 宿主(启动器)已经把卡号转成 10 字节放在 __umgServer.cardBytes。
     //
-    // ⚠ 这里**不能**读完就把 cardBytes 清掉。以前是「一次刷卡一次登录」的街机语义,
-    //   但桌面主菜单(v_N1_27904.v_c_28776)会反复调 R9() 去读卡: 第一轮消费掉之后,
-    //   第二轮起永远读到 undefined, 于是「主菜单 -> 登录画面 -> 主菜单」无限循环,
-    //   日志里就是一连串 argc=1 val=undefined 的 v_p_28808。
-    //   桌面没有真实读卡器, 这张绑定的卡本来就是「长期有效」的 —— 一直供给即可;
-    //   玩家真要换卡/退登录, 走的是游戏自己的 GuestLogin 或面板重新绑卡。
+    // ⚠ 桌面语义是「手动刷卡」, 不是街机那种「一直有卡放在读卡器上」:
+    //   主菜单(v_N1_27904.v_c_28776)会**反复**调 R9() 去探卡, 如果这里一直供卡,
+    //   每次回到主菜单都会被自动拉进登录/刷卡画面, 也就是「循环进入刷卡界面」,
+    //   玩家根本回不到主界面。
+    //   所以改成**一刷一次**: 宿主点「刷卡」时置一次 armed (见 __umgArmCardSwipe),
+    //   这里只在 armed 时供卡, 供完立刻清掉。没 armed 就返回 undefined, 主菜单探不到卡,
+    //   自然停在那里等玩家主动点「刷卡」。
+    //   (换卡/退登录仍走游戏自己的 GuestLogin 或面板重新绑卡。)
+    // 装了 hook 才启用「一刷一次」; 没装(旧宿主/直连)保持旧行为, 免得把能用的环境改坏。
+    if ("function" === typeof window.__umgArmCardSwipe) {
+      if (!window.__umgArmCardSwipe()) return this.US = scope.v_Ps_28006, void 0;
+    }
     if (window.__umgServer && window.__umgServer.cardBytes) {
       var v_umgHostCard = window.__umgServer.cardBytes;
       // 归一化: 宿主侧的 cardBytes 应是 Uint8Array(10), 但宿主桥/序列化之后有可能

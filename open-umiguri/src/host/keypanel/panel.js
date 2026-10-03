@@ -20,6 +20,11 @@ let navRowEl = null;
 let fnWrapEl = null;
 let pauseBtnEl = null;
 let onlineBtnEl = null; // 「联机」按钮(非游玩时显示)
+// 左上角那一列触摸按键(Test/Service/FN + 联机)在桌面端默认隐藏: PC 玩家有键盘,
+// 而且触屏键会挡住游戏画面左上角。移动端仍按原样常显(没有物理键盘, 只能靠它)。
+// 想看/需要时可以用 setNavVisible(true) 打开(宿主启动器里也有开关), 选择会记住。
+let navUserHidden = null; // null=跟随平台默认; true/false=用户显式选择
+const LS_NAV_VISIBLE = "umg_nav_visible";
 let navMode = false;
 let navHidden = false;
 let pauseHandler = null;
@@ -35,6 +40,35 @@ export function setOnlineButtonHandler(fn) {
   onlineHandler = fn;
 }
 
+// 是否触屏设备(移动端)。桌面端默认隐藏整列触摸按键。
+function isTouchPlatform() {
+  if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) return true;
+  // 带触摸屏的 PC(Windows 平板/触屏本): 有物理键盘仍按桌面处理, 免得白白挡画面。
+  return false;
+}
+
+// 左侧那一列是否该显示。用户选择优先, 否则桌面隐藏 / 移动显示。
+function navVisibleWanted() {
+  if (navUserHidden !== null) return !navUserHidden;
+  try {
+    const raw = localStorage.getItem(LS_NAV_VISIBLE);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+  } catch (e) {}
+  return isTouchPlatform();
+}
+
+// 宿主/启动器可显式开关这一列(PC 玩家想用触屏键时)。
+export function setNavVisible(on) {
+  navUserHidden = !on;
+  try { localStorage.setItem(LS_NAV_VISIBLE, on ? "1" : "0"); } catch (e) {}
+  applyNavMode();
+}
+
+export function isNavVisible() {
+  return navVisibleWanted();
+}
+
 // inPlay=true: 收起三键, 显示暂停按钮
 export function setNavMode(inPlay) {
   navMode = !!inPlay;
@@ -48,12 +82,15 @@ export function setNavHidden(on) {
 }
 
 export function applyNavMode() {
-  if (navBoxEl) navBoxEl.style.display = navHidden ? 'none' : 'flex';
+  // 整列是否显示: 平台默认(桌面隐藏)叠加 setNavHidden(进入测试界面时临时收起)。
+  if (navBoxEl) navBoxEl.style.display = navHidden || !navVisibleWanted() ? 'none' : 'flex';
+  const colVisible = navVisibleWanted() && !navHidden;
   if (navRowEl) navRowEl.style.display = navMode ? 'none' : 'flex';
   if (fnWrapEl && navMode) fnWrapEl.style.display = 'none';
   if (pauseBtnEl) pauseBtnEl.style.display = navMode ? 'flex' : 'none';
-  // 联机按钮与 Test/Service 同一档: 不玩的时候(标题界面/选曲)才显示
-  if (onlineBtnEl) onlineBtnEl.style.display = navMode ? 'none' : 'flex';
+  // 联机按钮与 Test/Service 同一档: 不玩的时候(标题界面/选曲)才显示。
+  // 桌面端整列默认隐藏(见 navVisibleWanted), 这里跟着一起收。
+  if (onlineBtnEl) onlineBtnEl.style.display = colVisible && !navMode ? 'flex' : 'none';
 }
 
 // 虚拟键盘带(AIR 条 + 主键区)在视口里的顶部 y。没有键盘或键盘被藏起来时给视口高度。

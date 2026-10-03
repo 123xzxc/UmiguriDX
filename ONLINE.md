@@ -837,3 +837,73 @@ else if (v_i_33880 === v_Qs_28030) this.aP = v_e_33881.n1,
 **改动**: `umiguri-native-server/src/sock.js`(状态重播),
 `open-umiguri/src/game-esm/index.js`(Tx/iP 回读兜底),
 `umiguri-native-server/test/native-smoke.mjs`。**这一版客户端与服务端都要一起更新。**
+### 7.18 开局只广播状态 1 -> 非房主永久卡在 1; 外加触摸键/卡号历史/刷卡不再循环 + 2.9.15
+
+这一版四个改动, 前三个是用户点名的产品需求, 第四个是顺着 7.17 之后真机日志继续追出来的。
+
+#### (1) 开局状态推进: `op=6` 也要推 137
+
+7.17 修掉了「只广播一次, 没赶上就永久卡住」, 但真机日志显示非房主侧仍然无限刷:
+
+```
+[DIAG] [umg][coop] 137 收到: 房状态 sP=1 (本地 137 等待值 DC=-1)
+```
+
+`sP` **一直是 1**, 说明房间状态从没被推到 2。追下来是房主侧的上报分布问题:
+
+- 房主点「开始」在 `modules/v_nr_27925/index.js` 里只做 `xx(true, te)` = `XC(1, te)`,
+  即 op=19 状态 **1**; 之后 `await Tx(1)` 本地立刻满足, 进入曲目准备;
+- 2/3/4/5 这几档只有 `Lx()` 会上报(`modules/gameCore/index.js`), 而它们都带
+  `v_E_30309()`(`Y1.Rx` 非 0, 即「自己是房主且在对局中」)这类守卫;
+- 于是**开局这条路上, 服务端唯一能看到的房主动作只有 op=19 状态 1**。
+  非房主进对局等的是 `Tx(3)` 那一档, 拿到的却永远是 1。
+
+**修法**: `umiguri-native-server/src/sock.js` 的 `case OP_START`(op=6) 在发完 134
+(`PUSH_PLAY`) 之后补一档 `pushState(room, member, 2)` —— 把房间从 1 推出来,
+并触发 7.17 的 500ms 重播链路。2 是安全中间档: 134 已经发出去, 客户端据此进歌曲界面;
+而 `room.state < 2` 的守卫保证重复收到 op=6 时不会把状态往回压。
+
+**回归用例**: `native-smoke.mjs` 新增 4 项(把状态压回 1 -> 发 op=6 -> 断言 137 >= 2),
+**246 项全过**。
+
+#### (2) PC 版默认隐藏左上角那列触摸按键
+
+`host/keypanel/panel.js` 的 `navBox`(Test/Service/FN + 「联机」)在桌面端默认隐藏:
+PC 玩家有键盘, 那列触摸键会挡住画面左上角。移动端(Android/iOS)仍常显。
+
+- 新键 `umg_nav_visible`(`"1"`/`"0"`)记用户选择, 用户显式选择优先于平台默认;
+- 导出 `isNavVisible()` / `setNavVisible(on)`, 启动器里有对应的开关按钮;
+- `applyNavMode()` 现在同时看 `navHidden`(进测试界面临时收起)与用户/平台意愿,
+  「联机」按钮用 `colVisible` 单独跟随整列显示。
+
+#### (3) 卡号历史: 开始的时候可以直接挑一张
+
+`host/online/session.js` 新增 `LS_CARD_HISTORY = "umg_online_card_history"`,
+存 `[{ card, base, name, ts }]`(同卡去重、按时间倒序、上限 12 条), 配套
+`cardHistory()` / `rememberCard()` / `forgetCard()`。启动器(`host/keypanel/launcher.js`)
+在卡号输入框下面列出历史: 点一条即填入, `×` 删掉。绑定成功与「静默放行」两条路径都会
+`rememberCard()`。
+
+#### (4) 刷完卡/结算回主菜单不再自动循环进刷卡界面
+
+游戏主菜单会反复探卡(`v_D_27646.R9()`), 以前只要 `window.__umgServer.cardBytes` 在,
+就一直供卡 —— 每次回主菜单都被拉进登录/刷卡画面。现在改成**一次性令牌**:
+
+- 宿主侧 `host/online/native.js` 增加 `armCardSwipe()` / `installArmHook()`,
+  挂上 `window.__umgArmCardSwipe`(一次性: `swipeArmed <= 0` 返回 false);
+  `swipeNow()`(点「刷卡」按钮)才 `armCardSwipe()`;
+- 游戏侧 `R9()` 在装了 hook 时: 未 armed 直接返回「读卡器上没卡」, 不再供卡;
+- `modules/v_G1_27905/index.js` 的探卡循环里, 未 armed 时静默回主界面,
+  而不是被当成「读到卡了」去登录。没装 hook 时(直连环境)行为保持不变。
+
+**验证**: `node tools/verify-online-bundle.mjs` 新增两条断言(宿主桥里的
+`umg_online_card_history` 与 `umg_nav_visible`), 加上产物里的 `__umgArmCardSwipe`,
+共 19 项全过; `build/check.mjs` 三项产物检查通过。
+
+**改动**: `open-umiguri/src/host/keypanel/{panel,launcher}.js`、
+`open-umiguri/src/host/online/{session,native}.js`、
+`open-umiguri/src/game-esm/index.js`、`open-umiguri/src/game-esm/modules/v_G1_27905/index.js`、
+`umiguri-native-server/src/sock.js`、`umiguri-native-server/test/native-smoke.mjs`、
+`open-umiguri/tools/verify-online-bundle.mjs`。
+
+**这一版客户端与服务端都要一起更新**(服务端改了 op=6 的状态推进)。

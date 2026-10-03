@@ -218,6 +218,10 @@ export function createV_G1_27905(scope) {
       }, void 0)), scope.sceneManager.ri(30), scope.sceneManager.ti();;) {
         var v_e_28864 = v_i_28863 || (await scope.v_D_27646.R9());
         if (v_i_28863 = void 0, v_e_28864 === scope.v_Ts_28004) return;
+        // 桌面语义(见 index.js 的 R9): 没 armed 时探卡返回 undefined, 表示「读卡器上没卡」。
+        // 不该被当成「读到卡了」去登录 —— 否则每次回到主界面都会被自动拉回刷卡画面(循环)。
+        // 直接静默回到主界面, 等玩家主动点「刷卡」再来一次。
+        if (void 0 === v_e_28864) { v_b_28810(), scope.v_N1_27904.T0(!0); return; }
         if (v_e_28864 !== scope.v_Is_28005) {
           scope.v_D_27646.C9(), scope.sceneManager.ni(), scope.sceneManager.ii(), scope.menuSystem.It(!1), v_u_28793.e8(9, void 0, 0), await scope.renderer.C7(scope.v_Ge_28204(15)), scope.menuSystem.dt(), v_p_28808(v_e_28864);
           break;

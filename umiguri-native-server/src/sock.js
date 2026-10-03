@@ -298,6 +298,17 @@ function dispatch(conn, frame) {
     }
 
     case OP_START: {
+      // op=6「开局」。客户端在房主点开始时会先 xx(true) 上报状态 1(进入对局准备),
+      // 然后房主本地 await Tx(1) 通过；**但非房主进对局等的是 Tx(3)**
+      // (gameCore 的 v_E_30309 分支: Lx(3) -> Tx(3)), 而 2/3/4/5 这几档只有 Lx
+      // 会上报。房主随后在 gameCore 里依次 Lx(2/3), 可是那几处都带 `Gi()`/对局已开始
+      // 的守卫, 实测在自建服务端上并不会全部落到线上, 于是房间状态一直停在 1,
+      // 非房主永久卡在选歌界面(真机日志: 反复 "137 收到: 房状态 sP=1")。
+      //
+      // 这里在开局这条**服务端唯一能看到的房主动作**上补一档: 收到 op=6 就把房间
+      // 状态推到 2(「已开始, 正在进入曲目」)再广播 137。非房主的进对局分支等的是
+      // >= 3, 但 2 会把房间从 1 推出来并触发后续 Lx(3) 的重播链路；同时 pushPlay
+      // (134) 也已经发出去, 客户端据此进歌曲界面, 所以推 2 是安全的中间档。
       const yx = body.u32();
       const te = body.u16();
       respond(conn, op, seq, 0);
@@ -305,6 +316,8 @@ function dispatch(conn, frame) {
       w.u32(yx || currentYx()).u32(conn.userId).u8(0).u8(te & 255);
       const payload = w.bytes();
       for (const m of room.members.values()) push(m.conn, PUSH_PLAY, payload);
+      // 推一档对局状态, 把非房主从「等 137 >= 2」里放出来(见上方注释)。
+      if (room.state < 2) pushState(room, member, 2);
       return;
     }
 

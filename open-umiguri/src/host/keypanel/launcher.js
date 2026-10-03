@@ -17,8 +17,10 @@ import {
 import {
   LS_BASE, LS_TOKEN, LS_CARD, readLS, normalizeBase, normalizeCard, isValidCard,
   onlineBridge, api, setBase, setSession, restore,
+  cardHistory, rememberCard, forgetCard, maskCard,
 } from "../online/session.js";
 import { nativePort, setNativePort, DEFAULT_NATIVE_PORT } from "../online/native.js";
+import { isNavVisible, setNavVisible } from "./panel.js";
 
 export { normalizeCard } from "../online/session.js";
 
@@ -38,6 +40,8 @@ async function boot() {
     const user = await restore();
     if (user) {
       setSession({ base: savedBase, token: savedToken, cardId: savedCard, user });
+      // 静默放行也补一条历史(老用户第一次升级上来时列表是空的, 补上以后好挑)。
+      rememberCard(savedCard, { base: savedBase, name: user.displayName || "" });
       return { base: savedBase, token: savedToken, cardId: savedCard, user, skipped: true };
     }
   }
@@ -70,6 +74,52 @@ export function openLauncher(savedBase) {
   if (savedCard) cardInput.value = savedCard;
   box.appendChild(cardInput);
 
+  // 卡号历史: 点一下就把卡号与它当时用的服务端地址填回去, 不用再手打 20 位。
+  // 列表随绑定/换号自动更新(见 submit 里的 rememberCard)。
+  const histWrap = document.createElement("div");
+  histWrap.style.cssText = "display:flex;flex-direction:column;gap:0.35em;margin-bottom:0.6em;";
+  box.appendChild(histWrap);
+  function renderHistory() {
+    while (histWrap.firstChild) histWrap.removeChild(histWrap.firstChild);
+    const list = cardHistory();
+    if (!list.length) return;
+    const title = document.createElement("div");
+    title.textContent = "用过的卡号 (点一下填入)";
+    title.style.cssText = "font-size:0.85em;opacity:0.7;";
+    histWrap.appendChild(title);
+    for (const it of list) {
+      const row = document.createElement("div");
+      row.style.cssText =
+        "display:flex;align-items:center;gap:0.5em;padding:0.4em 0.55em;cursor:pointer;" +
+        "background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.14);border-radius:0.4em;";
+      const main = document.createElement("div");
+      main.style.cssText = "flex:1;min-width:0;font-size:0.9em;";
+      const nm = it.name ? " (" + it.name + ")" : "";
+      const bs = it.base ? "  " + it.base : "";
+      main.textContent = maskCard(it.card) + nm + bs;
+      main.title = it.card + bs;
+      row.appendChild(main);
+      const del = document.createElement("div");
+      del.textContent = "×";
+      del.title = "从历史里删掉这张";
+      del.style.cssText = "padding:0 0.35em;opacity:0.6;font-size:1.1em;";
+      row.appendChild(del);
+      onTap(row, () => {
+        cardInput.value = it.card;
+        if (it.base) baseInput.value = it.base;
+        setState("已填入 " + maskCard(it.card) + (it.base ? " (" + it.base + ")" : ""));
+      });
+      del.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        forgetCard(it.card);
+        renderHistory();
+      });
+      histWrap.appendChild(row);
+    }
+  }
+  renderHistory();
+
   box.appendChild(mkLabel("原生服务端端口"));
   const nativeInput = mkInput(String(DEFAULT_NATIVE_PORT));
   nativeInput.value = nativePort() ? String(nativePort()) : "";
@@ -87,6 +137,18 @@ export function openLauncher(savedBase) {
   }
   nativeInput.addEventListener("input", updateNativeHint);
   updateNativeHint();
+
+  // 桌面端默认把左上角那一列触摸按键(Test/Service/FN + 联机)藏起来 —— 有键盘时它只是挡画面。
+  // 这里给个开关, 想用触屏键的 PC 玩家点一下就能打开(选择会记住, 见 panel.js)。
+  const navRow = mkRow();
+  const navBtn = mkBtn(isNavVisible() ? "隐藏触摸按键" : "显示触摸按键", false);
+  onTap(navBtn, () => {
+    const next = !isNavVisible();
+    setNavVisible(next);
+    navBtn.textContent = next ? "隐藏触摸按键" : "显示触摸按键";
+  });
+  navRow.appendChild(navBtn);
+  box.appendChild(navRow);
 
   const state = mkHint("");
   box.appendChild(state);
@@ -130,6 +192,9 @@ export function openLauncher(savedBase) {
     }
     const cfg = { base, cardId, token: r.data.token, user: r.data.user };
     setSession(cfg);
+    // 绑定成功才记历史: 没通过服务端校验的卡号记下来只会碍事。
+    rememberCard(cardId, { base, name: (r.data.user && r.data.user.displayName) || "" });
+    renderHistory();
     done(cfg);
   }
 

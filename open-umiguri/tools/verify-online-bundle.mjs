@@ -50,6 +50,7 @@ const REQUIRED = [
   // 属性名不参与混淆重命名, 所以能直接在产物里数。
   ["原生联机开关", "__umgServer"],
   ["刷卡虚拟按钮钩子", "__umgSwipe"],
+  ["刷卡一次性令牌钩子", "__umgArmCardSwipe"],
   ["宿主直登后门", "__umgHostLogin"],
   ["游客兜底(vA 守卫)", "__umgGuestGuard"],
   ["官方服务端回退地址", "d.umgr-serv.inonote.jp"],
@@ -85,6 +86,23 @@ for (const stale of ["/auth/register", "/auth/login"]) {
   } else {
     console.error("  FAIL 原生联机补丁不完整: 只在产物里找到 " + n + " 处 __umgServer(应 >= 3)");
     bad++;
+  }
+}
+
+// 启动器侧的卡号历史存在宿主桥产物里(不是游戏产物)。
+{
+  const hostPath = join(root, "dist", "www", "tauri-bridge.js");
+  const hostJs = existsSync(hostPath) ? readFileSync(hostPath, "utf8") : "";
+  for (const [label, needle] of [
+    ["卡号历史键", "umg_online_card_history"],
+    ["触摸按键显示开关", "umg_nav_visible"],
+  ]) {
+    if (hostJs.includes(needle)) {
+      console.log("  OK   " + label + "  (" + needle + ")");
+    } else {
+      console.error("  FAIL " + label + "  未在宿主桥产物中找到: " + needle);
+      bad++;
+    }
   }
 }
 

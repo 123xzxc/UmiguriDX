@@ -100,6 +100,9 @@ export function installNativeServer(sessionCfg, nwToken) {
       nwToken: String(nwToken || ''),
     };
     window.__umgServer = info;
+    // 游戏侧读卡器(R9)探卡时问这个: 只有玩家点过「刷卡」才放行一次。
+    // 不装的话游戏会一直探到那张常驻的绑定卡, 于是自动进刷卡画面。
+    installArmHook();
     // 诊断: 刷卡全 0 时, 先看这里打出来的卡号对不对 —— 卡号对了说明问题在游戏侧
     // 的 Py/R9(已加归一化), 卡号本来就空/不对就是绑定/登录那一步的事。
     try {
@@ -117,6 +120,22 @@ export function installNativeServer(sessionCfg, nwToken) {
 // 补丁(v_Ls_28008.prototype.R9)在等刷卡时把 resolver 挂到 globalThis.__umgSwipe,
 // 刷卡成功或被取消后立刻摘掉 —— 所以它就是个可靠的「在读卡」标志, 宿主的悬浮
 // 「刷卡」按钮只在它为真时露出来。
+// 放行**一次**游戏侧的探卡。游戏 R9() 每次探卡都会调它, 返回 true 就消耗掉这次放行。
+// 做成「一次性令牌」而不是布尔: 主菜单会反复探卡, 布尔置真会导致连续自动刷卡。
+let swipeArmed = 0;
+export function armCardSwipe() {
+  swipeArmed = 1;
+}
+
+// 游戏侧读卡器 R9() 会调这个全局(见 tools/game-patches.mjs 注入与 game-esm/index.js)。
+function installArmHook() {
+  window.__umgArmCardSwipe = function () {
+    if (swipeArmed <= 0) return false;
+    swipeArmed -= 1;
+    return true;
+  };
+}
+
 export function waitingCard() {
   return typeof window.__umgSwipe === 'function';
 }
@@ -130,6 +149,10 @@ export function swipeNow() {
   if (!srv || !srv.host) return false;
   const bytes = cardToBytes(normalizeCard(srv.card || readLS(LS_CARD)));
   if (!bytes) return false;
+  // 桌面语义是「手动刷卡」: 游戏侧的 R9() 探卡只在 armed 时供卡一次
+  // (见 game-esm/index.js 的 R9)。点一次「刷卡」只放行一次, 这样刷完卡 / 游戏结束
+  // 回到主界面以后不会被自动拉回刷卡画面(循环进入)。
+  armCardSwipe();
   // cardToBytes 已经返回 Uint8Array; 这里再兜一层: 万一 srv.card 被别处改成了
   // 非字符串(比如面板直接塞了数组), normalizeCard 出来的长度不对会返回 null ——
   // 上面那行已经挡掉。保留这一层只是为了让「交出去的永远是 Uint8Array」这条

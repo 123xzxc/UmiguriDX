@@ -12,6 +12,60 @@ export const LS_TOKEN = 'umg_online_token';
 // 卡号也要记住: 游戏原生联机(umiguri-native-server)没有 AM 读卡器, 靠它当刷卡,
 // 见 host/online/native.js 的 installNativeServer()。
 export const LS_CARD = 'umg_online_card';
+// 卡号历史: 记多个用过的卡号(最近在前), 启动时可以直接挑一张, 不用再手打 20 位。
+// 存 [{ card, base, name, ts }] —— 连服务端地址和当时的显示名一起记, 换服/换号时好看出来。
+export const LS_CARD_HISTORY = 'umg_online_card_history';
+const CARD_HISTORY_MAX = 12;
+
+// 解析历史(容错: 坏了就当空列表, 不能让历史把启动流程搞崩)。
+export function cardHistory() {
+  try {
+    const raw = readLS(LS_CARD_HISTORY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((it) => ({
+        card: normalizeCard(it && it.card),
+        base: normalizeBase(it && it.base),
+        name: String((it && it.name) || ""),
+        ts: Number((it && it.ts) || 0),
+      }))
+      .filter((it) => isValidCard(it.card));
+  } catch (e) {
+    return [];
+  }
+}
+
+// 记住一张卡(同卡去重并按时间倒序; 超过上限丢掉最旧的)。
+// name/base 用「这次登录拿到的」覆盖旧的 —— 换了显示名或换服以后要显示新的。
+export function rememberCard(card, opts) {
+  const c = normalizeCard(card);
+  if (!isValidCard(c)) return cardHistory();
+  const extra = opts || {};
+  const list = cardHistory().filter((it) => it.card !== c);
+  list.unshift({
+    card: c,
+    base: normalizeBase(extra.base) || "",
+    name: String(extra.name || ""),
+    ts: Date.now(),
+  });
+  const cut = list.slice(0, CARD_HISTORY_MAX);
+  try {
+    writeLS(LS_CARD_HISTORY, JSON.stringify(cut));
+  } catch (e) {}
+  return cut;
+}
+
+// 从历史里删一张(玩家清掉不用的号)。
+export function forgetCard(card) {
+  const c = normalizeCard(card);
+  const list = cardHistory().filter((it) => it.card !== c);
+  try {
+    writeLS(LS_CARD_HISTORY, JSON.stringify(list));
+  } catch (e) {}
+  return list;
+}
 
 export function readLS(key) {
   try {
