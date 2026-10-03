@@ -995,3 +995,50 @@ else if (this.GC) { ... this.LC.XC(scope.v_ha_28044, 0); }
 
 **改动**: `open-umiguri/src/game-esm/index.js`、`umiguri-native-server/src/sock.js`、
 `umiguri-native-server/test/native-smoke.mjs`。**客户端与服务端都要更新。**
+
+### 7.22 PUSH_JOIN(130) 字段宽度全错(u16 -> u32): 大厅 rating/等级乱掉 + 2.9.19
+
+这条是**纯服务端**的编解码 bug, 客户端一字未改。
+
+`umiguri-native-server/src/sock.js` 的 `Member.writeJoin`(拼 130 载荷)原来写的是:
+
+```js
+w.u32(userId).str(name).u16(rating).u16(level).u16(titleRarity)
+ .str(titleText).str(nameplateText).u16(nameplateRarity).str(fieldWallText);
+```
+
+但客户端 `open-umiguri/src/game-esm/index.js` 的 `iT` 里 `v_js_28019`(=130)分支读的是:
+
+```js
+nx = v3()   // u32
+om = Ic()   // str
+lm = v3()   // u32  rating
+CC = v3()   // u32  等级
+lx = v3()   // u32  称号稀有度
+ox = Ic(), TC = Ic()
+MC = v3()   // u32  名牌稀有度
+RC = Ic()
+```
+
+也就是 **四个数值字段客户端全按 u32 读**, 服务端却按 u16 写。整条帧从第一个 u16 起
+就错位 2 字节:
+
+- `rating` 实际读到的是「rating 的 u16 + 等级的 u16」拼成的 u32(`1000|0x0007<<16` 这种);
+- `level` / `lx` / `MC` 依次读到相邻的字节, 全是垃圾;
+- 末尾还会多出 4 个字节, 客户端读到 `str` 时把后面帧的数据当字符串读 —— 这就是真机
+  日志里那个 `RangeError: Out of bounds access @ getUint32` 的来源;
+- 大厅里别人的 rating/等级显示错乱, 房内状态机跟着错位, 表现为「进不去选歌界面」。
+
+**修法**: `writeJoin` 的四个数值字段改成 `u32()`, 并在注释里把客户端的读法逐字列出。
+
+**回归用例**: `native-smoke.mjs` 的 130 断言同步改成 `u32`, 并加一条
+`eq(joinSelf.remaining, 0, ...)` —— 只要两边宽度不一致(多写或少写一个字节), 这条就会
+红。**251 项全过**。
+
+另外本轮还修了服务端排障日志本身的一个错:`OP_NAMES` 表把 1/2/3 写反了
+(`1:"ENTER",2:"LEAVE",3:"PING"`), 于是 `UMIGURI_SOCK_TRACE=1` 打出来的 op 名字全是错的,
+把「客户端每 2 秒一次的心跳」显示成「反复进房」, 差点把排查带偏。正确映射是
+`1:"PING", 2:"ENTER", 3:"LEAVE"`(与文件顶部 `OP_PING/OP_ENTER/OP_LEAVE` 常量一致)。
+
+**改动**: `umiguri-native-server/src/sock.js`、`umiguri-native-server/test/native-smoke.mjs`。
+**只需更新服务端(客户端不用重编译)。**

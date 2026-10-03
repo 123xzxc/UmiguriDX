@@ -64,6 +64,16 @@ function trace(...args) {
   if (config.traceSock) console.log("[native][sock]", ...args);
 }
 
+// op 码 -> 名字。排障时日志里直接看到 op=19(上报状态)/op=6(开局) 比看数字快得多。
+const OP_NAMES = {
+  1: "PING", 2: "ENTER", 3: "LEAVE", 4: "PICK", 5: "UNPICK", 6: "START", 19: "STATE",
+  20: "SCORE", 21: "QUERY", 22: "READY", 23: "PROFILE", 24: "CHAT", 25: "CHAT_FREE",
+  114: "SIGNAL", 115: "ASSETDATA",
+};
+function opName(op) {
+  return OP_NAMES[op] || (op >= 128 ? "PUSH" : "?");
+}
+
 function randomRoomId() {
   for (let i = 0; i < 500; i++) {
     const id = 1 + Math.floor(Math.random() * ROOM_ID_MAX);
@@ -89,20 +99,25 @@ class Member {
     this.flags = 0;
   }
 
-  // PUSH_JOIN(130) 载荷布局 —— 客户端 iT 里的读法:
-  //   u32 nx, str om, u16 lm, u16 CC, u16 lx, str ox, str TC, u16 MC, str RC
+  // PUSH_JOIN(130) 载荷布局 —— 客户端 iT 里 v_js_28019 分支的读法:
+  //   u32 nx, str om, u32 lm, u32 CC, u32 lx, str ox, str TC, u32 MC, str RC
   //   nx=玩家id om=显示名 lm=rating CC=等级 lx=称号稀有度 ox=称号文本
   //   TC=名牌文本 MC=名牌稀有度 RC=场墙文本
-  // 正好与 OP_ENTER 客户端发上来的字段一一对应(所以这里不需要猜)。
+  //
+  // ⚠ rating / 等级 / 称号稀有度 / 名牌稀有度 客户端都是按 u32 读的(v3), 只有名字和
+  //   文本是 str。以前这里写成 u16(), 于是整条帧从第一个 u16 起就全部错位:
+  //   客户端会把「rating 的 u16 + 等级的 u16」拼成一个 u32 当 rating, 后面等级/稀有度
+  //   继续读到别人的字节, 末尾还会多出 4 个字节。真机表现就是大厅里玩家的
+  //   rating/等级 乱掉、房内状态机错位(进不了选歌界面)。
   writeJoin(w) {
     w.u32(this.userId);
     w.str(this.name);
-    w.u16(this.rating);
-    w.u16(this.level);
-    w.u16(this.titleRarity);
+    w.u32(this.rating);
+    w.u32(this.level);
+    w.u32(this.titleRarity);
     w.str(this.titleText);
     w.str(this.nameplateText);
-    w.u16(this.nameplateRarity);
+    w.u32(this.nameplateRarity);
     w.str(this.fieldWallText);
   }
 
@@ -165,7 +180,14 @@ function onMessage(conn, raw) {
     trace(conn.remote + " 丢弃过短帧(" + raw.length + " 字节)");
     return;
   }
-  trace(conn.remote + " <- op=" + frame.op + " seq=" + frame.seq + " 载荷 " + frame.body.remaining + " 字节");
+  trace(conn.remote + " <- op=" + frame.op + "(" + opName(frame.op) + ") seq=" + frame.seq + " 载荷 " + frame.body.remaining + " 字节");
+  // 载荷 hex(前 64 字节): 排障时对着客户端日志「客户端说它发了 X」时, 这里能看到
+  // 线上真实字节。以前只能靠猜(协议字段多, 少读/多读一个 u16 都不报错, 只是语义错位)。
+  if (config.traceSock && frame.body.remaining > 0) {
+    const all = Buffer.from(plain);
+    const bodyStart = all.length - frame.body.remaining;
+    trace("    body=" + all.subarray(bodyStart, Math.min(bodyStart + 64, all.length)).toString("hex"));
+  }
   try {
     dispatch(conn, frame);
   } catch (err) {
@@ -228,6 +250,19 @@ function leaveRoom(conn, reason) {
 
 function dispatch(conn, frame) {
   const { op, seq, body } = frame;
+
+  // 每个请求进业务分支前, 先把「服务端视角」的关键字段落一条语义日志。
+  //   这是排障的主入口: 客户端日志说「我发了 X」, 这里直接看服务端收到的是什么,
+  //   省得在客户端一侧猜协议(字段多, 少读/多读一个 u16 都不会报错, 只语义错位)。
+  if (config.traceSock) {
+    try {
+      const who = conn.member ? (conn.member.name + "#" + conn.member.userId) : "未进房";
+      const room = conn.room ? ("#" + conn.room.id + " state=" + conn.room.state +
+        " sel=" + (conn.room.selection ? conn.room.selection.musicId : "-") +
+        " members=" + conn.room.members.size) : "无房间";
+      trace("dispatch op=" + op + "(" + opName(op) + ") by " + who + " [" + room + "]");
+    } catch (v_umgT) {}
+  }
 
   if (op === OP_PING) {
     respond(conn, op, seq, 0);
