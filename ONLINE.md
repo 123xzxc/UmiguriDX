@@ -907,3 +907,31 @@ PC 玩家有键盘, 那列触摸键会挡住画面左上角。移动端(Android/
 `open-umiguri/tools/verify-online-bundle.mjs`。
 
 **这一版客户端与服务端都要一起更新**(服务端改了 op=6 的状态推进)。
+### 7.19 主界面死循环: R9 未 armed 返回了 undefined + 2.9.16
+
+7.18 把 `R9()` 改成「一刷一次」之后, 真机出现**主界面死循环**: 主菜单反复重绘, 日志里
+每 ~1.0s 一次 `[umg][lp] 读不到: "textures\\txDummyChara_0.dds"` 一直刷。
+
+根因是返回值语义没对齐。主菜单 `modules/v_N1_27904/index.js` 的 `v_c_28776()` 长这样:
+
+```js
+let v_t_28780 = await scope.v_D_27646.R9();
+v_t_28780 !== scope.v_Ts_28004 && (... scope.v_N1_27904.T0(v_t_28780) ...);
+```
+
+`v_Ts_28004 = 1` 是「读卡超时 / 读卡器上没卡」的语义值。7.18 让未 armed 时返回
+`undefined`, 而 `undefined !== 1` 成立, 于是:
+
+`R9() 返回 undefined` -> `v_c_28776` 继续 -> `T0()` -> 第 60 行又调 `v_c_28776()` ->
+再探卡 -> 无限递归。表现就是主界面反复重绘、占位贴图日志每秒刷一次。
+
+**修法**: 未 armed 时返回 `v_Ts_28004`(而不是 `undefined`) —— 主菜单判定为「没读到卡」,
+停在原地等玩家主动点「刷卡」; `v_k_28809` 探卡循环里那条多余的 `void 0 === ...` 分支
+也随之删掉(上面那行 `=== v_Ts_28004` 已经 return)。
+
+**注意**: `tools/game-patches.mjs` 的 `NATIVE_SWIPE_BODY` 是 `src/game-esm/` 的**生成源**
+(modularize 之前作用于 AST 的补丁), 这次两处**同时**改了 —— 否则下次重新 modularize
+会把修复冲掉。
+
+**改动**: `open-umiguri/tools/game-patches.mjs`、`open-umiguri/src/game-esm/index.js`、
+`open-umiguri/src/game-esm/modules/v_G1_27905/index.js`。**只需更新客户端。**

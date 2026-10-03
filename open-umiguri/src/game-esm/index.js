@@ -3630,8 +3630,13 @@ scope.v_Rs_28007.prototype = {
     //   自然停在那里等玩家主动点「刷卡」。
     //   (换卡/退登录仍走游戏自己的 GuestLogin 或面板重新绑卡。)
     // 装了 hook 才启用「一刷一次」; 没装(旧宿主/直连)保持旧行为, 免得把能用的环境改坏。
+    //   ⚠ 未 armed 时必须返回 v_Ts_28004(读卡超时/没卡), **不能返回 undefined**:
+    //     主菜单 v_N1_27904.v_c_28776 的判断是「结果 !== v_Ts_28004 才继续」,
+    //     undefined !== 1 成立 -> 它会再调 T0() -> T0 又调 v_c_28776() -> 再探卡,
+    //     形成无限递归(真机表现: 主界面反复重绘、txDummyChara_0.dds 每秒刷一次)。
+    //     返回 v_Ts_28004 表示「读卡器上没卡」, 主菜单停在原地等玩家点「刷卡」。
     if ("function" === typeof window.__umgArmCardSwipe) {
-      if (!window.__umgArmCardSwipe()) return this.US = scope.v_Ps_28006, void 0;
+      if (!window.__umgArmCardSwipe()) return this.US = scope.v_Ps_28006, scope.v_Ts_28004;
     }
     if (window.__umgServer && window.__umgServer.cardBytes) {
       var v_umgHostCard = window.__umgServer.cardBytes;

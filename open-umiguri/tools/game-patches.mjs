@@ -418,6 +418,17 @@ const NATIVE_SOCK_PORT = 'window.__umgServer && window.__umgServer.host ? window
 //    resolver 挂到 __umgSwipe(宿主右下角的虚拟刷卡按钮点它), 键盘假卡 Ctrl+F9~F12
 //    的路径也不变(Z9 即这个 resolver)
 const NATIVE_SWIPE_BODY = `
+// 桌面语义是「手动刷卡」, 不是街机那种「一直有卡放在读卡器上」:
+//   主菜单(v_N1_27904.v_c_28776)会反复调 R9() 探卡, 一直供卡就会每次回主菜单都被
+//   拉进刷卡画面(循环)。所以只有宿主点「刷卡」置了一次 armed 令牌(__umgArmCardSwipe)
+//   时才供卡, 供完即清; 没 armed 时必须返回 v_Ts_28004(读卡超时/没卡)。
+//   ⚠ 不能返回 undefined: 主菜单的判断是「结果 !== v_Ts_28004 才继续」,
+//     undefined !== 1 成立 -> 它会再调 T0() -> T0 又调 v_c_28776() -> 再探卡,
+//     无限递归(真机表现: 主界面反复重绘、txDummyChara_0.dds 每秒刷一次)。
+//   装了 hook 才启用「一刷一次」; 没装(旧宿主/直连)保持旧行为。
+if (typeof window.__umgArmCardSwipe === "function" && !window.__umgArmCardSwipe()) {
+  return this.US = v_Ps_28006, v_Ts_28004;
+}
 if (window.__umgServer && window.__umgServer.cardBytes) {
   var v_umgHostCard = window.__umgServer.cardBytes;
   return window.__umgServer.cardBytes = null, this.US = v_Ps_28006, v_umgHostCard;
