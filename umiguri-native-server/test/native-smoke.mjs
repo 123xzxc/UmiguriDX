@@ -585,6 +585,18 @@ let guestB = 0;
   ok(guestB < 0x7fffffff, "游客号落在普通整数范围(不占用高位, 比较不会错)" + " (实际 " + guestB + ")");
   eq(r.body.u32(), roomId, "B 进的是 A 的房间");
 
+  // ⚠ 140(房间号下发)除了进房那一刻, 还必须在 **op=21(QUERY)** 之后补一帧。
+  //   客户端的推送分发 iT() 整体被 `if (this.EC)` 包着: EC 是 settingsStore.T0() 里
+  //   才 vx(v_w_29167) 装上的, 而进房那一刻服务端就把 140 推出来了 —— 回调还没装,
+  //   这一帧会被**直接丢弃**。140 又恰好是**非房主在大堂收尾进选歌界面的唯一入口**
+  //   (房主被 `tx` 那个条件短路排除, 只能手动点 Skip), 丢了就永久卡在大堂。
+  //   补在 QUERY 之后能对上时序: T0() 里 QS(100) 是 await 的, 响应一 resolve 下一句
+  //   就是 vx()(微任务), 而补发的 140 是紧随响应的下一条 WS 消息(宏任务)。
+  eq((await b.nextPush(140)).u16(), roomId, "B 进房时的 140 房间号正确");
+  const bq = await b.request(21, new Writer().u16(100));
+  eq(bq.body.u16(), roomId, "op=21(QUERY) 响应的结果码就是房间号");
+  eq((await b.nextPush(140)).u16(), roomId, "op=21 之后补发的 140 房间号正确(非房主收尾的唯一入口)");
+
   const bFirst = await b.nextPush(130);
   const bSecond = await b.nextPush(130);
   eq(bFirst.u32(), userId, "B 先收到 A 的信息");
@@ -902,6 +914,15 @@ let guestB = 0;
   const r0 = await a.request(22, new Writer().u16(0));
   eq(r0.body.u16(), 0, "oP(0) 结果码 0");
   eq((await a.nextPush(141)).u16(), 1, "回的是房间整体就绪值 1(不被单次 0 拉低)");
+  // ⚠ 141 只写客户端的 aP, 那**只对已经挂上 iP(1) 的人**有用。而「拿着房号加入」的
+  //   非房主在大堂里根本没人挂 iP —— 他等的是 137(sP, 走 Tx(1))。房主点 Skip 时发出
+  //   的唯一信号就是这条 op=22, 所以服务端必须**同时**给非房主补一帧 137 状态 1,
+  //   否则 2 人房里非房主永远停在大堂(真机表现: 「玩家2进不来选歌界面」)。
+  //   137 的载荷是 { yx: u32, n1: u16 } —— 少了那个 u32 客户端第一个读法就越界。
+  const stB = await b.nextPush(137);
+  ok(stB.u32() > 0, "137 里带一个 u32 局号(客户端先读它再读状态)");
+  eq(stB.u16(), 1, "非房主收到 137 状态 1(房主收尾信号)");
+  eq(stB.remaining, 0, "137 的字段宽度与客户端读法完全对齐(无剩余字节)");
 }
 
 {

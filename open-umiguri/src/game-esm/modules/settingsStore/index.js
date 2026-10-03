@@ -141,6 +141,21 @@ export function createSettingsStore(scope) {
           "down" === v_t_29221 && v_f_29164(this.Ae);
         });
         scope.menuSystem.yv(), scope.menuSystem.Ct(!0), v___29155.Jt = !0, v___29155.e8(0), scope.sceneManager.ft(new scope.v_M1_27898(v_l_29160, v_c_29161)), scope.sceneManager.ri(null === v_e_29214 ? 100 : v_e_29214), scope.sceneManager.ti(), await scope.renderer.C7(scope.v_Ge_28204(30)), scope.menuSystem.Ct(!1), scope.v_Ae_27892.EI("coop_lobby_bgm", 50, .75), scope.audioFontHub.T0(), v_v_29166(), v_u_29163();
+        // ⚠ 非房主(拿着房号加入的人)进大堂后**必须**挂一个「房主已点 Skip」的等待, 否则永远出不去:
+        //   非房主那两条既有的收尾入口在大堂场景下都够不着 ——
+        //     * 140 分支要求 `65535 === _x`(房间已关闭), 正常 2 人房永远不成立;
+        //     * 130 分支要求 `4 <= ix.size`(满员匹配), 2 人房也够不着。
+        //   房主点 Skip 时发出的唯一信号是 op=22(见 g29168 的 tP(1)), 服务端收到后
+        //   会回 141 并给非房主补一帧 **137 状态 1**(见 umiguri-native-server/src/sock.js
+        //   的 OP_READY)。客户端 Tx(n) 等的正是 137(sP), 所以这里挂 Tx(1): 一被唤醒
+        //   就跟着房主收尾进选歌。
+        //   (Tx 只等待、不上报, 不会出现「一进大堂就自己把自己放行」。)
+        if (!scope.v_oe_27649.tx) scope.v_oe_27649.Tx(scope.v_ha_28044).then(function (v_umgSkip) {
+          if (v_umgSkip && v_h_29158.Gi) {
+            console.log("[umg][coop] 非房主收到房主收尾信号(137 状态 1) -> 跟着进选歌");
+            v_g_29168(scope.v_z1_27915);
+          }
+        });
       }
     },
     Gi: () => v_h_29158.Gi

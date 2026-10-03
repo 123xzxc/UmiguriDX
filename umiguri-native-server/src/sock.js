@@ -456,6 +456,25 @@ function dispatch(conn, frame) {
       const n = body.u16();
       void n;
       respond(conn, op, seq, room.id & 0xffff);
+      // ⚠ 140(房间号下发)必须在这里**再补一帧**, 不能只在 handleEnter 里发一次。
+      //
+      //   客户端的推送分发 iT() 整个被 `if (this.EC)` 包着 —— 回调没装时收到的推送
+      //   会被**直接丢弃**。而 EC 是 settingsStore.T0() 里才 vx(v_w_29167) 装上的,
+      //   时序是:  tT(op=2 ENTER) → 服务端回响应 + 立刻 push 140 → 客户端丢弃 140
+      //            → v_It_29787 返回 → T0() 里 QS(100)(op=21) → 之后才 vx()
+      //   于是「加入房间」的玩家永远收不到 140, 而 140 是**非房主在大堂收尾进选歌
+      //   界面的唯一入口**(见 v_w_29167 的 140 分支: `... || tx || (65535 === _x ? 收尾
+      //   : JS(_x))`, 房主被 tx 短路排除, 只能手动点 Skip)。真机表现就是
+      //   「房主能进选歌, 拿着房号进来的玩家卡在大堂不动」。
+      //
+      //   放在 OP_QUERY 之后补发能对上时序: QS() 是 await 的, 响应一 resolve, T0 里的
+      //   下一句就是 vx()(微任务), 而这一帧 140 是紧随响应的下一条 WS 消息(宏任务),
+      //   一定在处理到它之前装好回调。重复的 140 对客户端是幂等的(_x 赋值 + 收尾)。
+      {
+        const rid2 = new Writer();
+        rid2.u16(room.id & 0xffff);
+        push(conn, PUSH_ROOM_ID, rid2.bytes());
+      }
       return;
     }
 
@@ -477,6 +496,34 @@ function dispatch(conn, frame) {
       w.u16(room.ready);
       const payload = w.bytes();
       for (const m of room.members.values()) push(m.conn, PUSH_ALLREADY, payload);
+      // ⚠ 光回 141 不够 —— 141 只写客户端的 aP, 那**只对已经挂上 iP(1) 的人**有用。
+      //
+      //   客户端的 op=22(oP) 只有两个调用点, 都在 settingsStore 里, 都是「大堂收尾」:
+      //     * g29168(房主点 Skip / 取消后)      -> tP(1) + iP(1)
+      //     * T0 的「房间已关闭」分支(65535)     -> tP(1) + iP(1)
+      //   也就是说**房主在大堂点 Skip 时, 发出的唯一信号就是这一条 op=22**。
+      //
+      //   而「拿着房号加入」的非房主那条收尾路径(v_w_29167 的 140 分支)要求
+      //   `65535 === _x`(房间已关闭)才收尾, 正常 2 人房永远不成立; 130 分支要求
+      //   `4 <= ix.size`(满员匹配)。于是**2 人房里非房主没有任何收尾入口**:
+      //   房主点 Skip 进了选歌, 非房主还永远停在大堂。真机表现就是「房主能进选歌,
+      //   拿着房号进来的人卡在大堂 / P2 回不到选歌界面」。
+      //
+      //   客户端 Tx(n) 等的是 137(PUSH_STATE -> sP), 不是 141。所以这里在收到
+      //   「大堂收尾」这条 op=22 时, 再给**房主以外**的成员补一帧状态 1 的 137,
+      //   让非房主那边挂着的 Tx(1) 醒来、跟着收尾进选歌。
+      //   (房主自己不补: 他的 g29168 正在同步往下走, 多一帧 137 只会重复触发 aT)。
+      //   每次都要广播(不能加 `if (!room.state)` 门): 房主打完一局回到大堂再点 Skip 时,
+      //   room.state 可能已经是 1, 加了门第二局就再也没有信号, 非房主又卡住。
+      //   重复帧对客户端是幂等的 —— 他的 Tx(1) 在 sP >= 1 时直接返回, 正合期待。
+      {
+        const sw = new Writer();
+        sw.u32(room.selection ? room.selection.yx : room.yx).u16(1);
+        const sp = sw.bytes();
+        room.state = 1;
+        forEachOther(room, member, (m) => push(m.conn, PUSH_STATE, sp));
+        trace("房间 #" + room.id + " 房主收尾(op=22), 已向非房主广播 137 状态 1");
+      }
       return;
     }
 
