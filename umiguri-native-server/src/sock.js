@@ -48,6 +48,7 @@ export const PUSH_SCORE = 136;       // {cT, lT}         对局中实时单人�
 export const PUSH_STATE = 137;       // {n1}             对局状态(1..5)
 export const PUSH_RANK = 138;        // {oT, lT}         实时排行榜
 export const PUSH_ROOM_ID = 140;     // {uT}             房间号下发
+export const PUSH_READY = 139;       // {yx, nx, ru, te} 成员准备状态(面板上的「已准备」)
 export const PUSH_ALLREADY = 141;    // {n1}             准备状态
 export const PUSH_PROFILE = 143;     // {Hx}             名牌/称号/场墙变更
 export const PUSH_CHAT_PLAY = 144;   // {nx, yx, fI, MI} 对局内聊天
@@ -235,6 +236,20 @@ function push(conn, op, payload) {
   conn.ws.send(cryptFrame(buildPushFrame(op, feedSeq, payload), true));
 }
 
+// 「房间整体就绪」= 房间里**所有人**都报过 ready(bit0) 才为 1。
+//   单人房自然就是 1(全员=自己)。成员变动/开局后都要重算一次并广播 141,
+//   否则晚进/早退会让某个人的 iP(1) 永远等不到 141。
+function recomputeReady(room, broadcast) {
+  const all = [...room.members.values()];
+  room.ready = all.length > 0 && all.every((m) => (m.ready | 0) >= 1) ? 1 : 0;
+  if (!broadcast) return room.ready;
+  const w = new Writer();
+  w.u16(room.ready);
+  const payload = w.bytes();
+  for (const m of room.members.values()) push(m.conn, PUSH_ALLREADY, payload);
+  return room.ready;
+}
+
 function forEachOther(room, member, fn) {
   for (const m of room.members.values()) if (m !== member) fn(m);
 }
@@ -271,6 +286,8 @@ function leaveRoom(conn, reason) {
   w.u32(member.userId).u16(0);
   const payload = w.bytes();
   for (const m of room.members.values()) push(m.conn, PUSH_LEFT, payload);
+  // 走了人之后房间的「全员就绪」要重算: 剩的人可能因此刚好齐了。
+  recomputeReady(room, true);
 }
 
 function dispatch(conn, frame) {
@@ -501,12 +518,24 @@ function dispatch(conn, frame) {
       //   每次上报都要回一帧(客户端是「挂上 Promise, 再收一帧才醒」)。
       const n = body.u16();
       member.ready = n;
-      room.ready = Math.max(room.ready || 0, n | 0);
       respond(conn, op, seq, 0);
-      const w = new Writer();
-      w.u16(room.ready);
-      const payload = w.bytes();
-      for (const m of room.members.values()) push(m.conn, PUSH_ALLREADY, payload);
+      // ⚠ 「房间整体就绪」= **所有人都报过 ready** 才为 1, 不能是 max/member 里谁报了谁算。
+      //   以前是 `room.ready = Math.max(room.ready, n)`: 房主一个人报 1 整房就是 1,
+      //   于是房主在 ready 界面点开始时, 自己那句 `iP(1)` 立刻返回、直接开局 ——
+      //   真机表现「点开始直接开始了, 而不是先进入准备/等对手」。
+      //   ready 位放在 `member.ru` 的 bit0(客户端 v_oa_28038 = 1)。
+      recomputeReady(room, true);
+      // 光回 141 不够: 141 只写客户端的 aP(等待值), 选歌界面左下角那块「玩家列表」
+      //   显示的是每个成员 ru 的 bit0(v_oa_28038)。不广播 139 的话那一格永远是
+      //   「准备中」, 两边的「谁准备好了」永远不同步。
+      //   载荷与 134(PUSH_PLAY) 相同的布局: u32 yx, u32 nx, u8 ru, u8 te。
+      {
+        const rw = new Writer();
+        rw.u32(room.selection ? room.selection.yx : room.yx).u32(member.userId).u8((member.ready | 0) >= 1 ? 1 : 0).u8(0);
+        const rp = rw.bytes();
+        for (const m of room.members.values()) push(m.conn, PUSH_READY, rp);
+        trace("房间 #" + room.id + " 准备: " + member.name + " ready=" + (member.ready | 0) + " -> 房间就绪=" + room.ready);
+      }
       // ⚠ 光回 141 不够 —— 141 只写客户端的 aP, 那**只对已经挂上 iP(1) 的人**有用。
       //
       //   客户端的 op=22(oP) 只有两个调用点, 都在 settingsStore 里, 都是「大堂收尾」:
@@ -908,11 +937,9 @@ function handleEnter(conn, seq, body) {
   // 同理补一帧 141(准备状态): 客户端的 iP(n) 等的是 aP, 而 aP 只由 141 推进。
   // 晚进房 / 重连的人如果没人再上报 22, aP 会一直是 0, 他等的 iP(1) 永不 resolve
   // (真机表现: 拿着房号进来的人站在大堂不动, 进不了选歌界面)。
-  {
-    const rw = new Writer();
-    rw.u16(room.ready || 0);
-    push(conn, PUSH_ALLREADY, rw.bytes());
-  }
+  // ⚠ 新成员 ready=0, 所以「全员就绪」必然被打回 0 —— 这里直接重算并**广播给所有人**:
+  //   否则已经在准备界面等着的人 aP 还停在 1, 新人一到就该重新等(两边进度对齐)。
+  recomputeReady(room, true);
 
   // 已经选好的曲子补一份, 不然中途进房的人看不到当前曲目。
   if (room.selection) {

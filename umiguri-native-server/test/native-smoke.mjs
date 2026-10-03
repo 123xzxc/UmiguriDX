@@ -801,6 +801,9 @@ let guestB = 0;
     // ⚠ 137 的载荷是 [u32 局号][u16 状态], 断言前必须先跳掉局号。
     steady[steady.length - 1].u32();
     eq(steady[steady.length - 1].u16(), 3, "从未进过对局的连接上报状态 1 不能把已开局的房间打回 1(重播仍是 3)");
+    // ⚠ 必须让这个连接**先退房再断开**: 直接 close 服务端虽然也会删成员, 但它留下来的
+    //   占位会让后面「两人房的全员就绪」永远凑不齐(A/B 都报 1 也回 0)。
+    await c.request(3, null);
     c.close();
     await new Promise((v) => setTimeout(v, 50));
   }
@@ -947,6 +950,8 @@ let guestB = 0;
   //   加「137 收到: 房状态 sP=1」就是这个 bug 的指纹。
   const rdC = await c.nextPush(141);
   eq(rdC.u16(), 0, "C 进房立刻收到一帧 141(此刻房间还没人 oP, 所以是 0; 关键是这帧必须在)");
+  // 同样先退房再断开, 免得留下占位成员影响后面「两人房全员就绪」的断言。
+  await c.request(3, null);
   c.close();
   await new Promise((v) => setTimeout(v, 50));
 }
@@ -958,20 +963,75 @@ let guestB = 0;
 {
   a.pushes.set(141, []);
   b.pushes.set(141, []);
+  a.pushes.set(139, []);
+  b.pushes.set(139, []);
+  // 进房/开局那几段可能已经压了旧帧, 先摊平队列, 下面只取「本次 oP 之后」的新帧。
+  a.drainPush(141);
+  b.drainPush(141);
+  a.drainPush(139);
+  b.drainPush(139);
   const r1 = await a.request(22, new Writer().u16(1));
   eq(r1.body.u16(), 0, "oP(1) 结果码 0");
+  // ⚠ 语义已改: 「房间整体就绪」= **房间里所有人都报过 ready** 才为 1
+  //   (以前是 Math.max(room.ready, n): 房主一个人报 1 整房就是 1, 于是房主在准备
+  //   界面点开始, 自己那句 iP(1) 立刻返回 —— 真机表现「点开始直接开始了,
+  //   而不是先进入准备/等对手」)。这是 2 人房, 只有 A 报了 1, 所以整体仍是 0:
+  //   B 必须先报 1, A 的 iP(1) 才会被唤醒 —— 这就是「两边进度同步」的那道闸。
   const rdA = await a.nextPush(141);
-  eq(rdA.u16(), 1, "141 回给发起者自己(唤醒了 aP)");
+  eq(rdA.u16(), 0, "只有 A 报 ready, 房间整体就绪仍是 0(不会点一下就直接开局)");
   const rdB = await b.nextPush(141);
-  eq(rdB.u16(), 1, "141 也广播给房间里其他人");
+  eq(rdB.u16(), 0, "同一帧 141 也广播给房间里其他人(B 的 aP 也对齐)");
+  // 139(PUSH_READY) 是选歌界面左下角「玩家列表」上每个成员的 ready 位:
+  //   不广播 139 的话那一格永远是「准备中」, 两边的「谁准备好了」永远不同步。
+  //   载荷与 134(PUSH_PLAY) 同布局: u32 yx, u32 nx, u8 ru, u8 te。
+  // A 报 ready 会广播 139: A 本人也收一份「自己已准备」。
+  //   解析一次性做完: {yx:u32, nx:u32, ru:u8, te:u8} —— 字段宽度必须与客户端读法逐字节对齐。
+  await new Promise((v) => setTimeout(v, 200));
+  const aRdy139 = a.drainPush(139);
+  ok(aRdy139.length >= 1, "A 报 ready 后收到了 139");
+  let rdyA = null;
+  for (const r of aRdy139) {
+    const yx = r.u32();
+    const nx = r.u32();
+    const ru = r.u8();
+    const te = r.u8();
+    if (nx === userId) rdyA = { yx, nx, ru, te, remaining: r.remaining };
+  }
+  ok(!!rdyA, "139 里有一帧的 nx 指向报 ready 的成员(A)");
+  eq(rdyA.ru, 1, "139 里的 ru bit0 = A 已准备");
+  eq(rdyA.te, 0, "139 的 te 位是 0");
+  eq(rdyA.remaining, 0, "139 的字段宽度与客户端读法完全对齐(无剩余字节)");
   // 重复上报同一个值也必须回帧(客户端是「挂上 Promise, 再收一帧才醒」)。
   a.pushes.set(141, []);
   await a.request(22, new Writer().u16(1));
-  eq((await a.nextPush(141)).u16(), 1, "重复上报 22 也要回一帧 141");
+  eq((await a.nextPush(141)).u16(), 0, "重复上报 22 也要回一帧 141(此刻仍未全员)");
+  // 全员齐了: B 也报 1 -> A 的 iP(1) 应当立刻被唤醒(141 回 1)。
+  //   ⚠ 这里用 drainPush 取「本次动作之后压下的**最后一帧**」: 服务端有 500ms 状态重播,
+  //   队列里可能混着重播/进房补发的旧帧, FIFO 的 nextPush 会读到过期的那个值。
+  a.drainPush(141);
+  b.drainPush(141);
+  a.drainPush(139);
+  b.drainPush(139);
+  const rb = await b.request(22, new Writer().u16(1));
+  eq(rb.body.u16(), 0, "B 也 oP(1) 结果码 0");
+  // 广播是**独立的一帧**, 必须在响应之后由 WS 送达, 这里等一拍再收。
+  await new Promise((v) => setTimeout(v, 200));
+  eq(b.drainPush(141).pop().u16(), 1, "全员 ready 后 141 对 B 回 1");
+  eq(a.drainPush(141).pop().u16(), 1, "全员 ready 后 141 对 A 也回 1(唤醒了 A 挂的 iP(1))");
+  // 每帧 139 的字段是 {yx:u32, nx:u32, ru:u8, te:u8}; 只按 nx 归属来断言, 不依赖到达顺序。
+  //   上面已经把队列摊平了, 这里剩下的就是 B 这次报 ready 广播出来的帧。
+  //   广播是「给房内每个人各发一份」, 所以 A 会再收到 2 帧(B 的 130 补发那份已在队列外面)。
+  const a139nx = a.drainPush(139).map((r) => { r.u32(); const nx = r.u32(); return nx; });
+  ok(a139nx.length >= 1, "A 收到了 B 报 ready 广播出来的 139");
+  ok(a139nx.indexOf(guestB) >= 0, "A 收到了指向 B 的 139(B 刚报的 ready)");
+  const b139nx = b.drainPush(139).map((r) => { r.u32(); const nx = r.u32(); return nx; });
+  ok(b139nx.indexOf(guestB) >= 0, "B 自己也收到了自己的 139");
   // 回的是房间整体的就绪值, 不是发起者这次写的那个数字。
   const r0 = await a.request(22, new Writer().u16(0));
   eq(r0.body.u16(), 0, "oP(0) 结果码 0");
-  eq((await a.nextPush(141)).u16(), 1, "回的是房间整体就绪值 1(不被单次 0 拉低)");
+  eq((await a.nextPush(141)).u16(), 0, "A 撤回 ready 后房间整体就绪回 0");
+  await a.request(22, new Writer().u16(1));
+  eq((await a.nextPush(141)).u16(), 1, "A 重新 oP(1), 两人都准备 -> 房间整体就绪回 1");
   // ⚠ 141 只写客户端的 aP, 那**只对已经挂上 iP(1) 的人**有用。而「拿着房号加入」的
   //   非房主在大堂里根本没人挂 iP —— 他等的是 137(sP, 走 Tx(1))。房主点 Skip 时发出
   //   的唯一信号就是这条 op=22, 所以服务端必须**同时**给非房主补一帧 137 状态 1,

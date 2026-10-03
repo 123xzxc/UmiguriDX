@@ -472,9 +472,25 @@ export function createV_nr_27925(scope) {
                 }
                 if (v_i_29944) {
                   scope.menuSystem.ft(), scope.menuSystem.vt("cancel", "Cancel", 14, 2, scope.v_si_27792, !1, !1, !1, "", function (v_t_29953, v_i_29954) {
-                    "down" === v_t_29953 && (scope.v_oe_27649.xx(!1, 0), scope.v_oe_27649.Cx(scope.v_ha_28044));
+                    "down" === v_t_29953 && (scope.v_oe_27649.xx(!1, 0), scope.v_oe_27649.Cx(scope.v_ha_28044), scope.v_oe_27649.tP(0), scope.v_oe_27649.hx(v_Rt_29789));
                   }), scope.v_V1_27912.T0(100), scope.menuSystem.wt("cancel", !0), await scope.v_oe_27649.xx(!0, v_t_29943);
-                  console.log("[umg][coop] 点开始: 已上报状态1, 开始等 Tx(1) (sP=" + scope.v_oe_27649.sP + ")");
+                  console.log("[umg][coop] 点开始: 已上报状态1, 开始等全员准备 iP(1) (aP=" + scope.v_oe_27649.aP + ")");
+                  // ⚠ 点开始必须是「先进入准备, 等**所有人**都准备好了才开局」, 不能一按就开局。
+                  //   原来的写法只做了 `xx(true)`(上报状态 1) + `Tx(1)`(等房间状态 >= 1),
+                  //   而房间状态在进房时就已经是 1 —— 于是 `Tx(1)` 立刻返回, 谁点谁直接开局;
+                  //   另一边的「已准备/准备中」也永远对不上(服务端没广播 139)。
+                  //   `iP(1)` 走的是 op=22(oP) 通道: 上报「我准备好了」并挂起, 服务端把
+                  //   房间整体就绪值(全员 ready 才为 1)经 141 回给所有人; 每个成员的 ready 位
+                  //   经 139 广播, 选歌界面左下角那块玩家列表据此显示「已准备」。
+                  //   取消按钮(上面那条)在 `down` 里做 `xx(false, 0)` + `Cx` 撤销等待。
+                  // 兜底超时: 等 20s 还没全员准备好(对手一直不进选歌界面/掉线), 就别把房主
+                  //   永久卡在准备界面 —— 超时后照常往下走(单人/对手已走的情况)。
+                  var v_umgAllReady = await Promise.race([
+                    scope.v_oe_27649.iP(scope.v_pa_28050),
+                    scope.v_fo_28103(2e4).then(() => { console.log("[umg][coop] 点开始: 等全员准备超时(20s), 继续"); return !0; })
+                  ]);
+                  console.log("[umg][coop] 点开始: 全员准备 iP(1) 返回 " + v_umgAllReady + " (aP=" + scope.v_oe_27649.aP + ")");
+                  if (!v_umgAllReady) return;
                   var v_e_29945 = await scope.v_oe_27649.Tx(scope.v_ha_28044);
                   console.log("[umg][coop] 点开始: Tx(1) 返回 " + v_e_29945 + " (sP=" + scope.v_oe_27649.sP + ")");
                   if (scope.v_V1_27912.XS(), scope.menuSystem.wt("cancel", !1), scope.menuSystem._t(), !v_e_29945) return;

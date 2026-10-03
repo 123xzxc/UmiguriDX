@@ -4128,6 +4128,14 @@ scope.v_Hs_28017.prototype = {
   iT: function (v_i_33880, v_e_33881) {
     if (v_i_33880 === scope.v_js_28019) {
       var v_t_33882 = v_e_33881.Hx;
+      // ⚠ 130(PUSH_JOIN) 也要维护 Ox(房间成员列表)。Ox 原本被当成「本局参与者」,
+      //   只由 132(自己选曲)/134(开局)/135 增删 —— 于是「自己选曲」那条路里的
+      //   jC() 会把房间里其他人一次清空(见下面 132 分支)。联机选歌界面的
+      //   matchingPanelPlayersBox 直接遍历 Ox 渲染(跳过自己), 于是玩家 2 那边
+      //   左侧列表只剩自己、看不到玩家 1。130 是「房间里现在有谁」的权威来源,
+      //   在这里补一份就天然对齐。已存在就跳过(133/134/135 的增删仍是唯一的
+      //   对局字段来源, 这里只保证「成员在列表里」)。
+      this.tC(v_t_33882.nx) || this.nT(v_t_33882.nx),
       this.ix.set(v_e_33881.Hx.nx, v_t_33882), this.qC(v_e_33881.Hx.nx, !1), v_e_33881.Hx.nx !== scope.v_oe_27649.sx() && scope.v_Ia_28059.LI(v_e_33881.Hx.nx) && scope.v_Fe_28101(async () => {
         for (let v_t_33893 = 0; v_t_33893 < 10 && !this.fC(v_e_33881.Hx.nx); ++v_t_33893) await scope.v_fo_28103(500);
       });
@@ -4145,7 +4153,7 @@ scope.v_Hs_28017.prototype = {
       //   联机时非房主的 Px 也该对齐到它 —— 这样两边 Px 指向同一首, 进歌链路才走得通。
       //   (Px 为空(0/null) 才补; 自己选过曲的保持自己的选择不动。)
       scope.v_oe_27649.Gi() && !scope.v_oe_27649.Px && !v_t_33882.Mx && (this.Px = v_e_33881.yx),
-      v_e_33881.nx === scope.v_oe_27649.sx() ? (this.Px = v_e_33881.yx, this.jC(), this.nT(v_t_33882.nx)) : (scope.renderer.Yt.Zt[v_t_33882.Jx] = scope.renderer.Yt.Mf["textures\\txDummyJacket.dds"], this.eR(v_t_33882.yx));
+      v_e_33881.nx === scope.v_oe_27649.sx() ? (this.Px = v_e_33881.yx, this.tC(v_t_33882.nx) || this.nT(v_t_33882.nx)) : (scope.renderer.Yt.Zt[v_t_33882.Jx] = scope.renderer.Yt.Mf["textures\\txDummyJacket.dds"], this.eR(v_t_33882.yx));
     } else if (v_i_33880 === scope.v_Xs_28023) this.GC !== v_e_33881.yx && (this.nT(v_e_33881.nx), this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te), v_e_33881.nx === scope.v_oe_27649.sx()) && (this.Px = v_e_33881.yx);else if (v_i_33880 === scope.v_zs_28024) this.GC !== v_e_33881.yx && this.sT(v_e_33881.nx);else if (v_i_33880 === scope.v_Zs_28028) this.rT(v_e_33881.nx, v_e_33881.ru, v_e_33881.te);else if (v_i_33880 === scope.v_Ys_28026) this.sP = v_e_33881.n1, console.log("[umg][coop] 137 收到: 房状态 sP=" + this.sP + " (本地 137 等待值 DC=" + this.DC + ")"), this.DC === v_e_33881.n1 && (console.log("[umg][coop] 137 唤醒了等 " + v_e_33881.n1 + " 的人"), v_e_33881.n1 === scope.v_ha_28044 && this.aT(), this.FC) && (this.FC(!0), this.FC = void 0, this.DC = -1);else if (v_i_33880 === scope.v_Qs_28030) this.aP = v_e_33881.n1, console.log("[umg][coop] 141 收到: 准备 aP=" + this.aP + " (本地 iP 等待值 nP=" + this.nP + ")"), this.nP === v_e_33881.n1 && this.rP && (console.log("[umg][coop] 141 唤醒了等 " + v_e_33881.n1 + " 的 iP"), this.rP(!0), this.rP = void 0);else if (v_i_33880 === scope.v_qs_28027) {
       this.aC = v_e_33881.oT;
       for (var v_n_33883 of v_e_33881.lT) {
