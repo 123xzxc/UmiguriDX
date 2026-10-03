@@ -91,20 +91,29 @@ export function createSettingsStore(scope) {
   }
   async function v_g_29168(v_t_29198) {
     let v_i_29199 = v_t_29198;
+    // 大堂收尾入口。日志记下「谁在收尾(%s: 0=加入路径 1=取消路径), 是不是房主, 房里几人」
+    // —— 进不了选歌时先看这一行, 能立刻区分「没走到这」还是「走进了别的分支」。
+    console.log("[umg][coop] g29168 收尾 kind=" + v_t_29198 + " 房主tx=" + scope.v_oe_27649.tx + " ix.size=" + scope.v_oe_27649.ix.size + " 自己=" + scope.v_oe_27649.sx() + " Gi=" + scope.v_oe_27649.Gi());
     if (scope.v_oe_27649.hx(v_w_29167), scope.sceneManager.ni(), scope.sceneManager.ii(), scope.menuSystem.It(!1), scope.v_Te_27911.Li(), scope.audioFontHub.XS(), v_i_29199 === scope.v_z1_27915) if (scope.v_oe_27649.ix.size) {
-      for (scope.v_oe_27649.Gi() && (await scope.v_oe_27649.QS(65535), scope.v_oe_27649.ix.size >= (scope.v_oe_27649.tx ? 3 : 4) ? await new Promise(v_t_29200 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedInviteByMemberLimit"), scope.v_ei_27773, 2e3, v_t_29200)) : scope.v_oe_27649.tx || (await new Promise(v_t_29201 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedInviteByHost"), scope.v_ei_27773, 2e3, v_t_29201)))), scope.v_V1_27912.T0(500);;) {
+      for (scope.v_oe_27649.Gi() && (await scope.v_oe_27649.QS(65535), scope.v_oe_27649.ix.size >= (scope.v_oe_27649.tx ? 3 : 4) ? (console.log("[umg][coop] g29168 走「人数已满」弹窗: ix.size=" + scope.v_oe_27649.ix.size + " tx=" + scope.v_oe_27649.tx), await new Promise(v_t_29200 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedInviteByMemberLimit"), scope.v_ei_27773, 2e3, v_t_29200))) : scope.v_oe_27649.tx || (console.log("[umg][coop] g29168 走「房主已关闭邀请」弹窗: 本地不是房主 tx=false"), await new Promise(v_t_29201 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedInviteByHost"), scope.v_ei_27773, 2e3, v_t_29201)))), scope.v_V1_27912.T0(500);;) {
         let v_e_29202 = !1;
         if (scope.v_oe_27649.ix.forEach((v_t_29203, v_i_29204) => {
-          v_t_29203.nx === scope.v_oe_27649.sx() || scope.v_oe_27649.uI(v_t_29203.nx) || (v_e_29202 = !0);
+          // 这一圈在等「房内所有非自己的成员都已连上(uI)」。等不到就 30ms 一次空转,
+          // 外面看就是「点了开始/跳过之后一直不选歌」。把每个人卡在哪一条打出来:
+          // 自己 / 已连上 / 还差连接, 一眼看出是哪个成员拖住。
+          if (v_t_29203.nx !== scope.v_oe_27649.sx() && !scope.v_oe_27649.uI(v_t_29203.nx)) {
+            v_e_29202 = !0;
+            console.log("[umg][coop] g29168 等待成员 nx=" + v_t_29203.nx + " 连接就绪 (自己=" + scope.v_oe_27649.sx() + ", ix.size=" + scope.v_oe_27649.ix.size + ")");
+          }
         }), !v_e_29202) break;
         await scope.renderer.C7(scope.v_Ge_28204(30));
       }
       scope.v_V1_27912.XS(), await scope.renderer.C7(scope.v_Ge_28204(30)), scope.v_V1_27912.T0(500), await scope.v_oe_27649.tP(scope.v_pa_28050), await scope.v_oe_27649.iP(scope.v_pa_28050), scope.v_V1_27912.XS();
-    } else v_i_29199 = scope.v_K1_27916, await new Promise(v_t_29205 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedModeByNoGuests"), scope.v_ei_27773 | scope.v_ri_27776, 2e3, v_t_29205));
+    } else v_i_29199 = scope.v_K1_27916, console.log("[umg][coop] g29168 走「房里没人」分支: ix.size=0 -> 退回菜单"), await new Promise(v_t_29205 => scope.v_Te_27911.Ai(scope.v_Ue_28209("copClosedModeByNoGuests"), scope.v_ei_27773 | scope.v_ri_27776, 2e3, v_t_29205));
     scope.v_Ae_27892.DI("coop_lobby_bgm", 50), v___29155.e8(10), v_n_29159 && (v_n_29159.UA = 0), scope.renderer.W6(() => {
       scope.menuSystem._t();
       for (const v_t_29206 of v_a_29156) v_t_29206.Be = !1;
-      v___29155.i8(10), scope.renderer._i("coopLobby"), v_h_29158.Gi = !1, v_h_29158.qS && v_h_29158.qS(v_i_29199), v_h_29158.qS = void 0;
+      v___29155.i8(10), scope.renderer._i("coopLobby"), v_h_29158.Gi = !1, console.log("[umg][coop] g29168 收尾完成, 回调 qS(" + v_i_29199 + ")"), v_h_29158.qS && v_h_29158.qS(v_i_29199), v_h_29158.qS = void 0;
     }, 250);
   }
   return {
