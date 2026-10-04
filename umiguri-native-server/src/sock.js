@@ -246,6 +246,27 @@ function push(conn, op, payload) {
   conn.ws.send(cryptFrame(buildPushFrame(op, feedSeq, payload), true));
 }
 
+// 「这个成员说的话能不能代表『可以开局 / 可以回退对局状态』」。
+//
+// 7.36 的核心闸门: 联机房里, 单方面上报的「状态 1」不能冒充「可以进谱面」。
+//   客户端点「开始」发的第一条就是 xx(true)(op=19, 状态 1) —— 它只是「我要开始」
+//   的意图。以前 op=19 被直接 pushState 成房间状态 1 并广播 137, 对手选歌界面
+//   挂着的 Tx(1) 立刻被唤醒, 两边一起进歌, 完全绕过「等全员准备好」。
+//   真机表现: 「进入谱面还是不需要都准备好才进入」。
+//
+// 放行条件(满足任一):
+//   * member.ready >= 1 —— 这个人真的走过 op=22(oP) 的准备上报, 也就是走完了
+//     「点开始 -> 等全员就绪 -> 进歌」那条路;
+//   * member.maxState >= 2 —— 这个人已经进过对局, 他上报的状态 1 是「打完一局
+//     回大堂」的合法回退, 必须放行(否则非房主回不到选歌界面)。
+// 两者都不满足: 他还没准备、也没进过对局, 状态 1 只能当唤醒信号用。
+function canAdvanceMatch(room, member) {
+  if (room.members.size <= 1) return true;
+  if ((member.ready | 0) >= 1) return true;
+  if ((member.maxState | 0) >= 2) return true;
+  return false;
+}
+
 // 「房间整体就绪」= 房间里**所有人**都报过 ready(bit0) 才为 1。
 //   单人房自然就是 1(全员=自己)。成员变动/开局后都要重算一次并广播 141,
 //   否则晚进/早退会让某个人的 iP(1) 永远等不到 141。
@@ -385,6 +406,13 @@ function dispatch(conn, frame) {
     }
 
     case OP_START: {
+      // ⚠ 闸门(7.36): 联机房里「开局」必须等全员就绪, 不能用单方面的状态上报硬推。
+      //   判据见 canAdvanceMatch(); 不满足就只回成功码, 不推 134/137。
+      if (!canAdvanceMatch(room, member)) {
+        respond(conn, op, seq, 0);
+        trace("房间 #" + room.id + " 收到 " + member.name + " 的开局(op=6), 但全员未就绪 -> 忽略(room.ready=" + room.ready + ")");
+        return;
+      }
       // op=6「开局」。客户端在房主点开始时会先 xx(true) 上报状态 1(进入对局准备),
       // 然后房主本地 await Tx(1) 通过；**但非房主进对局等的是 Tx(3)**
       // (gameCore 的 v_E_30309 分支: Lx(3) -> Tx(3)), 而 2/3/4/5 这几档只有 Lx
@@ -451,10 +479,39 @@ function dispatch(conn, frame) {
       // 状态推进都会踩到, 是「多人玩不了」的直接原因。
       const n1 = body.u16();
       body.u16(); // 客户端把曲目序号写了两遍, 这里不用(局号以 room.selection 为准)
-      member.state = n1;
-      // 记录这条连接到过的最高状态(见 Member.maxState 的说明)。只在前进时更新,
-      // 这样「结算回退到 1」不会把历史抹掉。
+      // ⚠ 关键点: 联机房里, 单方面上报的「状态 1」不能冒充「可以进谱面」。
+      //
+      //   客户端点「开始」发的第一条就是 xx(true)(op=19, 状态 1)。它只是
+      //   「我要开始」的意图, 不是「所有人都准备好了」。以前这里把它当房间状态
+      //   直接广播: 房里只要有一个人点开始, 服务端 state 立刻=1 并广播 137,
+      //   对方选歌界面挂着的 Tx(1) 马上被唤醒 —— 两边一起进歌, 完全绕过 iP(1)。
+      //   真机表现: 「进入谱面还是不需要都准备好才进入」。
+      //
+      //   判据用「上报者自己到过的最高状态」(member.maxState):
+      //     * 还没进过对局的人(maxState < 2): 他的状态 1 只是「我要开始」的意图,
+      //       不能推进房间状态(对手可能还在下载资源 / 根本还没点准备);
+      //     * 打完一局的人(maxState >= 5): 他回退到 1 是合法的「回到大堂」,
+      //       必须放行, 否则非房主回不到选歌界面。
+      //
+      //   不能直接 return: 状态 1 那帧 137 本身有用(房主在大堂点 Skip 时靠它把
+      //   非房主从大堂推进选歌), 所以只跳过「写 room.state」这一步, 仍然广播
+      //   一帧 sP=1(Tx(1) 的唤醒信号)。
+      //
+      //   ⚠ 先记账再判定: 状态 3/5 这类前进必须先写进 maxState, 否则同一次上报
+      //   里判定用的还是旧值。
       if ((n1 | 0) > member.maxState) member.maxState = n1 | 0;
+      //   闸门只作用于「状态 1」这条意图上报; 2..5 一律放行(那是真进谱面后的进度)。
+      //   判据见 canAdvanceMatch()。
+      if ((n1 | 0) === 1 && !canAdvanceMatch(room, member)) {
+        const aw = new Writer();
+        aw.u32(room.selection ? room.selection.yx : room.yx).u16(1);
+        const ap = aw.bytes();
+        for (const m of room.members.values()) push(m.conn, PUSH_STATE, ap);
+        trace("房间 #" + room.id + " 收到 " + member.name + " 的状态 1, 但他还没进过对局 -> 只唤醒不推进(room.state=" + room.state + ")");
+        respond(conn, op, seq, 0);
+        return;
+      }
+      member.state = n1;
       respond(conn, op, seq, 0);
       pushState(room, member, n1);
       return;

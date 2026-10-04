@@ -904,6 +904,50 @@ let guestB = 0;
   const stStartA = await a.nextPush(137, 3000);
   ok(stStartA.u32() > 0, "开局帧也广播给房主自己(带对局号)");
 }
+// 「进入谱面必须等全员就绪」(7.36 回归): 单方面上报的状态 1 不能推进房间状态。
+//   真机: 2 人房房主一按开始两边立刻进谱面, 完全不等对手准备。根因是 OP_STATE
+//   把 xx(true)(op=19 状态 1) 当成房间状态直接广播, 对手的 Tx(1) 立刻被唤醒。
+{
+  const c = new Sock(port);
+  const d = new Sock(port);
+  await c.connect();
+  await d.connect();
+  const rc = await c.request(2, enterPayload(0, "nw-736", "", "R736A"));
+  eq(rc.body.u16(), 0, "7.36: 房主建房成功");
+  rc.body.u32(); // nx
+  const ridC = rc.body.u32();
+  const rd = await d.request(2, enterPayload(ridC, "nw-736b", "", "R736B"));
+  eq(rd.body.u16(), 0, "7.36: 第二人进房成功");
+  await new Promise((v) => setTimeout(v, 250));
+  d.drainPush(130);
+  d.drainPush(141);
+  c.drainPush(130);
+  c.drainPush(141);
+  d.pushes.set(137, []);
+  c.pushes.set(137, []);
+  // 房主单方面上报状态 1(还没准备): 对手只被唤醒到 1, 不能被推进。
+  const rr = await c.request(19, new Writer().u16(1).u16(0));
+  eq(rr.body.u16(), 0, "7.36: 未就绪时上报状态 1 结果码仍是 0");
+  const wake = await d.nextPush(137, 4000);
+  wake.u32(); // 局号
+  const wakeState = wake.u16();
+  ok(wakeState === 1, "7.36: 未就绪的状态 1 只唤醒(仍是 1), 不推进房间状态 (实际 " + wakeState + ")");
+  await new Promise((v) => setTimeout(v, 400));
+  const queued = d.drainPush(137);
+  ok(queued.every((f) => { f.u32(); return f.u16() <= 1; }), "7.36: 对手没有被推过状态 1");
+  // 全员就绪之后, 房主上报的状态 1 才被当作房间状态接受。
+  await c.request(22, new Writer().u16(1));
+  await d.request(22, new Writer().u16(1));
+  c.pushes.set(137, []);
+  d.pushes.set(137, []);
+  const rr2 = await c.request(19, new Writer().u16(1).u16(0));
+  eq(rr2.body.u16(), 0, "7.36: 全员就绪后上报状态 1 结果码 0");
+  const pushed = await d.nextPush(137, 2000);
+  pushed.u32();
+  ok(pushed.u16() === 1, "7.36: 全员就绪后房间状态可以正常停在 1");
+  c.close();
+  d.close();
+}
 // op=115 是「资源提供方回给请求方」的数据块通道(客户端 v_Ia_28059.zT):
 //   [u32 YC 自己的玩家槽位][u32 hT 资源 id][u32 分块标志(bit1=2 数据/bit2=4 头/bit0=1 末块)] + 数据
 // 请求方在 v_Ia_28059.XI() 里等的是 **227**, 且读法正好是这三项, 所以服务端
