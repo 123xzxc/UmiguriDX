@@ -172,7 +172,13 @@ export function swipeNow() {
       return true;
     }
   }
-  srv.cardBytes = bytes;
+  // ⚠ 游戏**没在**等刷卡(登录画面/读卡桩两条路都没接)时, 不要把这张卡吊在
+  //   srv.cardBytes 上。cardBytes 是游戏 R9()/登录画面「自己取卡」的来源, 留着它
+  //   会在下一次任意探卡时被消费掉: 真机现象就是玩家在大厅/主菜单随手点一下,
+  //   人就被那张卡「在线登录」进去(而不是停在原地等他自己点「刷卡」/「游客登录」)。
+  //   玩家真的想在登录画面刷卡时, 宿主会走上面的 hook 或 login-screen 分支,
+  //   这两条都不依赖一个长期驻留的 cardBytes。
+  srv.cardBytes = null;
   return true;
 }
 

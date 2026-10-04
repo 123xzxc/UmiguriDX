@@ -123,7 +123,15 @@ export function createV_G1_27905(scope) {
     //   真登录分支, 卡号非法时由 hA()/服务端拒掉, 不再静默降级成游客。
     if (0 === arguments.length && scope.v_Xt_27648) {
       // 零参 = 登录界面的 GuestLogin 按钮: 明确的游客登录意图, 照旧。
-      scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();
+      // ⚠ 打开 __umgGuestAllowed 再调 vA(): 宿主绑卡时会有一段「不许静默降级游客」的
+      //   守卫(见 index.js 的 vA 替换), 它必须放行这一次**玩家显式**的游客登录,
+      //   否则点了「游客登录」会变成在线登录。finally 保证标志不残留。
+      window.__umgGuestAllowed = true;
+      try {
+        scope.v_Ns_28014.vA(), v_r_28844 = await scope.v_Ns_28014.dA();
+      } finally {
+        window.__umgGuestAllowed = false;
+      }
     } else {
       // 有参但值为空 = 这一次没读到卡(主菜单/读卡循环把 R9() 的 undefined / 取消值
       // v_Ts_28004 传进来)。桌面没有真实读卡器, 这条路径会反复命中, 处理原则:

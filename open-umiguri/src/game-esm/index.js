@@ -4010,6 +4010,13 @@ scope.v_Ns_28014 = createV_Ns_28014(scope);
 if (window.__umgServer && window.__umgServer.card && scope.v_Ns_28014.vA && !scope.v_Ns_28014.__umgGuestGuard) {
   var v_umgOrigGuestVA = scope.v_Ns_28014.vA.bind(scope.v_Ns_28014);
   scope.v_Ns_28014.vA = function () {
+    // ⚠ 这个守卫只该拦「游戏自己降级成游客」, **不能**拦「玩家显式点了 GuestLogin」。
+    //   两件事在 vA() 上长得一样, 用 __umgGuestAllowed 区分:
+    //     * v_p_28808() 的零参分支(只可能是玩家点 GuestLogin)在调用前把它置 true;
+    //     * 其它任何路径(读卡循环超时/取消、握手失败后的兜底)都不置, 一律拦。
+    //   不加开关时真机表现: 玩家点「游客登录」, 结果 vA() 被拦下、不进游客分支, 反而
+    //   落到 v_Xt_27648.Dy() 取真档案 —— 也就是「点游客登录却变成了在线登录」。
+    if (window.__umgGuestAllowed === !0) return v_umgOrigGuestVA();
     return window.__umgServer && window.__umgServer.card ? scope.v_Ms_28009 : v_umgOrigGuestVA();
   };
   scope.v_Ns_28014.__umgGuestGuard = !0;
@@ -4319,6 +4326,11 @@ scope.v_Hs_28017.prototype = {
     });
   },
   nT: function (v_t_33923) {
+    // ⚠ 按玩家号去重: 130(进房)/132(选曲)/134(开局) 三条推送现在都会往 Ox 里塞人,
+    //   同一个人很容易被塞第二次。渲染那边(v_O_29802)是「按顺序取前几格」, 重复的人
+    //   会占掉两格 —— 真机表现就是「主机看会出现两个 2p」。
+    //   这里做成幂等: 已在列表里就什么都不做(tC 查的是同一个 nx)。
+    if (this.tC(v_t_33923)) return;
     this.Ox.push({
       Ae: v_t_33923,
       te: 0,

@@ -535,6 +535,24 @@ function dispatch(conn, frame) {
       //   真机表现「点开始直接开始了, 而不是先进入准备/等对手」。
       //   ready 位放在 `member.ru` 的 bit0(客户端 v_oa_28038 = 1)。
       recomputeReady(room, true);
+      // ⚠ 「全员就绪」时把还停在大堂的人一起推进选歌界面。
+      //
+      //   房主在大堂点 Skip 的信号是 op=22(oP), 服务端在上面回的那一帧 137 只发给
+      //   forEachOther(非房主)。但那一条 137 是在房主上报**自己**的 ready 时顺带发的:
+      //   如果另外一名玩家(非房主)自己也点了 ready, 就会再触发一次这里的 recompute,
+      //   此时 room.ready 已经=1(两人都报过), 老代码不会再补任何 137 ——
+      //   于是刚报完 ready 的那个人永远停在大堂干等(按「跳过」没反应)。
+      //   真机表现: 「进房间会卡死」。
+      //
+      //   修法: 房间**全员就绪**时, 给所有人补一帧状态 1 的 137(Tx(1) 的唤醒信号)。
+      //   重复帧对客户端幂等(Tx 在 sP >= n 时直接返回), 不会重复入座。
+      if (room.ready === 1) {
+        const aw = new Writer();
+        aw.u32(room.selection ? room.selection.yx : room.yx).u16(1);
+        const ap = aw.bytes();
+        for (const m of room.members.values()) push(m.conn, PUSH_STATE, ap);
+        trace("房间 #" + room.id + " 全员就绪 -> 广播 137 状态 1(把大堂的人推进选歌)");
+      }
       // 光回 141 不够: 141 只写客户端的 aP(等待值), 选歌界面左下角那块「玩家列表」
       //   显示的是每个成员 ru 的 bit0(v_oa_28038)。不广播 139 的话那一格永远是
       //   「准备中」, 两边的「谁准备好了」永远不同步。
