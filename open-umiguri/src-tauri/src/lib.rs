@@ -204,39 +204,75 @@ fn restart_app_cmd() -> bool {
     return false;
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    // Linux 上 WebKitGTK 默认走 GL 合成, 在没有可用 EGL 的环境里一启动就 abort:
-    //   "could not create default EGL display: EGL_BAD_PARAMETER. Aborting..."
-    // 常见触发场景: 无显卡的服务器 / 容器、只装了 libEGL 但没有 GL 驱动、
-    // 远程会话(ssh -X、VNC)、NVIDIA 专有驱动与 Mesa 混装。
-    //
-    // 兜底方式: 在 WebKit 初始化**之前**把渲染切到软件(DMABUF/GL 合成关掉),
-    // 并强制 GTK 用 X11 后端。只填「用户没自己设过」的那些, 保证用户显式配置优先。
-    // 这些开关对 WebView2(Windows) / WKWebView(macOS) 无副作用, 所以不必加 cfg。
-    #[cfg(target_os = "linux")]
+// Linux 上 WebKitGTK 默认走 GL 合成, 在没有可用 EGL 的环境里一启动就 abort:
+//   "could not create default EGL display: EGL_BAD_PARAMETER. Aborting..."
+// 常见触发场景: 无显卡的服务器 / 容器、只装了 libEGL 但没有 GL 驱动、
+// 远程会话(ssh -X、VNC)、NVIDIA 专有驱动与 Mesa 混装、AppImage 里打包的 Mesa
+// 与宿主 GL 驱动对不上。
+//
+// 必须在**任何 GTK/WebKit 代码跑起来之前**调用 —— 所以 main() 的第一句就是它。
+// 只填「用户没自己设过」的那些, 用户显式配置优先。
+#[cfg(target_os = "linux")]
+pub fn linux_prepare_env() {
     {
-        // 1=关掉 GL 合成, 走纯软件渲染。EGL 不可用时这是唯一能起来的一档。
-        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        // 只要用户没自己设过, 就填一个默认值。
+        let mut set_if_unset = |k: &str, v: &str| {
+            if std::env::var_os(k).is_none() {
+                std::env::set_var(k, v);
+            }
+        };
+        // ⚠ 这两条是**最安全**的默认: 它们只是让 WebKit 别用 DMABUF/GL 合成那条路,
+        //   不影响 GL 驱动本身能不能加载 —— AppImage 里打包的 Mesa 未必带 swrast_dri,
+        //   所以绝不能默认强推软件渲染(那会把「驱动缺失」变成「驱动路径不对」),
+        //   软件渲染留给用户在需要时自己显式设置。
+        set_if_unset("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        set_if_unset("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        // AppImage 的 AppRun 会把 LD_LIBRARY_PATH 指向挂载目录, 可能把宿主 GL 驱动
+        //   (通常是 /usr/lib/x86_64-linux-gnu/dri)挤掉。显式把两个常见路径补回去,
+        //   宿主驱动优先于打包的那份, 避免「AppImage 里找不到 swrast_dri.so」。
+        if std::env::var_os("LIBGL_DRIVERS_PATH").is_none() {
+            let mut dirs: Vec<String> = Vec::new();
+            for d in [
+                "/usr/lib/x86_64-linux-gnu/dri",
+                "/usr/lib/i386-linux-gnu/dri",
+                "/usr/lib/aarch64-linux-gnu/dri",
+                "/usr/lib/dri",
+                "/usr/lib64/dri",
+            ] {
+                if std::path::Path::new(d).is_dir() {
+                    dirs.push(d.to_string());
+                }
+            }
+            if !dirs.is_empty() {
+                std::env::set_var("LIBGL_DRIVERS_PATH", dirs.join(":"));
+            }
         }
-        // 2=WebKit 优先用软件渲染路径(部分版本只认这个)。
-        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        }
-        // 没有真实 X11 后端(Wayland/XWayland 缺 X 显示)时退回无后端也能起。
-        if std::env::var_os("GDK_BACKEND").is_none() {
+        // 只有真的没有 DISPLAY 时才退回 X11 后端; 有 Wayland 会话就交给 GTK 自己挑。
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("GDK_BACKEND").is_none() {
             std::env::set_var("GDK_BACKEND", "x11");
         }
-        // 让 Mesa 在 EGL 初始化失败时退回软件光栅化(而非直接 abort)。
-        if std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none() {
-            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
-        }
-        // NVIDIA 专有驱动下 WebKit 的 EGL 探测常失败; 关掉它走 Mesa/软件。
-        if std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
-            std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+        // NVIDIA 专有驱动下 WebKit 的 EGL 探测常失败; 关掉它的显式同步即可。
+        set_if_unset("__NV_DISABLE_EXPLICIT_SYNC", "1");
+        // 把最终生效的值打出来, 便于用户确认自己的设置有没有被采纳。
+        for k in [
+            "WEBKIT_DISABLE_COMPOSITING_MODE",
+            "WEBKIT_DISABLE_DMABUF_RENDERER",
+            "GDK_BACKEND",
+            "LIBGL_DRIVERS_PATH",
+            "LIBGL_ALWAYS_SOFTWARE",
+        ] {
+            eprintln!("[umg][env] {}={}", k, std::env::var(k).unwrap_or_default());
         }
     }
+}
+
+// 非 Linux: 空实现, 保证 main.rs 与 run() 的调用在 Windows/macOS/Android/iOS 上也能编过。
+#[cfg(not(target_os = "linux"))]
+pub fn linux_prepare_env() {}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    linux_prepare_env();
     stats::spawn_reporter();
     // 窗口拖动检测: 拖动时暂停前端渲染,缓解 WebView2 拖动卡顿
     let last_move: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));

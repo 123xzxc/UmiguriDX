@@ -114,13 +114,27 @@ could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
 ```sh
 WEBKIT_DISABLE_COMPOSITING_MODE=1 \
 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
-LIBGL_ALWAYS_SOFTWARE=1 \
-GDK_BACKEND=x11 \
   ./OpenUmiguri
 ```
 
-2.9.34 起宿主会**自动**把这些变量补上(只填用户没自己设过的那些, 显式配置优先),
-所以正常不需要手敲。若仍然失败, 按需安装运行库:
+**AppImage**: 把变量写在命令前面是有效的(AppImage 会继承调用者的环境):
+
+```sh
+WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+  ./OpenUmiguri-x86_64.AppImage
+```
+
+2.9.35 起宿主会**自动**把这两个变量补上(只填用户没自己设过的那些, 显式配置优先),
+启动时还会把最终生效的值打出来(`[umg][env] ...`), 便于确认设置有没有被采纳。
+
+宿主**不会**默认打开 `LIBGL_ALWAYS_SOFTWARE` —— AppImage 里打包的 Mesa 未必带
+`swrast_dri.so`, 强推软件渲染会变成另一种 EGL 失败。真需要时自己显式设置:
+
+```sh
+LIBGL_ALWAYS_SOFTWARE=1 ./OpenUmiguri-x86_64.AppImage   # 仅在装了 mesa 软件渲染驱动时
+```
+
+若仍然失败, 按需安装运行库(AppImage 里打包的 Mesa 与宿主驱动对不上时尤其有用):
 
 ```sh
 # Debian / Ubuntu
