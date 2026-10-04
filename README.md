@@ -96,3 +96,40 @@ JUDGE_JUSTICE_CRITICAL (正义暴击) / JUSTICE (正义) / ATTACK (攻击) / MIS
 游戏里直接就能刷。**只跑 `umiguri-native-server` 就够**: 网页面板(`/panel`)、管理面板
 (`/admin-panel`)与游戏联机都在 8101 上, 管理员令牌见 `umiguri-server/data/admin-token`。
 现状、客户端补丁的三个锚点与待回归清单见 `ONLINE.md`。
+
+## Linux 桌面端启动失败(EGL / 黑屏)
+
+Linux 上如果启动就退出并打印:
+
+```
+could not create default EGL display: EGL_BAD_PARAMETER. Aborting...
+```
+
+那是 WebKitGTK 在本机找不到可用的 EGL/GL 驱动时直接 abort —— 常见于无显卡的服务器、
+容器、只装了 `libEGL` 却没装 GL 驱动的环境、`ssh -X` / VNC 远程会话, 以及 NVIDIA
+专有驱动与 Mesa 混装。**不是游戏代码的问题。**
+
+先按下面试(不用重编) —— 这几个环境变量在启动前设好即可:
+
+```sh
+WEBKIT_DISABLE_COMPOSITING_MODE=1 \
+WEBKIT_DISABLE_DMABUF_RENDERER=1 \
+LIBGL_ALWAYS_SOFTWARE=1 \
+GDK_BACKEND=x11 \
+  ./OpenUmiguri
+```
+
+2.9.34 起宿主会**自动**把这些变量补上(只填用户没自己设过的那些, 显式配置优先),
+所以正常不需要手敲。若仍然失败, 按需安装运行库:
+
+```sh
+# Debian / Ubuntu
+sudo apt install libwebkit2gtk-4.1-0 libegl1 libgl1 libglx-mesa0 mesa-utils
+# Fedora
+sudo dnf install webkit2gtk4.1 mesa-libEGL mesa-libGL
+```
+
+验证软件渲染是否可用: `LIBGL_ALWAYS_SOFTWARE=1 glxinfo -B`(需要 `mesa-utils`)。
+如果 `glxinfo` 本身就报 EGL 错误, 说明缺的是系统显卡驱动/运行库, 先把上面那几个包装上。
+
+另外: 完全无显示的机器(纯 headless)需要 `xvfb-run ./OpenUmiguri`。

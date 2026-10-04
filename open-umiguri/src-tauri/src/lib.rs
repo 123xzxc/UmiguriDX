@@ -206,6 +206,37 @@ fn restart_app_cmd() -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Linux 上 WebKitGTK 默认走 GL 合成, 在没有可用 EGL 的环境里一启动就 abort:
+    //   "could not create default EGL display: EGL_BAD_PARAMETER. Aborting..."
+    // 常见触发场景: 无显卡的服务器 / 容器、只装了 libEGL 但没有 GL 驱动、
+    // 远程会话(ssh -X、VNC)、NVIDIA 专有驱动与 Mesa 混装。
+    //
+    // 兜底方式: 在 WebKit 初始化**之前**把渲染切到软件(DMABUF/GL 合成关掉),
+    // 并强制 GTK 用 X11 后端。只填「用户没自己设过」的那些, 保证用户显式配置优先。
+    // 这些开关对 WebView2(Windows) / WKWebView(macOS) 无副作用, 所以不必加 cfg。
+    #[cfg(target_os = "linux")]
+    {
+        // 1=关掉 GL 合成, 走纯软件渲染。EGL 不可用时这是唯一能起来的一档。
+        if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+        // 2=WebKit 优先用软件渲染路径(部分版本只认这个)。
+        if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        // 没有真实 X11 后端(Wayland/XWayland 缺 X 显示)时退回无后端也能起。
+        if std::env::var_os("GDK_BACKEND").is_none() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+        // 让 Mesa 在 EGL 初始化失败时退回软件光栅化(而非直接 abort)。
+        if std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none() {
+            std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+        }
+        // NVIDIA 专有驱动下 WebKit 的 EGL 探测常失败; 关掉它走 Mesa/软件。
+        if std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_none() {
+            std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+        }
+    }
     stats::spawn_reporter();
     // 窗口拖动检测: 拖动时暂停前端渲染,缓解 WebView2 拖动卡顿
     let last_move: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
