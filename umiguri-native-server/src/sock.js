@@ -246,6 +246,40 @@ function push(conn, op, payload) {
   conn.ws.send(cryptFrame(buildPushFrame(op, feedSeq, payload), true));
 }
 
+// 「重新开始一次匹配」: 清掉**除了发起者以外**所有人的 ready 位, 发起者自己算已就绪,
+// 并广播 141(值 = 此刻的 room.ready)。
+//
+// 为什么需要它: 客户端有**两条**发 op=22(oP) 的路 ——
+//   1. 玩家在选歌界面点「准备」(iP(1) 里发的, 这是真正的「我准备好了」);
+//   2. 大堂收尾 g29168 里的 `await tP(1)`(房主点 Skip / 房间关闭时, 见
+//      open-umiguri/src/game-esm/modules/settingsStore/index.js)。
+// 第 2 条是「收尾信号」, 不是「准备好了」, 但走的同一条通道, 服务端看不出来。
+// 于是**两个人一进选歌界面就都自动 ready 了**, 点「开始」时 room.ready 已经是 1,
+// 「等全员准备」形同虚设 —— 真机表现就是「进入谱面还是不需要都准备好才进入」。
+//
+// 修法: 房主点「开始」(op=19 状态 1) 时, 服务端把这当成「发起一次新的匹配」:
+// 把**其他人**的 ready 清回 0(发起者自己算已就绪 —— 他点了开始就是他的确认),
+// 再广播一帧 141。2 人房下这帧是 0, 对手的选歌界面收到 aP=0 后, 那句 `iP(1)`
+// 重新挂起, 必须自己点一次准备才会被放行 —— 这样「点开始 = 我要开这一局,
+// 请对手确认」的语义就成立了。
+function resetReadyForNewMatch(room, initiator, traceReason) {
+  for (const m of room.members.values()) m.ready = m === initiator ? 1 : 0;
+  room.ready = 0;
+  const w = new Writer();
+  w.u16(0);
+  const payload = w.bytes();
+  for (const m of room.members.values()) push(m.conn, PUSH_ALLREADY, payload);
+  // 139(PUSH_READY): 布局与 134 相同( u32 yx, u32 nx, u8 ru, u8 te ), 每个人一条。
+  //   ⚠ 每条都必须新建 Writer —— 复用一个会把上一条的字节拼在后面, 载荷越拼越长。
+  for (const m of room.members.values()) {
+    const rw = new Writer();
+    rw.u32(room.selection ? room.selection.yx : room.yx).u32(m.userId).u8(0).u8(0);
+    const rp = rw.bytes();
+    for (const mm of room.members.values()) push(mm.conn, PUSH_READY, rp);
+  }
+  trace("房间 #" + room.id + " 重置 ready(" + traceReason + ") -> 广播 141=" + room.ready);
+}
+
 // 「这个成员说的话能不能代表『可以开局 / 可以回退对局状态』」。
 //
 // 7.36 的核心闸门: 联机房里, 单方面上报的「状态 1」不能冒充「可以进谱面」。
@@ -502,6 +536,14 @@ function dispatch(conn, frame) {
       if ((n1 | 0) > member.maxState) member.maxState = n1 | 0;
       //   闸门只作用于「状态 1」这条意图上报; 2..5 一律放行(那是真进谱面后的进度)。
       //   判据见 canAdvanceMatch()。
+      // 房主上报「状态 1」= 点了一次开始 / 收尾 -> 发起一次新的匹配: 重置其他人的 ready。
+      //   放在闸门之前: 这一步和「能不能推进房间状态」是两件事 —— 即便房主已经 ready
+      //   (所以闸门会放行), 也必须让对手重新确认一次。
+      //   已经进过对局的人(maxState>=2)上报状态 1 是「回大堂」, 不能重置(那一局刚打完,
+      //   下一局的准备属于下一次点开始)。
+      if ((n1 | 0) === 1 && room.members.size > 1 && (member.maxState | 0) < 2 && room.hostId === conn.userId) {
+        resetReadyForNewMatch(room, member, member.name + " 发起匹配(op=19 状态 1)");
+      }
       if ((n1 | 0) === 1 && !canAdvanceMatch(room, member)) {
         const aw = new Writer();
         aw.u32(room.selection ? room.selection.yx : room.yx).u16(1);

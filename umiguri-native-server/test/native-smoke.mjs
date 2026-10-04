@@ -948,6 +948,40 @@ let guestB = 0;
   c.close();
   d.close();
 }
+// 7.36 补: 房主点「开始」= 发起一次新匹配, 服务端必须重置对手的 ready。
+//   真机: 进选歌界面那条 g29168 收尾会给两人都发 op=22(ready), 于是点开始
+//   时 room.ready 已经=1, 「等全员准备」形同虚设。
+{
+  const c = new Sock(port);
+  const d = new Sock(port);
+  await c.connect();
+  await d.connect();
+  const rc = await c.request(2, enterPayload(0, "nw-736c", "", "R736C"));
+  eq(rc.body.u16(), 0, "7.36b: 房主建房成功");
+  rc.body.u32();
+  const rid = rc.body.u32();
+  const rd = await d.request(2, enterPayload(rid, "nw-736d", "", "R736D"));
+  eq(rd.body.u16(), 0, "7.36b: 第二人进房成功");
+  await new Promise((v) => setTimeout(v, 250));
+  c.drainPush(141);
+  d.drainPush(141);
+  // 两人都像「刚进选歌界面」那样 ready 一次(模拟 g29168 的 tP(1))。
+  await c.request(22, new Writer().u16(1));
+  await d.request(22, new Writer().u16(1));
+  await new Promise((v) => setTimeout(v, 200));
+  c.drainPush(141);
+  d.drainPush(141);
+  // 房主点开始(op=19 状态 1): 对手的 ready 必须被打回 0, 收到的 141 是 0。
+  await c.request(19, new Writer().u16(1).u16(0));
+  const dReady = await d.nextPush(141, 3000);
+  eq(dReady.u16(), 0, "7.36b: 房主点开始后对手的 ready 被重置为 0(必须重新准备)");
+  // 对手重新点准备之后, 全员才再次就绪。
+  await d.request(22, new Writer().u16(1));
+  const dReady2 = await d.nextPush(141, 3000);
+  eq(dReady2.u16(), 1, "7.36b: 对手重新准备后房间恢复全员就绪");
+  c.close();
+  d.close();
+}
 // op=115 是「资源提供方回给请求方」的数据块通道(客户端 v_Ia_28059.zT):
 //   [u32 YC 自己的玩家槽位][u32 hT 资源 id][u32 分块标志(bit1=2 数据/bit2=4 头/bit0=1 末块)] + 数据
 // 请求方在 v_Ia_28059.XI() 里等的是 **227**, 且读法正好是这三项, 所以服务端

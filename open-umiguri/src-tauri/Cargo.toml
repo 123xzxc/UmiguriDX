@@ -1,6 +1,6 @@
 [package]
 name = "umiguri"
-version = "2.9.32"
+version = "2.9.33"
 description = "UMIGURI 桌面端(Tauri)"
 authors = ["umgr-re"]
 edition = "2021"
